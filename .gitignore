@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Node / SvelteKit / Vite
+node_modules/
+frontend/build/
+frontend/.svelte-kit/
+frontend/.vite/
+frontend/coverage/
+frontend/playwright-report/
+frontend/test-results/
+frontend/tests/e2e/__screenshots__/
+
+# Packaging artifact drop (SPA copied here at package time, never checked in)
+server/factory_console/_static/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+*.swp
