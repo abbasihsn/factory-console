@@ -38,4 +38,8 @@ server/factory_console/_static/
 *.pem
 *.key
 .factory/
+# ...except the read-only fixture projects' own .factory/ run-state markers,
+# which are a committed test contract (re-include the dir, THEN its contents).
+!tests/fixtures/**/.factory/
+!tests/fixtures/**/.factory/**
 .claude/settings.json

@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "tickets": [
+    {
+      "id": "TT-1",
+      "title": "Bootstrap task store schema + migrations",
+      "status": "merged",
+      "track": "data",
+      "milestone": "MVP",
+      "dependsOn": [],
+      "provides": ["tasks table", "alembic baseline migration"],
+      "files": ["server/db/schema.sql", "server/db/migrations/0001_baseline.py"]
+    },
+    {
+      "id": "TT-2",
+      "title": "Task list + detail REST endpoints",
+      "status": "in-flight",
+      "track": "backend",
+      "milestone": "v1",
+      "dependsOn": ["TT-1"],
+      "provides": ["GET /api/v1/tasks", "GET /api/v1/tasks/{id}"],
+      "files": ["server/api/tasks.py", "server/services/task_service.py"],
+      "owner": "backend-guild"
+    },
+    {
+      "id": "TT-3",
+      "title": "Task board drag-and-drop UI",
+      "status": "todo",
+      "track": "frontend",
+      "milestone": "v2",
+      "dependsOn": ["TT-2"],
+      "provides": ["/board route", "BoardColumn component"],
+      "files": ["frontend/src/routes/board/+page.svelte", "frontend/src/lib/components/BoardColumn.svelte"]
+    }
+  ]
+}

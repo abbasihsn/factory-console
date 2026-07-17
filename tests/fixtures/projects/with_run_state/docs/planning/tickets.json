@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "tickets": [
+    {
+      "id": "WS-1",
+      "title": "Websocket gateway skeleton",
+      "status": "todo",
+      "track": "backend",
+      "milestone": "MVP",
+      "dependsOn": [],
+      "provides": ["ws:// gateway", "connection registry"],
+      "files": ["server/gateway/app.py"]
+    },
+    {
+      "id": "WS-2",
+      "title": "Room membership + presence",
+      "status": "todo",
+      "track": "backend",
+      "milestone": "MVP",
+      "dependsOn": ["WS-1"],
+      "provides": ["join/leave room", "presence heartbeat"],
+      "files": ["server/gateway/rooms.py", "server/gateway/presence.py"]
+    },
+    {
+      "id": "WS-3",
+      "title": "Message fan-out + delivery receipts",
+      "status": "in-flight",
+      "track": "backend",
+      "milestone": "v1",
+      "dependsOn": ["WS-2", "WS-404"],
+      "provides": ["fan-out dispatcher", "delivery receipts"],
+      "files": ["server/gateway/fanout.py"]
+    },
+    {
+      "id": "WS-4",
+      "title": "Chat message rendering + sanitization",
+      "status": "ready",
+      "track": "frontend",
+      "milestone": "v1",
+      "dependsOn": ["WS-3"],
+      "provides": ["MessageBody component", "sanitizer"],
+      "files": ["frontend/src/lib/components/MessageBody.svelte"]
+    },
+    {
+      "id": "WS-5",
+      "title": "Auth handshake on connect",
+      "status": "merged",
+      "track": "backend",
+      "milestone": "MVP",
+      "dependsOn": ["WS-1"],
+      "provides": ["token handshake", "connect-time authz"],
+      "files": ["server/gateway/auth.py"]
+    },
+    {
+      "id": "WS-6",
+      "title": "Typing indicators",
+      "status": "todo",
+      "track": "frontend",
+      "milestone": "v2",
+      "dependsOn": ["WS-4"],
+      "provides": ["typing indicator UI"],
+      "files": ["frontend/src/lib/components/TypingDots.svelte"]
+    }
+  ]
+}
