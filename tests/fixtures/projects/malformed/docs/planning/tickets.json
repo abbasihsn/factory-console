@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tickets": [
+    {
+      "id": "foo",
+      "title": "Otherwise reasonable ticket in a broken manifest",
+      "status": "planned",
+      "track": "backend",
+      "milestone": "MVP",
+      "dependsOn": [],
+      "provides": ["foo.thing"],
+      "files": ["src/foo.py"],
+    }
+  ]
+}

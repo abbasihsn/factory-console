@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "tickets": [
+    {
+      "id": "S01",
+      "title": "Generate collision-resistant short codes",
+      "status": "planned",
+      "track": "backend",
+      "milestone": "MVP",
+      "dependsOn": [],
+      "provides": ["codec.shortcode"],
+      "files": [
+        "src/snip/codec.py",
+        "tests/unit/test_codec.py"
+      ]
+    },
+    {
+      "id": "S02",
+      "title": "Persist link mappings with a hit counter",
+      "status": "planned",
+      "track": "data",
+      "milestone": "MVP",
+      "dependsOn": ["S01"],
+      "provides": ["store.links"],
+      "files": [
+        "src/snip/store.py"
+      ]
+    },
+    {
+      "id": "S03",
+      "title": "Redirect endpoint with click accounting",
+      "status": "in-progress",
+      "track": "backend",
+      "milestone": "v1",
+      "dependsOn": ["S01", "S99"],
+      "provides": ["api.redirect"],
+      "files": [
+        "src/snip/api/redirect.py"
+      ],
+      "owner": "unassigned"
+    },
+    {
+      "id": "S04",
+      "title": "Public shorten form and result page",
+      "status": "in-review",
+      "track": "frontend",
+      "milestone": "v1",
+      "dependsOn": ["S02"],
+      "provides": ["ui.shorten"],
+      "files": [
+        "src/snip/web/templates/shorten.html"
+      ]
+    },
+    {
+      "id": "S05",
+      "title": "Bootstrap the FastAPI application and health probe",
+      "status": "done",
+      "track": "backend",
+      "milestone": "MVP",
+      "dependsOn": ["S01"],
+      "provides": ["app.bootstrap"],
+      "files": [
+        "src/snip/app.py"
+      ]
+    },
+    {
+      "id": "S06",
+      "title": "Per-link click analytics dashboard",
+      "status": "planned",
+      "track": "frontend",
+      "milestone": "v2",
+      "dependsOn": ["S04"],
+      "provides": ["ui.analytics"],
+      "files": [
+        "src/snip/web/analytics.py"
+      ]
+    }
+  ]
+}

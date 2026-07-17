@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "tickets": [
+    {
+      "id": "T01",
+      "title": "Persist ledger entries in a local SQLite store",
+      "status": "done",
+      "track": "data",
+      "milestone": "MVP",
+      "dependsOn": [],
+      "provides": ["ledger.store"],
+      "files": [
+        "src/pocket_ledger/store/sqlite.py",
+        "src/pocket_ledger/store/schema.sql"
+      ],
+      "estimate": "M"
+    },
+    {
+      "id": "T07",
+      "title": "Monthly rollup report command",
+      "status": "planned",
+      "track": "cli",
+      "milestone": "v1",
+      "dependsOn": ["T01"],
+      "provides": ["cli.report.monthly"],
+      "files": [
+        "src/pocket_ledger/cli/report.py",
+        "tests/unit/test_report.py"
+      ]
+    },
+    {
+      "id": "T12",
+      "title": "Recurring transaction scheduler",
+      "status": "planned",
+      "track": "backend",
+      "milestone": "v2",
+      "dependsOn": ["T07"],
+      "provides": ["scheduler.recurring"],
+      "files": [
+        "src/pocket_ledger/scheduler/recurring.py"
+      ]
+    }
+  ]
+}

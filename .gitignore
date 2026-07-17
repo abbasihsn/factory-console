@@ -38,4 +38,7 @@ server/factory_console/_static/
 *.pem
 *.key
 .factory/
+# ...but fixture run-state under tests/ is committed contract data, not machine state
+!tests/fixtures/projects/**/.factory/
+!tests/fixtures/projects/**/.factory/**
 .claude/settings.json
