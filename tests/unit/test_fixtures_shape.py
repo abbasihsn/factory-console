@@ -70,6 +70,18 @@ def test_with_run_state_mixes_file_and_directory_markers() -> None:
     assert (run_state_dir / "ready" / "S04").is_dir()
 
 
+def test_with_run_state_s06_has_no_marker() -> None:
+    # S06 is in the manifest but carries no run-state marker; the contract treats
+    # an unmarked ticket as `todo`. Pin that it stays unmarked in every state dir.
+    run_state_dir = PROJECTS_DIR / "with_run_state" / ".factory" / "run-state"
+    marked = {
+        marker.name
+        for state in RUN_STATES
+        for marker in (run_state_dir / state).iterdir()
+    }
+    assert "S06" not in marked
+
+
 def test_with_run_state_has_an_unresolved_dependency() -> None:
     manifest = _manifest("with_run_state")
     ids = {ticket["id"] for ticket in manifest["tickets"]}
