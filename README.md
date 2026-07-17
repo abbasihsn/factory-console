@@ -18,6 +18,10 @@ Opens a local browser tab (bound to `127.0.0.1`, no server infra, no cloud coupl
 
 Planning complete. Foundation in progress — build the MVP tickets in `docs/planning/tickets/mvp/` in dependency order using `/ai-gh-orchestrate-plan`.
 
+## Quickstart
+
+_To come_ — not yet installable. Install and run instructions land once the package and dev scripts exist.
+
 ## Roadmap
 
 - **MVP** — read-only browsing (list + detail + dep neighborhood).
