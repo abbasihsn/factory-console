@@ -1,6 +1,7 @@
 {
   "permissions": {
     "allow": [
+      "Bash(/Users/hasan/Documents/HsN/projects/app-factory/bin/factory-route:*)",
       "Bash(ai-gh-open-pr:*)",
       "Bash(ai-gh-pr-review:*)",
       "Bash(ai-gh-track:*)",
