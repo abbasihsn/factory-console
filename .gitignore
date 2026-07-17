@@ -38,3 +38,4 @@ server/factory_console/_static/
 *.pem
 *.key
 .factory/
+.claude/settings.json
