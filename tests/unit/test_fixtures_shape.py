@@ -38,27 +38,19 @@ def test_with_run_state_manifest_has_exactly_six_tickets() -> None:
 
 
 def test_with_run_state_has_a_marker_under_every_run_state() -> None:
-    run_state_dir = (
-        PROJECTS_DIR / "with_run_state" / ".factory" / "run-state"
-    )
+    run_state_dir = PROJECTS_DIR / "with_run_state" / ".factory" / "run-state"
     assert run_state_dir.is_dir(), (
         f"with_run_state fixture must ship a run-state dir at {run_state_dir}"
     )
     for state in RUN_STATES:
         state_dir = run_state_dir / state
-        assert state_dir.is_dir(), (
-            f"run-state dir must contain a '{state}' subdirectory"
-        )
+        assert state_dir.is_dir(), f"run-state dir must contain a '{state}' subdirectory"
         markers = list(state_dir.iterdir())
-        assert markers, (
-            f"run-state '{state}' must contain at least one ticket marker"
-        )
+        assert markers, f"run-state '{state}' must contain at least one ticket marker"
 
 
 def test_malformed_manifest_fails_json_loads() -> None:
-    manifest_path = (
-        PROJECTS_DIR / "malformed" / "docs" / "planning" / "tickets.json"
-    )
+    manifest_path = PROJECTS_DIR / "malformed" / "docs" / "planning" / "tickets.json"
     raw = manifest_path.read_text()
     raised = False
     try:

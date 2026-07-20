@@ -35,6 +35,18 @@ Full detail in [`docs/planning/ROADMAP.md`](docs/planning/ROADMAP.md).
 - [`docs/planning/tickets.json`](docs/planning/tickets.json) — machine-readable manifest.
 - [`docs/planning/tickets/mvp/`](docs/planning/tickets/mvp/) — one PR-sized plan per MVP ticket.
 
+## Development
+
+Install the dev dependencies for both stacks, then install the git hook so linting and formatting run on every commit:
+
+```
+pip install -e ".[dev]"        # ruff + pre-commit (Python)
+pnpm --dir frontend install    # eslint + prettier (frontend)
+pre-commit install
+```
+
+The hook — configured in [`.pre-commit-config.yaml`](.pre-commit-config.yaml) — runs ruff + ruff-format on `server/` and `tests/` and eslint + prettier on `frontend/`. CI re-runs the same hooks so a commit that skipped the local hook is still caught.
+
 ## License
 
 MIT. See [`LICENSE`](LICENSE).
