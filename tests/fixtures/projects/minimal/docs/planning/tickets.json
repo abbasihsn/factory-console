@@ -1,0 +1,49 @@
+{
+  "project": "trailmark",
+  "schemaVersion": 1,
+  "tickets": [
+    {
+      "id": "TM-001",
+      "title": "Ingest trail reports from the CSV drop folder",
+      "status": "todo",
+      "track": "ingestion",
+      "milestone": "MVP",
+      "dependsOn": [],
+      "provides": "Nightly importer that folds ranger CSV exports into the canonical trail-report store",
+      "files": [
+        "server/trailmark/ingest/csv_dropbox.py",
+        "server/trailmark/ingest/report_normalizer.py",
+        "tests/unit/test_csv_dropbox.py"
+      ]
+    },
+    {
+      "id": "TM-015",
+      "title": "Public trail-status REST endpoint",
+      "status": "todo",
+      "track": "api",
+      "milestone": "v1",
+      "dependsOn": ["TM-001"],
+      "provides": "GET /api/v1/trails/{slug}/status returning the freshest report plus a 7-day condition trend",
+      "files": [
+        "server/trailmark/api/trail_status.py",
+        "server/trailmark/services/status_projection.py",
+        "tests/integration/test_trail_status_endpoint.py"
+      ],
+      "estimate": "M"
+    },
+    {
+      "id": "TM-028",
+      "title": "Push alerts for washed-out trails",
+      "status": "todo",
+      "track": "notifications",
+      "milestone": "v2",
+      "dependsOn": ["TM-015"],
+      "provides": "Opt-in push notifications when a followed trail flips to impassable, with per-user quiet hours",
+      "files": [
+        "server/trailmark/notifications/washout_watcher.py",
+        "server/trailmark/notifications/push_gateway.py",
+        "tests/unit/test_washout_watcher.py"
+      ]
+    }
+  ]
+}

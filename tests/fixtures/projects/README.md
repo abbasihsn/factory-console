@@ -2,11 +2,25 @@
 
 Realistic factory-shaped fixture projects — the executable contract every downstream track tests against. **Read-only** — downstream tests may read but must never mutate.
 
+All three use **camelCase** manifest fields (`dependsOn`), matching the
+`ARCHITECTURE.md` data model — not the console repo's own snake_case manifest.
+Each manifest carries a top-level `schemaVersion`.
+
 ## Layouts (populated by T08)
 
-- `minimal/` — 3 tickets across MVP/v1/v2; realistic YAML front-matter + body (headings, list, table, footnote, fenced code); `ROADMAP.md`; NO `.factory/` directory (so run-state probes return `unknown`).
-- `with_run_state/` — 6 tickets exercising every `RunState` (2 todo, 1 in-flight, 1 ready, 1 merged, 1 present-but-no-marker = todo); `.factory/run-state/{todo,in-flight,ready,merged}/<id>` mixing files and directories; one ticket with `dependsOn` pointing to an unknown id (exercises `unresolvedDeps`); one ticket body includes a `<script>alert(1)</script>` snippet to exercise sanitization end-to-end.
-- `malformed/` — `docs/planning/tickets.json` with invalid JSON (trailing comma); an otherwise-valid ticket `.md`.
+- `minimal/` — project **trailmark**; 3 tickets (`TM-001` MVP, `TM-015` v1, `TM-028` v2); realistic YAML front-matter + body (two heading levels, list, GFM table, footnote, fenced code); `ROADMAP.md`; NO `.factory/` directory (so run-state probes return `unknown`). Exactly one ticket (`TM-015`) carries an **unknown extra field** (`estimate`) to exercise `Ticket.raw` passthrough.
+- `with_run_state/` — project **cadence**; 6 tickets exercising every `RunState`:
+  - `todo` (marker present): `CAD-131`, `CAD-140` — plain **file** markers.
+  - `in-flight`: `CAD-125` — **directory** marker (holds a `state` placeholder).
+  - `ready`: `CAD-118` — **directory** marker (holds a `state` placeholder).
+  - `merged`: `CAD-100` — plain **file** marker.
+  - present-but-no-marker → `todo`: `CAD-152` (no marker anywhere under `.factory/run-state/`).
+
+  Markers live at `.factory/run-state/{todo,in-flight,ready,merged}/<id>`, mixing files and directories. `CAD-131` has a `dependsOn` entry (`CAD-207-nonexistent`) pointing to an id absent from the manifest (exercises `unresolvedDeps`); `CAD-140`'s body embeds a literal `<script>alert(1)</script>` snippet to exercise sanitization end-to-end.
+- `malformed/` — `docs/planning/tickets.json` with invalid JSON (**trailing comma**, so `json.loads` raises `json.JSONDecodeError`); an otherwise-valid ticket `.md` at `docs/planning/tickets/foo.md`.
+
+> The `with_run_state/.factory/` markers are test data and are force-tracked via
+> a negation in the root `.gitignore` (which otherwise ignores `.factory/`).
 
 ## Used by
 
