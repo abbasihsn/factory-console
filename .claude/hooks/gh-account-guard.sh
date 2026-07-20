@@ -15,12 +15,16 @@ ALLOWED_REPOS_RE='abbasihsn/factory-console'
 ALLOWED_REPOS_HUMAN='abbasihsn/factory-console'
 
 raw="$(cat)"
-# Fast pre-filter: the guard only cares about gh-touching invocations, so a
-# payload without any "gh" substring can't match the gh-detector below. Skip
-# the jq spawn entirely on those (the >95% of Bash calls that never touch gh)
-# to keep the PreToolUse hot path cheap. Downstream matching stays authoritative.
+# Fast pre-filter: the guard only cares about gh-touching invocations plus the
+# destructive-action deny below, so a payload carrying neither a "gh" nor a
+# "push" substring can't match either. Skip the jq spawn entirely on those (the
+# >95% of Bash calls that touch neither) to keep the PreToolUse hot path cheap.
+# Downstream matching stays authoritative.
+#
+# "push" is in the filter because the destructive deny covers force/delete
+# pushes, which the gh-detector deliberately does NOT match (see its comment).
 case "$raw" in
-  *gh*) ;;
+  *gh*|*push*) ;;
   *) exit 0 ;;
 esac
 if command -v jq >/dev/null 2>&1; then
@@ -34,6 +38,54 @@ fi
 [ -n "$cmd" ] || exit 0
 
 block() { printf 'GitHub action blocked: %s\n' "$1" >&2; exit 2; }
+
+# --- DESTRUCTIVE ACTIONS: deny by COMMAND CONTENT, not by command prefix ------
+#
+# This runs BEFORE the gh-detector below, and matches ANYWHERE in the command,
+# because the permission layer cannot do this job. `permissions.deny` rules are
+# PREFIX matches (see lib/permissions.sh), so `Bash(gh pr merge:*)` only ever
+# matches a command that BEGINS with `gh pr merge` — any granted program that
+# can exec another program voids the whole deny list:
+#
+#   awk 'BEGIN{system("gh pr merge 5 --squash")}'   # Bash(awk:*) is granted
+#   timeout 60 bash -c 'gh pr merge 5'              # a declared build tool
+#   find . -exec gh pr merge 5 \;
+#
+# The merge is the human's gate — the ONE thing the whole delegation model
+# reserves — so it has to be enforced where the entire command string is
+# visible. That is here. Enumerating interpreters in the allow-rule policy
+# (lib/common.sh fac_tool_allow_rule) is a useful narrowing but can never be
+# complete; this check does not care which program is being run.
+#
+# TRADE-OFF, deliberate: matching anywhere means a command that merely MENTIONS
+# one of these in an argument (a PR body documenting `gh pr merge`) is blocked
+# too. That is the fail-closed direction, the sequences are specific enough that
+# prose rarely trips them, and the message tells the author to reword. Silently
+# allowing a wrapped merge is not an acceptable alternative.
+if printf '%s' "$cmd" | grep -Eq 'gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)'; then
+  block "'gh pr merge' is the human's gate and is refused no matter how it is invoked (directly, or wrapped in awk/timeout/find/a shell). If you are only MENTIONING it in a PR body or comment, reword it (e.g. 'merge the PR')."
+fi
+if printf '%s' "$cmd" | grep -Eq 'gh[[:space:]]+repo[[:space:]]+delete([[:space:]]|$)'; then
+  block "'gh repo delete' is refused no matter how it is invoked. If you are only MENTIONING it, reword it."
+fi
+# Force / delete pushes: `push` followed — across any run of intervening
+# arguments, but not past a command separator — by a force or delete flag, or a
+# `+refspec` force. Covers the spellings lib/permissions.sh documents as NOT
+# prefix-expressible (`git push origin main --force`, and any `git -C dir push`
+# form), and covers them under a wrapper too.
+# The trailing boundary is "any character that cannot continue a flag name" (not
+# just space/=/end) so a wrapped spelling still matches — inside
+# `awk 'BEGIN{system("git push origin main --force")}'` the flag is followed by a
+# quote, which an end-anchored boundary missed. --force-with-lease is listed
+# before --force so the longer flag wins its own match.
+# `push` is word-anchored (a non-word char before, whitespace after) so a command
+# that merely CONTAINS the substring — `npm run push-docs -- -f` — is not caught.
+if printf '%s' "$cmd" | grep -Eq '(^|[^A-Za-z0-9_-])push([[:space:]]+[^[:space:];&|]+)*[[:space:]]+(--force-with-lease|--force|--delete|-f|-d)([^A-Za-z0-9_-]|$)'; then
+  block "a force/delete push is refused (protect the base branch server-side too). If you are only MENTIONING it, reword it."
+fi
+if printf '%s' "$cmd" | grep -Eq '(^|[^A-Za-z0-9_-])push([[:space:]]+[^[:space:];&|]+)*[[:space:]]+\+[A-Za-z0-9._/-]+:'; then
+  block "a '+refspec' force push is refused. If you are only MENTIONING it, reword it."
+fi
 
 # GitHub-touching invocation? (word-boundary: start or any non-word char
 # before, so `;`, `&&`, `|`, `$(`, backticks, quotes, newlines, and path
@@ -59,7 +111,19 @@ fi
 # token that merely appears inside an argument value (`--title "document HOME= …"`,
 # a `--body` mentioning `GH_TOKEN=…`) is NOT mistaken for an override. Any real
 # leading assignment of these is always an override attempt here, so block it.
-if printf '%s' "$cmd" | grep -Eq '(^|[;&|(){])[[:space:]]*(env[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*[[:space:]]+)*(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|GH_CONFIG_DIR|GH_HOST|GH_ENTERPRISE_HOST|GH_REPO|XDG_CONFIG_HOME|HOME)='; then
+#
+# THREE gaps closed here (all reproduced against the previous pattern):
+#   1. The boundary class omitted the backtick and `$`, although the gh-detector
+#      immediately below deliberately treats both as boundaries. So
+#      `gh pr view 1 -q "` + GH_TOKEN=… gh api … + `"` slipped past — and that
+#      spelling prefix-matches the granted Bash(gh pr view:*), so it really ran.
+#   2. `(env[[:space:]]+)?` allowed no options, so `env -i GH_TOKEN=… gh …` and
+#      `env -u FOO GH_TOKEN=… gh …` never reached the guarded var.
+#   3. The chain element's value class could not span a quoted value containing
+#      a space, so `FOO="a b" GH_TOKEN=… gh …` stopped the walk.
+# (2) and (3) are defence in depth — those spellings start with `env`/an
+# assignment and match no allow rule — but (1) was directly reachable.
+if printf '%s' "$cmd" | grep -Eq '(^|[;&|(){}$`])[[:space:]]*(env([[:space:]]+-[^[:space:]]+([[:space:]]+[^-][^[:space:]]*)?)*[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:];&|]*)[[:space:]]+)*(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|GH_CONFIG_DIR|GH_HOST|GH_ENTERPRISE_HOST|GH_REPO|XDG_CONFIG_HOME|HOME)='; then
   block "refusing a gh invocation with an inline identity/config/target override (GH_TOKEN / GITHUB_TOKEN / GH_CONFIG_DIR / GH_HOST / GH_REPO / XDG_CONFIG_HOME / HOME=…); run gh without it so the WHO/WHERE pin holds."
 fi
 
@@ -129,7 +193,18 @@ fi
 #    and `-R"x/y"` can't slip past the matcher) and every github.com URL in the
 #    command must match the allowlist.
 flag_refs="$(printf '%s' "$cmd" | grep -oE -- '(--repo(=| )|-R(=| )?)["'"'"']?[^ ;&|"'"'"']+' 2>/dev/null | sed -E -e 's/^(--repo(=| )|-R(=| )?)//' -e 's/^["'"'"']+//' -e 's/["'"'"']+$//')"
-url_refs="$(printf '%s' "$cmd" | grep -oE 'github\.com[:/][A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' 2>/dev/null | sed -E 's#^github\.com[:/]##')"
+# URL refs are extracted from the command with PROSE-CARRYING OPTION VALUES
+# REMOVED. Unscoped, this grep read every github.com URL anywhere in the command
+# as a target, so a PR body citing an upstream issue or a dependency's README
+# ("see https://github.com/vendor/lib/issues/3") blocked the lane — AFTER the
+# build and commits had landed, and a denial is the escalation signal, so a
+# successful ticket got reported flagged. That is the same over-block class
+# already fixed for `repos/x/y` by scoping api_refs below; URL refs were missed.
+# Strip --body/--body-file/--title/-b/-t values (quoted or bare) first, then
+# extract. A URL that is a real target (a --repo value or a bare positional)
+# survives the strip and is still checked.
+scan_cmd="$(printf '%s' "$cmd" | sed -E 's/(--body-file|--body|--title|--notes|-b|-t)([[:space:]]+|=)("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]]*)/\1 /g')"
+url_refs="$(printf '%s' "$scan_cmd" | grep -oE 'github\.com[:/][A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' 2>/dev/null | sed -E 's#^github\.com[:/]##')"
 # Positional repo references carrying no --repo flag and no github.com URL:
 #   `gh api [/]repos/OWNER/REPO…` (the general cross-repo surface, incl. DELETE)
 #   and `gh repo <sub> OWNER/REPO` (clone/view/fork/rename/…). Extraction is
@@ -143,12 +218,26 @@ api_refs=""
 if printf '%s' "$cmd" | grep -Eq '(^|[^[:alnum:]_.-])gh[[:space:]]+api[[:space:]]'; then
   api_refs="$(printf '%s' "$cmd" | grep -oE 'repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' 2>/dev/null | sed -E 's#^repos/##')"
 fi
-gh_repo_refs="$(printf '%s' "$cmd" | grep -oE '(^|[^[:alnum:]_.-])gh[[:space:]]+repo[[:space:]]+[A-Za-z-]+[[:space:]]+["'"'"']?[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' 2>/dev/null | sed -E 's#.*[[:space:]]["'"'"']?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)$#\1#')"
+# The positional slot is located AFTER any run of option tokens (each optionally
+# followed by its value), so a flag between the subcommand and the slug can no
+# longer hide the target: `gh repo clone --depth 1 evil/thing`,
+# `gh repo fork --org acme evil/thing` and `gh repo view --json name evil/thing`
+# previously produced NO match, no --repo flag and no URL, and so fell through
+# to cwd-trust — allowing the foreign-repo operation whenever the lane's cwd was
+# the allowlisted repo. Extraction stays SCOPED to this one positional slot (not
+# "every slug-shaped token in the command") so an unrelated `npm i some/pkg`
+# chained after an allowlisted `gh repo clone` is still not mistaken for a target.
+gh_repo_refs="$(printf '%s' "$cmd" | grep -oE '(^|[^[:alnum:]_.-])gh[[:space:]]+repo[[:space:]]+[A-Za-z-]+([[:space:]]+-[^[:space:]]+([[:space:]]+[^-][^[:space:];&|]*)?)*[[:space:]]+["'"'"']?[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' 2>/dev/null | sed -E 's#.*[[:space:]]["'"'"']?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)$#\1#')"
 refs="$(printf '%s\n%s\n%s\n%s\n' "$flag_refs" "$url_refs" "$api_refs" "$gh_repo_refs")"
 explicit_ok=""
 while IFS= read -r ref; do
   [ -n "$ref" ] || continue
+  # Normalize a URL-spelled ref down to OWNER/REPO before comparing. Refs are
+  # compared as bare slugs, so `--repo https://github.com/OWNER/REPO` — a legal
+  # gh spelling for the ALLOWED repo — was blocked as "outside the allowed repo".
   ref="${ref%.git}"
+  ref="${ref#https://}"; ref="${ref#http://}"; ref="${ref#git@}"
+  ref="${ref#github.com/}"; ref="${ref#github.com:}"
   if printf '%s' "$ref" | grep -Eq "^${ALLOWED_REPOS_RE}$"; then
     explicit_ok=1
   else
