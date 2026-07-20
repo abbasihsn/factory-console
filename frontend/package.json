@@ -11,7 +11,7 @@
 		"test": "vitest run --passWithNoTests",
 		"e2e": "playwright test",
 		"codegen": "openapi-typescript http://127.0.0.1:8000/api/v1/openapi.json -o src/lib/api/types.ts",
-		"lint": "eslint .",
+		"lint": "eslint . --ext .js,.cjs,.ts,.svelte",
 		"format": "prettier --write .",
 		"format:check": "prettier --check ."
 	},
