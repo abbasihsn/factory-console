@@ -38,4 +38,7 @@ server/factory_console/_static/
 *.pem
 *.key
 .factory/
+# Fixture run-state markers are test data and MUST be tracked (overrides .factory/ above)
+!tests/fixtures/projects/**/.factory/
+!tests/fixtures/projects/**/.factory/**
 .claude/settings.json

@@ -1,0 +1,89 @@
+{
+  "project": "cadence",
+  "schemaVersion": 1,
+  "tickets": [
+    {
+      "id": "CAD-100",
+      "title": "Habit schema and append-only event store",
+      "status": "done",
+      "track": "data",
+      "milestone": "MVP",
+      "dependsOn": [],
+      "provides": "Canonical habit + check-in event schema with an append-only store the rest of the app reads through",
+      "files": [
+        "server/cadence/data/schema.py",
+        "server/cadence/data/event_store.py",
+        "tests/unit/test_event_store.py"
+      ]
+    },
+    {
+      "id": "CAD-118",
+      "title": "Streak computation service",
+      "status": "in_review",
+      "track": "backend",
+      "milestone": "MVP",
+      "dependsOn": ["CAD-100"],
+      "provides": "Pure service that folds a check-in event stream into current + longest streak per habit",
+      "files": [
+        "server/cadence/services/streaks.py",
+        "tests/unit/test_streaks.py"
+      ]
+    },
+    {
+      "id": "CAD-125",
+      "title": "Daily check-in REST endpoints",
+      "status": "in_progress",
+      "track": "api",
+      "milestone": "MVP",
+      "dependsOn": ["CAD-100", "CAD-118"],
+      "provides": "POST /api/v1/habits/{id}/checkins and GET today's board for the signed-in member",
+      "files": [
+        "server/cadence/api/checkins.py",
+        "server/cadence/api/board.py",
+        "tests/integration/test_checkins_endpoint.py"
+      ]
+    },
+    {
+      "id": "CAD-131",
+      "title": "Weekly digest email",
+      "status": "todo",
+      "track": "notifications",
+      "milestone": "v1",
+      "dependsOn": ["CAD-125", "CAD-207-nonexistent"],
+      "provides": "Monday-morning per-member digest summarizing last week's streaks and misses",
+      "files": [
+        "server/cadence/notifications/weekly_digest.py",
+        "server/cadence/notifications/render_digest.py",
+        "tests/unit/test_weekly_digest.py"
+      ]
+    },
+    {
+      "id": "CAD-140",
+      "title": "Habit heatmap calendar view",
+      "status": "todo",
+      "track": "frontend",
+      "milestone": "v1",
+      "dependsOn": ["CAD-125"],
+      "provides": "GitHub-style contribution heatmap rendering per-habit check-in density over the last year",
+      "files": [
+        "frontend/src/routes/habits/[id]/heatmap/+page.svelte",
+        "frontend/src/lib/components/Heatmap.svelte",
+        "frontend/tests/unit/heatmap.test.ts"
+      ]
+    },
+    {
+      "id": "CAD-152",
+      "title": "Shared team rituals with roles",
+      "status": "todo",
+      "track": "backend",
+      "milestone": "v2",
+      "dependsOn": ["CAD-140"],
+      "provides": "Team-scoped rituals with owner/member roles so a lead can curate shared habits",
+      "files": [
+        "server/cadence/services/rituals.py",
+        "server/cadence/api/rituals.py",
+        "tests/unit/test_rituals.py"
+      ]
+    }
+  ]
+}
