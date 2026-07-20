@@ -1,0 +1,18 @@
+{
+  "project": "trailmark",
+  "schemaVersion": 1,
+  "tickets": [
+    {
+      "id": "foo",
+      "title": "Seed a single well-formed ticket",
+      "status": "todo",
+      "track": "ingestion",
+      "milestone": "MVP",
+      "dependsOn": [],
+      "provides": "One valid ticket whose manifest entry is unreadable due to malformed JSON",
+      "files": [
+        "server/trailmark/ingest/csv_dropbox.py"
+      ],
+    }
+  ]
+}
