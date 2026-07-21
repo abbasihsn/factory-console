@@ -22,6 +22,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
+    "pytest-cov>=5",
     "pytest-asyncio>=0.23",
     "httpx>=0.27",
     "ruff>=0.4",
@@ -61,3 +62,9 @@ extend-immutable-calls = ["typer.Argument", "typer.Option"]
 testpaths = ["tests"]
 pythonpath = ["server"]
 asyncio_mode = "auto"
+
+[tool.coverage.report]
+# Enforce the 85% overall coverage gate documented in ARCHITECTURE.md. CI runs
+# `pytest --cov=factory_console`, which honors this fail_under, so coverage can
+# no longer silently regress behind a green check.
+fail_under = 85
