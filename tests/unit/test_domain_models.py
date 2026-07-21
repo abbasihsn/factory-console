@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel, ValidationError
+
 from factory_console.domain import (
     TICKET_ID_PATTERN,
     DepNeighborhood,
@@ -20,7 +22,6 @@ from factory_console.domain import (
     TicketId,
     TicketSummary,
 )
-from pydantic import BaseModel, ValidationError
 
 
 class _TicketIdModel(BaseModel):
@@ -195,9 +196,7 @@ def test_model_dump_round_trips(model: BaseModel) -> None:
     ],
     ids=["Project", "Ticket", "TicketSummary", "DepNeighborhood", "Roadmap"],
 )
-def test_frozen_blocks_attribute_assignment(
-    model: BaseModel, field: str, value: object
-) -> None:
+def test_frozen_blocks_attribute_assignment(model: BaseModel, field: str, value: object) -> None:
     with pytest.raises(ValidationError):
         setattr(model, field, value)
 

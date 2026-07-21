@@ -13,6 +13,22 @@ import sys
 # Root formatter for every emitted record: level, ISO-ish timestamp, then message.
 _LOG_FORMAT = "%(levelname)s %(asctime)s %(message)s"
 
+# The level names the console accepts, in descending severity. Python's ``logging``
+# only recognizes these uppercase names, so a level supplied on the CLI must be
+# normalized to one of them before use (see :func:`normalize_log_level`).
+LOG_LEVELS: tuple[str, ...] = ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG")
+
+
+def normalize_log_level(level: str) -> str | None:
+    """Return the canonical uppercase level name, or ``None`` if it is unknown.
+
+    Accepts any case (``'debug'`` -> ``'DEBUG'``) so the natural lowercase form
+    works, and returns ``None`` for a name outside :data:`LOG_LEVELS` so the caller
+    can reject it cleanly instead of crashing inside ``logging``'s ``setLevel``.
+    """
+    normalized = level.upper()
+    return normalized if normalized in LOG_LEVELS else None
+
 
 def configure_logging(level: str) -> None:
     """Point the root logger at ``stderr`` with ``_LOG_FORMAT`` at ``level``.
