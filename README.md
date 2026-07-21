@@ -47,6 +47,18 @@ pre-commit install
 
 The hook — configured in [`.pre-commit-config.yaml`](.pre-commit-config.yaml) — runs ruff + ruff-format on `server/` and `tests/` and eslint + prettier on `frontend/`. CI re-runs the same hooks so a commit that skipped the local hook is still caught.
 
+### Common tasks
+
+Day-to-day work runs through `make` (pass `PYTHON=python3.13` to run off-venv):
+
+- `make dev` — Uvicorn (`--reload`) + Vite dev with the `/api` proxy.
+- `make test` — pytest + `pnpm test`.
+- `make lint` — `ruff check` + `ruff format --check` + eslint.
+- `make build` — build the Python wheel.
+- `make package` — bundle the built SPA into the wheel (`_static/`) + wheel + sdist.
+- `make smoke` — install the built wheel in a throwaway venv and curl `/api/v1/health`.
+- `make clean` — remove build/dist artifacts and the copied SPA.
+
 ## License
 
 MIT. See [`LICENSE`](LICENSE).
