@@ -9,7 +9,7 @@
 #   3. runtime           — python-slim: pip-install the wheel as a non-root user.
 
 # --- Stage 1: build the static SPA ------------------------------------------
-FROM node:20-alpine AS frontend-builder
+FROM node:22-alpine AS frontend-builder
 WORKDIR /build/frontend
 
 # Dependency manifests first so the install layer caches independently of source
