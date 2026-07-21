@@ -1,0 +1,106 @@
+name: Release
+
+# Tag-driven publish: pushing a semver tag builds the wheel + sdist, publishes to
+# PyPI via trusted publishing, and cuts a GitHub Release. The tag is the source of
+# truth — it must equal factory_console.__version__ (guarded below) or the run
+# fails fast before anything is published.
+on:
+  push:
+    tags: ['v*.*.*']
+
+# One run per tag ref, and never cancel an in-flight publish: a half-finished
+# PyPI upload / GitHub Release must not be interrupted by a racing tag push.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# Least-privilege: no default token scopes at the top level. Each job opts into
+# exactly what it needs (build only reads; publish gets id-token + contents).
+permissions: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout only
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history + tags so downstream release-note generation has the
+          # complete tag graph to diff against.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          # Quoted so YAML keeps it a string ('3.12', not the float 3.12).
+          python-version: '3.12'
+
+      # pnpm must be on PATH BEFORE setup-node, whose `cache: pnpm` shells out to
+      # pnpm. There is no packageManager field in frontend/package.json, so the
+      # version must be pinned here (frontend uses pnpm 11).
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          # Node 22+: pnpm 11 (installed above) crashes on Node 20 with
+          # ERR_UNKNOWN_BUILTIN_MODULE — the same reason ci.yml and the
+          # Dockerfile's frontend-builder pin Node 22. Do not "fix" this back to 20.
+          node-version: 22
+          cache: pnpm
+          # Lockfile lives under frontend/, not the repo root.
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Assert tag matches package version
+        # The pushed tag (minus the leading `v`) must equal __version__, else the
+        # wheel would publish under a version nobody tagged. factory_console.__init__
+        # imports with no third-party deps, so no pip install is needed for this.
+        run: |
+          PYTHONPATH=server python -c 'import factory_console, sys; assert factory_console.__version__ == sys.argv[1], f"tag v{sys.argv[1]} does not match factory_console.__version__ {factory_console.__version__}"' "${GITHUB_REF_NAME#v}"
+
+      - name: Install the build backend
+        # scripts/package.sh runs `python -m build`; that backend is all this job
+        # needs beyond the guard (no `.[dev]`).
+        run: pip install build
+
+      - name: Install frontend dependencies
+        # Parity with ci.yml; warms the pnpm store so package.sh's re-install is a
+        # fast no-op.
+        run: pnpm --dir frontend install --frozen-lockfile
+
+      - name: Build wheel + sdist (bundles the SPA into _static/)
+        run: bash scripts/package.sh
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # Trusted-publishing identity + Release creation both run against this
+    # environment. A maintainer can point `pypi` at TestPyPI to rehearse a release.
+    environment: pypi
+    permissions:
+      id-token: write # PyPI trusted publishing (OIDC); no PYPI_API_TOKEN secret
+      contents: write # create the GitHub Release
+    steps:
+      - name: Download dist artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Publish to PyPI (trusted publishing, OIDC)
+        # Default packages-dir is dist/. No repository-url => production PyPI.
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
