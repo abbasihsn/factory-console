@@ -17,8 +17,9 @@ FE_PORT="${FE_PORT:-5173}"
 # editable install (pyproject only wires server/ onto the path for pytest).
 export PYTHONPATH="$ROOT/server${PYTHONPATH:+:$PYTHONPATH}"
 
-# T20 will swap create_app -> create_dev_app once create_app gains required args.
-uvicorn factory_console.app:create_app --factory --reload --port "$PY_PORT" --host 127.0.0.1 &
+# create_app now requires a file_adapter, so Uvicorn boots the zero-arg
+# create_dev_app factory, which discovers the project root and wires RealFileAdapter.
+uvicorn factory_console.app:create_dev_app --factory --reload --port "$PY_PORT" --host 127.0.0.1 &
 UVICORN_PID=$!
 
 cleanup() {

@@ -2,64 +2,44 @@
 
 [![CI](https://github.com/abbasihsn/factory-console/actions/workflows/ci.yml/badge.svg)](https://github.com/abbasihsn/factory-console/actions/workflows/ci.yml)
 
-A standalone local console that points at any App-Factory-generated project directory and lets you browse its tickets — status, title, description, and dependencies. Read-only in MVP; safe editing of `todo` tickets in v2.
+A standalone local console that points at any App-Factory-generated project directory and lets you browse its tickets — status, title, description, and dependencies. Read-only in the MVP; safe editing of `todo` tickets in v2.
 
-One command from any factory project directory:
+## Install
+
+Factory Console is a Python wheel on PyPI. Run it with no install via `uvx`, or install it with `pipx`:
 
 ```
+uvx factory-console            # run without installing
+pipx install factory-console   # install onto your PATH
+```
+
+## Quickstart
+
+From any App Factory project directory:
+
+```
+cd my-factory-project
 factory-console
 ```
 
-Opens a local browser tab (bound to `127.0.0.1`, no server infra, no cloud coupling) showing:
+Within a few seconds the console discovers the project, starts a local server on `127.0.0.1`, and prints the URL to open in your browser (no cloud, no server infra). The UI shows:
 
-- A searchable, filterable list of tickets.
-- A detail view with the rendered ticket `.md`, resolved `depends_on` / `provides`, and factory run-state badge.
-- A dep-neighborhood view showing direct deps and dependents as clickable lists.
+- A searchable, filterable list of every ticket (id / status / title / track).
+- A detail view with the rendered ticket `.md`, resolved `depends_on` / `provides`, and a factory run-state badge.
+- A dependency-neighborhood view listing direct deps and dependents as clickable links.
 
-## Status
-
-Planning complete. Foundation in progress — build the MVP tickets in `docs/planning/tickets/mvp/` in dependency order using `/ai-gh-orchestrate-plan`.
-
-## Roadmap
-
-- **MVP** — read-only browsing (list + detail + dep neighborhood).
-- **v1** — rendered dependency graph, roadmap view, cross-ticket search, file-watcher live updates.
-- **v2** — safe editing of `todo` tickets (in-flight / ready / merged remain read-only).
-
-Full detail in [`docs/planning/ROADMAP.md`](docs/planning/ROADMAP.md).
+Press Ctrl-C to stop. See [`docs/usage.md`](docs/usage.md) for flags, exit codes, and path resolution.
 
 ## Docs
 
-- [`docs/planning/VISION.md`](docs/planning/VISION.md) — problem, users, value prop, constraints.
-- [`docs/planning/ARCHITECTURE.md`](docs/planning/ARCHITECTURE.md) — architecture, tech stack, data model, contracts.
-- [`docs/planning/PROJECT_STRUCTURE.md`](docs/planning/PROJECT_STRUCTURE.md) — the directory tree.
-- [`docs/planning/ROADMAP.md`](docs/planning/ROADMAP.md) — milestones and the MVP ticket ladder.
-- [`docs/planning/tickets.json`](docs/planning/tickets.json) — machine-readable manifest.
-- [`docs/planning/tickets/mvp/`](docs/planning/tickets/mvp/) — one PR-sized plan per MVP ticket.
+- [`docs/usage.md`](docs/usage.md) — install, run, flags, exit codes.
+- [`docs/architecture.md`](docs/architecture.md) — the layered CLI → HTTP → Domain → FileAdapter design and its contracts.
+- [`docs/contributing.md`](docs/contributing.md) — dev loop, tests, packaging, and release.
+- [`docs/planning/`](docs/planning/) — the durable backbone: [`VISION.md`](docs/planning/VISION.md), [`ARCHITECTURE.md`](docs/planning/ARCHITECTURE.md), [`ROADMAP.md`](docs/planning/ROADMAP.md), and the [ticket manifest](docs/planning/tickets.json).
 
-## Development
+## Status
 
-Install the dev dependencies for both stacks, then install the git hook so linting and formatting run on every commit:
-
-```
-pip install -e ".[dev]"        # ruff + pre-commit (Python)
-pnpm --dir frontend install    # eslint + prettier (frontend)
-pre-commit install
-```
-
-The hook — configured in [`.pre-commit-config.yaml`](.pre-commit-config.yaml) — runs ruff + ruff-format on `server/` and `tests/` and eslint + prettier on `frontend/`. CI re-runs the same hooks so a commit that skipped the local hook is still caught.
-
-### Common tasks
-
-Day-to-day work runs through `make` (pass `PYTHON=python3.13` to run off-venv):
-
-- `make dev` — Uvicorn (`--reload`) + Vite dev with the `/api` proxy.
-- `make test` — pytest + `pnpm test`.
-- `make lint` — `ruff check` + `ruff format --check` + eslint.
-- `make build` — build the Python wheel.
-- `make package` — bundle the built SPA into the wheel (`_static/`) + wheel + sdist.
-- `make smoke` — install the built wheel in a throwaway venv and curl `/api/v1/health`.
-- `make clean` — remove build/dist artifacts and the copied SPA.
+Planning complete; the MVP is being built ticket-by-ticket from `docs/planning/tickets/mvp/` in dependency order. See [`docs/planning/ROADMAP.md`](docs/planning/ROADMAP.md) for the ladder.
 
 ## License
 

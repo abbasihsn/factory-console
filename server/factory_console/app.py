@@ -1,40 +1,83 @@
-"""Walking-skeleton FastAPI application factory.
+"""FastAPI application factory for Factory Console.
 
-Wires the minimal bootable console for the MVP: a single ``GET /api/v1/health``
-liveness probe plus optional static-file serving for the built SPA. Deliberately
-trivial — it exists to give backend an app to extend, CI a smoke target, and the
-frontend a ``/health`` endpoint to hit during dev.
+Builds the real, bootable app the CLI (T25) launches and every endpoint ticket
+extends. :func:`create_app` takes an injected
+:class:`~factory_console.file_adapter.protocol.FileAdapter` and stashes it — with
+the discovered ``project_root`` and the package ``version`` — on ``app.state`` so
+handlers reach the adapter through the ``Depends(get_file_adapter)`` seam without
+importing a concrete adapter. It wires the two cross-cutting concerns every
+endpoint relies on: the domain/validation exception handlers
+(:func:`~factory_console.api.error_handlers.register_error_handlers`) and a single
+access-log line per request (:class:`AccessLogMiddleware`). The packaged SPA is
+served last, unchanged from the walking skeleton.
 
-NOTE (next author): backend T20 REWRITES ``create_app`` to take a ``file_adapter``
-argument and to register the real v1 routers, exception handlers, and middleware;
-backend T24 moves ``/health`` into ``api/v1/health.py``. Keep this module a thin
-stub until then.
+:func:`create_dev_app` is the zero-arg factory ``scripts/dev.sh``'s
+``uvicorn --factory`` invocation targets; it discovers the project root and
+instantiates the filesystem-backed ``RealFileAdapter`` lazily, so importing this
+module never imports ``real.py`` (whose only runtime users are this dev shortcut
+and T25's production CLI).
 """
 
+from __future__ import annotations
+
+import logging
+import time
 from importlib import resources
+from pathlib import Path
 
 from fastapi import APIRouter, FastAPI
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.requests import Request
+from starlette.responses import Response
 
-import factory_console
+from factory_console.api.error_handlers import register_error_handlers
+from factory_console.file_adapter.protocol import FileAdapter
+from factory_console.logging import request_log_line
 
 # Every v1 route hangs off this prefix, so the health probe is served at
 # ``/api/v1/health`` and the schema at ``/api/v1/openapi.json``.
 API_V1_PREFIX = "/api/v1"
 
+# One access-log record per request is emitted on this named logger, so operators
+# (and the tests) can grep/filter request lines independently of application logs.
+_ACCESS_LOGGER = logging.getLogger("factory_console.access")
 
-def _build_v1_router() -> APIRouter:
-    """Return the v1 API router carrying the walking-skeleton ``/health`` probe."""
+
+class AccessLogMiddleware(BaseHTTPMiddleware):
+    """Emit exactly one ``factory_console.access`` log line per request.
+
+    Times the downstream handler with ``time.perf_counter()`` around
+    ``call_next`` and logs AFTER the response is produced (so the status code is
+    known), formatting the line with
+    :func:`~factory_console.logging.request_log_line`.
+    """
+
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        """Time the request and emit one access line once the handler returns."""
+        started = time.perf_counter()
+        response = await call_next(request)
+        dur_ms = (time.perf_counter() - started) * 1000
+        _ACCESS_LOGGER.info(
+            request_log_line(request.method, request.url.path, response.status_code, dur_ms)
+        )
+        return response
+
+
+def _build_v1_router(version: str) -> APIRouter:
+    """Return the v1 API router carrying the ``/health`` liveness probe.
+
+    Built locally (not in an ``api/v1`` package) so this ticket does not create a
+    contested aggregation file; subsequent tickets add their sub-routers. The
+    health body pins ``version`` to the value ``create_app`` was given — matching
+    ``app.state.version`` — and ``projectRoot`` stays ``None`` until T24 wires it.
+    """
     router = APIRouter(prefix=API_V1_PREFIX)
 
     @router.get("/health")
     def health() -> dict[str, object]:
         """Liveness probe: ``{ok, version, projectRoot}`` (projectRoot null until T24)."""
-        return {
-            "ok": True,
-            "version": factory_console.__version__,
-            "projectRoot": None,
-        }
+        return {"ok": True, "version": version, "projectRoot": None}
 
     return router
 
@@ -52,14 +95,45 @@ def _mount_static(app: FastAPI) -> None:
     app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
 
 
-def create_app() -> FastAPI:
-    """Build and return the walking-skeleton Factory Console app."""
+def create_app(file_adapter: FileAdapter, *, version: str, project_root: Path) -> FastAPI:
+    """Build the Factory Console app around an injected ``FileAdapter``.
+
+    ``file_adapter`` is stashed on ``app.state`` for the
+    ``Depends(get_file_adapter)`` seam, alongside ``project_root`` (the discovered
+    target project) and ``version``. Registers the domain/validation exception
+    handlers and the access-log middleware, includes the v1 router, and mounts the
+    packaged SPA last. ``project_root`` is non-optional: the CLI always discovers a
+    root before boot and tests always pass a fixture root.
+    """
     app = FastAPI(
         title="Factory Console",
-        version=factory_console.__version__,
+        version=version,
         openapi_url=f"{API_V1_PREFIX}/openapi.json",
-        docs_url=f"{API_V1_PREFIX}/docs",
+        docs_url=None,
+        redoc_url=None,
     )
-    app.include_router(_build_v1_router())
+    app.state.file_adapter = file_adapter
+    app.state.project_root = project_root
+    app.state.version = version
+
+    register_error_handlers(app)
+    app.add_middleware(AccessLogMiddleware)
+    app.include_router(_build_v1_router(version))
     _mount_static(app)
     return app
+
+
+def create_dev_app() -> FastAPI:
+    """Zero-arg app factory targeted by ``scripts/dev.sh``'s ``uvicorn --factory``.
+
+    Discovers the project root from the current working directory and wires the
+    filesystem-backed :class:`~factory_console.file_adapter.real.RealFileAdapter`.
+    The imports are lazy so importing this module never pulls in ``real.py`` — the
+    only runtime users of the real adapter are this dev shortcut and T25's CLI.
+    """
+    from factory_console import __version__
+    from factory_console.file_adapter.discovery import discover_project
+    from factory_console.file_adapter.real import RealFileAdapter
+
+    root = discover_project(None, Path.cwd())
+    return create_app(RealFileAdapter(), version=__version__, project_root=root)

@@ -13,7 +13,7 @@ import typer
 import uvicorn
 
 import factory_console
-from factory_console.app import create_app
+from factory_console.app import create_dev_app
 from factory_console.config import require_loopback_host
 from factory_console.logging import LOG_LEVELS, configure_logging, normalize_log_level
 
@@ -33,10 +33,11 @@ def main(
 
     ``--version`` prints the package version and exits 0. A non-loopback ``host``
     (127.0.0.1 trust boundary) or an unrecognized ``--log-level`` is rejected with
-    exit 2. Otherwise logging is configured and Uvicorn serves ``create_app()`` on
-    ``host``/``port``. Real path discovery, port handling, browser opening, and exit
-    codes arrive in backend T25; ``path`` and ``no_browser`` are accepted-but-unused
-    stubs for now.
+    exit 2. Otherwise logging is configured and Uvicorn serves the app built by
+    ``create_dev_app()`` (which discovers the project root from the current working
+    directory) on ``host``/``port``. Honoring an explicit ``path``, port handling,
+    browser opening, and the richer exit codes arrive in backend T25; ``path`` and
+    ``no_browser`` are accepted-but-unused stubs for now.
     """
     if version:
         typer.echo(factory_console.__version__)
@@ -54,4 +55,4 @@ def main(
         raise typer.Exit(2)
 
     configure_logging(normalized_log_level)
-    uvicorn.run(create_app(), host=host, port=port, log_level=normalized_log_level.lower())
+    uvicorn.run(create_dev_app(), host=host, port=port, log_level=normalized_log_level.lower())
