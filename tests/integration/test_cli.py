@@ -36,3 +36,18 @@ def test_boot_configures_logging_and_runs_uvicorn(monkeypatch: pytest.MonkeyPatc
     assert result.exit_code == 0
     assert calls["log_level"] == "DEBUG"
     assert calls["run_kwargs"] == {"host": "127.0.0.1", "port": 8765, "log_level": "debug"}
+
+
+def test_non_loopback_host_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    booted = False
+
+    def fake_run(_app: object, **kwargs: object) -> None:
+        nonlocal booted
+        booted = True
+
+    monkeypatch.setattr("factory_console.cli.uvicorn.run", fake_run)
+
+    result = runner.invoke(app, ["--host", "0.0.0.0"])
+
+    assert result.exit_code != 0
+    assert not booted

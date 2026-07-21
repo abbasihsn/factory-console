@@ -14,6 +14,7 @@ import uvicorn
 
 import factory_console
 from factory_console.app import create_app
+from factory_console.config import LOOPBACK_HOSTS
 from factory_console.logging import configure_logging
 
 app = typer.Typer(add_completion=False)
@@ -30,7 +31,8 @@ def main(
 ) -> None:
     """Boot the walking-skeleton Factory Console server (or print the version).
 
-    ``--version`` prints the package version and exits 0. Otherwise logging is
+    ``--version`` prints the package version and exits 0. A non-loopback ``host``
+    is rejected (exit 2) to hold the 127.0.0.1 trust boundary. Otherwise logging is
     configured and Uvicorn serves ``create_app()`` on ``host``/``port``. Real path
     discovery, port handling, browser opening, and exit codes arrive in backend
     T25; ``path`` and ``no_browser`` are accepted-but-unused stubs for now.
@@ -38,6 +40,13 @@ def main(
     if version:
         typer.echo(factory_console.__version__)
         raise typer.Exit(0)
+
+    if host not in LOOPBACK_HOSTS:
+        typer.echo(
+            f"host must be a loopback address {sorted(LOOPBACK_HOSTS)}, got {host!r}",
+            err=True,
+        )
+        raise typer.Exit(2)
 
     configure_logging(log_level)
     uvicorn.run(create_app(), host=host, port=port, log_level=log_level.lower())
