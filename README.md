@@ -1,5 +1,7 @@
 # Factory Console
 
+[![CI](https://github.com/abbasihsn/factory-console/actions/workflows/ci.yml/badge.svg)](https://github.com/abbasihsn/factory-console/actions/workflows/ci.yml)
+
 A standalone local console that points at any App-Factory-generated project directory and lets you browse its tickets — status, title, description, and dependencies. Read-only in MVP; safe editing of `todo` tickets in v2.
 
 One command from any factory project directory:

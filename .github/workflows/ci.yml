@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request: {}
+
+# One in-flight run per ref; a new push cancels the stale run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        # Quoted so YAML keeps them as strings ('3.11', not the float 3.1).
+        python: ['3.11', '3.12']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          # No requirements.txt in this repo; hash pyproject.toml instead so the
+          # pip cache has a dependency file to key on (else setup-python errors).
+          cache-dependency-path: pyproject.toml
+
+      # pnpm must be on PATH BEFORE setup-node, whose `cache: pnpm` shells out to
+      # pnpm. There is no packageManager field in frontend/package.json, so the
+      # version must be pinned here (frontend uses pnpm 11).
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          # Lockfile lives under frontend/, not the repo root.
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install Python package (dev extras)
+        run: pip install -e '.[dev]'
+
+      - name: Install frontend dependencies
+        run: pnpm --dir frontend install --frozen-lockfile
+
+      - name: Lint (pre-commit, all files)
+        run: pre-commit run --all-files
+
+      - name: Python tests + coverage
+        run: pytest -q --cov=factory_console --cov-report=xml
+
+      - name: Frontend tests
+        run: pnpm --dir frontend test
+
+      - name: Build wheel + sdist (bundles the SPA into _static/)
+        run: bash scripts/package.sh
+
+      - name: Smoke-test the packaged wheel
+        # Reuses scripts/smoke.sh, which installs the newest dist/*.whl (built by
+        # the previous step) into a throwaway venv, boots the console on --port 0,
+        # and curls /api/v1/health.
+        run: bash scripts/smoke.sh
+
+      - name: Playwright e2e (conditional; skips until fixtures + config land)
+        run: |
+          if [ -d tests/fixtures/projects/with_run_state ] && [ -f frontend/playwright.config.ts ]; then
+            pnpm --dir frontend exec playwright install --with-deps chromium && pnpm --dir frontend e2e
+          fi
+
+      - name: Upload coverage report
+        # Unique name per matrix cell — upload-artifact@v4 errors on duplicate
+        # names. always() so it still runs if a prior step failed after coverage
+        # was written.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.os }}-${{ matrix.python }}
+          path: coverage.xml
+          if-no-files-found: error
