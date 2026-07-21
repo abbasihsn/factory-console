@@ -52,6 +52,11 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM"]
 [tool.ruff.lint.isort]
 known-first-party = ["factory_console"]
 
+[tool.ruff.lint.flake8-bugbear]
+# Typer's Argument()/Option() are the framework's required default-factories for
+# CLI parameters, so calling them in argument defaults is the intended idiom (not B008).
+extend-immutable-calls = ["typer.Argument", "typer.Option"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["server"]
