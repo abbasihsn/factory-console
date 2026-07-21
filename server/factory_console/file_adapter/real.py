@@ -17,10 +17,12 @@ watcher (see ``ARCHITECTURE.md`` "every request re-reads"). It is also strictly
 creates, writes, or deletes anything under the target project.
 
 The list view (:meth:`RealFileAdapter.list_tickets`) and the dependency view
-(:meth:`RealFileAdapter.get_deps`) share ONE per-request projection
-(:class:`_ManifestProjection`) — mirroring
-:class:`~factory_console.file_adapter.fake.FakeFileAdapter` — so a ticket's
-``runState`` and edge counts can never disagree between the two views.
+(:meth:`RealFileAdapter.get_deps`) share ONE per-request
+:class:`~factory_console.file_adapter.projection.TicketProjection` — the SAME
+projection class the
+:class:`~factory_console.file_adapter.fake.FakeFileAdapter` uses, with only the
+run-state source injected differently — so a ticket's ``runState`` and edge
+counts can never disagree between the two views or drift from the fake.
 """
 
 from __future__ import annotations
@@ -39,86 +41,12 @@ from factory_console.domain import (
 from factory_console.file_adapter.discovery import find_project_root
 from factory_console.file_adapter.manifest import iter_ticket_stubs
 from factory_console.file_adapter.markdown_render import render_markdown, render_ticket_html
+from factory_console.file_adapter.projection import TicketProjection
 from factory_console.file_adapter.run_state import find_run_state_dir, probe_ticket_state
 from factory_console.file_adapter.ticket_md import enrich_ticket
 
 _ROADMAP_RELPATHS = (Path("ROADMAP.md"), Path("docs") / "ROADMAP.md")
 """Documented roadmap locations, probed in order: project root, then ``docs/``."""
-
-
-class _ManifestProjection:
-    """Per-request projection of a project's manifest to :class:`TicketSummary`.
-
-    Built once per :meth:`RealFileAdapter.list_tickets` /
-    :meth:`RealFileAdapter.get_deps` call from the materialized manifest stubs,
-    this is the SINGLE source of the ticket projection shared by both views
-    (mirroring :class:`~factory_console.file_adapter.fake.FakeFileAdapter`'s
-    in-memory indexes) so the list view and the dependency view can never drift.
-    It holds a ``{id: Ticket}`` lookup and a reverse ``{id: [dependent Ticket]}``
-    index in manifest order with self-edges excluded, and probes the run-state
-    directory on demand in :meth:`summarize`.
-    """
-
-    def __init__(self, project: Project, tickets: list[Ticket]) -> None:
-        self._project = project
-        self._tickets = tickets
-        self._by_id: dict[str, Ticket] = {ticket.id: ticket for ticket in tickets}
-        self._dependents: dict[str, list[Ticket]] = {}
-        for ticket in tickets:
-            for dep_id in ticket.dependsOn:
-                if dep_id == ticket.id:
-                    continue  # a ticket is never its own dependent
-                self._dependents.setdefault(dep_id, []).append(ticket)
-
-    def summarize(self, ticket: Ticket) -> TicketSummary:
-        """Project one manifest ``ticket`` to its :class:`TicketSummary`.
-
-        The single shared projection used by BOTH views. ``runState`` is resolved
-        by probing the project's run-state directory; ``depCount`` counts ALL
-        declared deps (dangling ids included) while ``dependentCount`` reads the
-        reverse index (only OTHER tickets that name this id) — the two derived
-        semantics pinned by :class:`FakeFileAdapter`.
-        """
-        return TicketSummary(
-            id=ticket.id,
-            title=ticket.title,
-            status=ticket.status,
-            track=ticket.track,
-            milestone=ticket.milestone,
-            runState=probe_ticket_state(self._project.runStateDir, ticket.id),
-            depCount=len(ticket.dependsOn),
-            dependentCount=len(self._dependents.get(ticket.id, [])),
-        )
-
-    def summaries(self) -> list[TicketSummary]:
-        """Return a :class:`TicketSummary` for every ticket, in manifest order."""
-        return [self.summarize(ticket) for ticket in self._tickets]
-
-    def ticket_for(self, ticket_id: str) -> Ticket | None:
-        """Return the manifest ticket with ``id == ticket_id``, or ``None`` if absent."""
-        return self._by_id.get(ticket_id)
-
-    def neighborhood(self, ticket: Ticket) -> DepNeighborhood:
-        """Build the :class:`DepNeighborhood` for a manifest ``ticket``.
-
-        ``directDeps`` are the summaries of each ``dependsOn`` id that resolves to
-        a manifest ticket (in ``dependsOn`` order); ``unresolvedDeps`` are the ids
-        with no matching ticket (same order); ``directDependents`` are the OTHER
-        tickets that depend on this one (in manifest order). Every summary comes
-        from :meth:`summarize`, so it matches the list view.
-        """
-        return DepNeighborhood(
-            ticket=self.summarize(ticket),
-            directDeps=[
-                self.summarize(self._by_id[dep_id])
-                for dep_id in ticket.dependsOn
-                if dep_id in self._by_id
-            ],
-            directDependents=[
-                self.summarize(dependent) for dependent in self._dependents.get(ticket.id, [])
-            ],
-            unresolvedDeps=[dep_id for dep_id in ticket.dependsOn if dep_id not in self._by_id],
-        )
 
 
 class RealFileAdapter:
@@ -235,10 +163,15 @@ class RealFileAdapter:
         return None
 
     @staticmethod
-    def _project_manifest(project: Project) -> _ManifestProjection:
+    def _project_manifest(project: Project) -> TicketProjection:
         """Materialize the manifest stubs and wrap them in a per-request projection.
 
-        A :class:`~factory_console.file_adapter.manifest.MalformedManifest` from
-        the manifest read propagates to the caller.
+        Run-state is resolved lazily by probing the project's run-state directory,
+        the one behavioral difference from the fake adapter's seeded-map lookup. A
+        :class:`~factory_console.file_adapter.manifest.MalformedManifest` from the
+        manifest read propagates to the caller.
         """
-        return _ManifestProjection(project, list(iter_ticket_stubs(project)))
+        return TicketProjection(
+            list(iter_ticket_stubs(project)),
+            run_state_for=lambda ticket_id: probe_ticket_state(project.runStateDir, ticket_id),
+        )

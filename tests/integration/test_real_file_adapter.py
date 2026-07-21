@@ -212,6 +212,16 @@ def test_get_roadmap_returns_rendered_roadmap() -> None:
     assert "<h1>" in roadmap.bodyHtml
 
 
+def test_get_roadmap_returns_none_when_project_has_no_roadmap() -> None:
+    # The malformed fixture has no ROADMAP.md at the root or under docs/, so
+    # load_project resolves roadmapPath to None and get_roadmap short-circuits to
+    # None — parity with the fake adapter, which pins the same None-path.
+    adapter = RealFileAdapter()
+    project = adapter.load_project(MALFORMED)
+    assert project.roadmapPath is None
+    assert adapter.get_roadmap(project) is None
+
+
 # --------------------------------------------------------------------------- #
 # malformed manifest
 # --------------------------------------------------------------------------- #

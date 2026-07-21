@@ -44,7 +44,10 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Node 22+: pnpm 11 (installed above) crashes on Node 20 with
+          # ERR_UNKNOWN_BUILTIN_MODULE — the same reason the Dockerfile's
+          # frontend-builder is on node:22-alpine (see commit 6870e07).
+          node-version: 22
           cache: pnpm
           # Lockfile lives under frontend/, not the repo root.
           cache-dependency-path: frontend/pnpm-lock.yaml
@@ -89,3 +92,21 @@ jobs:
           name: coverage-${{ matrix.os }}-${{ matrix.python }}
           path: coverage.xml
           if-no-files-found: error
+
+  docker:
+    # Build and smoke-test the multi-stage image so the Dockerfile can't ship
+    # untested behind a green check. ubuntu-only: the hosted macOS runner has no
+    # Docker daemon. Independent of the `test` matrix job, so it can't affect it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -t factory-console:ci .
+
+      - name: Smoke-test the runtime image
+        # Exercises the packaged entrypoint end-to-end: `--version` boots the
+        # installed console far enough to print the wheel version and exit 0,
+        # proving the wheel installed and the entrypoint resolves in the runtime
+        # stage.
+        run: docker run --rm factory-console:ci --version

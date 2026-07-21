@@ -6,8 +6,13 @@ answers every :class:`~factory_console.file_adapter.protocol.FileAdapter` method
 as a pure read over that in-memory data — no filesystem access, no I/O, and no
 mutation of the seeded values.
 
-Two derived semantics are pinned here (and covered by the unit tests) so the
-list view and the dependency view can never disagree:
+The list view and the dependency view share ONE
+:class:`~factory_console.file_adapter.projection.TicketProjection` — the SAME
+projection class the real, filesystem-backed adapter uses, with only the
+run-state source injected differently (a seeded-map lookup here, an on-disk probe
+there) — so the two views can never disagree and cannot drift from the real
+adapter. The two derived semantics that projection pins (and the unit tests
+cover):
 
 * ``depCount`` is ``len(ticket.dependsOn)`` — the count of ALL declared direct
   dependencies, including ids that do not resolve to a seeded ticket (a dangling
@@ -30,6 +35,7 @@ from factory_console.domain import (
     Ticket,
     TicketSummary,
 )
+from factory_console.file_adapter.projection import TicketProjection
 
 
 class FakeFileAdapter:
@@ -51,39 +57,19 @@ class FakeFileAdapter:
 
         ``run_states`` is normalized to ``{}`` when ``None`` (every ticket then
         resolves to :attr:`RunState.unknown`). The seeded ``tickets`` order is
-        preserved for every list-shaped result; a ``{id: Ticket}`` index gives
-        O(1) lookup and a reverse ``{id: [dependent Ticket]}`` index (seeded
-        order, self-edges excluded) backs ``dependentCount`` / ``directDependents``.
+        preserved for every list-shaped result; the shared
+        :class:`~factory_console.file_adapter.projection.TicketProjection` builds
+        the ``{id: Ticket}`` lookup and the reverse dependents index and backs
+        both the list and dependency views, with run-state resolved from the
+        seeded map.
         """
         self._project = project
         self._tickets = tickets
         self._run_states = {} if run_states is None else run_states
         self._roadmap = roadmap
-        self._by_id: dict[str, Ticket] = {ticket.id: ticket for ticket in tickets}
-        self._dependents: dict[str, list[Ticket]] = {}
-        for ticket in tickets:
-            for dep_id in ticket.dependsOn:
-                if dep_id == ticket.id:
-                    continue  # a ticket is never its own dependent
-                self._dependents.setdefault(dep_id, []).append(ticket)
-
-    def _summarize(self, ticket: Ticket) -> TicketSummary:
-        """Project a seeded :class:`Ticket` to its :class:`TicketSummary`.
-
-        Single source of the projection, used by BOTH :meth:`list_tickets` and
-        :meth:`get_deps`, so the two views cannot drift. ``depCount`` counts all
-        declared deps (dangling included); ``dependentCount`` reads the reverse
-        index (other seeded tickets that depend on this one).
-        """
-        return TicketSummary(
-            id=ticket.id,
-            title=ticket.title,
-            status=ticket.status,
-            track=ticket.track,
-            milestone=ticket.milestone,
-            runState=self._run_states.get(ticket.id, RunState.unknown),
-            depCount=len(ticket.dependsOn),
-            dependentCount=len(self._dependents.get(ticket.id, [])),
+        self._projection = TicketProjection(
+            tickets,
+            run_state_for=lambda ticket_id: self._run_states.get(ticket_id, RunState.unknown),
         )
 
     def load_project(self, root: Path) -> Project:
@@ -96,11 +82,11 @@ class FakeFileAdapter:
 
     def list_tickets(self, project: Project) -> list[TicketSummary]:
         """Return a :class:`TicketSummary` for every seeded ticket, in seeded order."""
-        return [self._summarize(ticket) for ticket in self._tickets]
+        return self._projection.summaries()
 
     def get_ticket(self, project: Project, ticket_id: str) -> Ticket | None:
         """Return the seeded :class:`Ticket` for ``ticket_id``, or ``None`` if unseeded."""
-        return self._by_id.get(ticket_id)
+        return self._projection.ticket_for(ticket_id)
 
     def get_deps(self, project: Project, ticket_id: str) -> DepNeighborhood | None:
         """Return the :class:`DepNeighborhood` for ``ticket_id``, or ``None`` if unseeded.
@@ -111,21 +97,10 @@ class FakeFileAdapter:
         are the summaries of every OTHER seeded ticket that depends on
         ``ticket_id`` (in seeded order).
         """
-        ticket = self._by_id.get(ticket_id)
+        ticket = self._projection.ticket_for(ticket_id)
         if ticket is None:
             return None
-        return DepNeighborhood(
-            ticket=self._summarize(ticket),
-            directDeps=[
-                self._summarize(self._by_id[dep_id])
-                for dep_id in ticket.dependsOn
-                if dep_id in self._by_id
-            ],
-            directDependents=[
-                self._summarize(dependent) for dependent in self._dependents.get(ticket_id, [])
-            ],
-            unresolvedDeps=[dep_id for dep_id in ticket.dependsOn if dep_id not in self._by_id],
-        )
+        return self._projection.neighborhood(ticket)
 
     def read_run_state(self, project: Project, ticket_id: str) -> RunState:
         """Return the seeded run-state for ``ticket_id``, else :attr:`RunState.unknown`.

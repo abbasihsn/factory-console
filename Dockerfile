@@ -1,4 +1,4 @@
-# Multi-stage build for a hermetic, reproducible `factory-console` image.
+# Multi-stage build for a lean, self-contained `factory-console` image.
 #
 # Mirrors scripts/package.sh: build the SPA, bake it into the package's
 # _static/ directory, then build and install the wheel. Three stages keep the
@@ -7,6 +7,11 @@
 #   1. frontend-builder — node: build the Svelte SPA (static output).
 #   2. wheel-builder     — python: bake the SPA into _static/, build the wheel.
 #   3. runtime           — python-slim: pip-install the wheel as a non-root user.
+#
+# Base images are pinned to major-version tags (node:22-alpine, python:3.12-slim)
+# rather than digests: this image is a convenience runtime, not the primary
+# distribution (see ARCHITECTURE.md), so it favors picking up upstream security
+# patches over bit-for-bit reproducibility.
 
 # --- Stage 1: build the static SPA ------------------------------------------
 FROM node:22-alpine AS frontend-builder
