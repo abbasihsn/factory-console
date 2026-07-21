@@ -25,7 +25,6 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from factory_console.domain import TICKET_ID_PATTERN
 from factory_console.errors import FactoryConsoleError, to_error_response
 from factory_console.file_adapter.path_safety import PathTraversal
 
@@ -78,21 +77,18 @@ def register_error_handlers(app: FastAPI) -> None:
         errors = exc.errors()
         offending = _ticket_id_pattern_violation(errors)
         if offending is not None:
-            traversal = PathTraversal(
-                str(offending.get("input")),
-                reason=f"Ticket id must match {TICKET_ID_PATTERN}",
-            )
+            traversal = PathTraversal.from_pattern_violation(str(offending.get("input")))
             return JSONResponse(
                 status_code=traversal.status,
                 content=to_error_response(traversal),
             )
+        validation_error = FactoryConsoleError(
+            code="validation_error",
+            message="Request validation failed",
+            status=422,
+            details=jsonable_encoder(errors),
+        )
         return JSONResponse(
-            status_code=422,
-            content={
-                "error": {
-                    "code": "validation_error",
-                    "message": "Request validation failed",
-                    "details": jsonable_encoder(errors),
-                }
-            },
+            status_code=validation_error.status,
+            content=to_error_response(validation_error),
         )

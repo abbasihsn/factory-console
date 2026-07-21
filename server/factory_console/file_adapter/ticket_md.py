@@ -32,7 +32,6 @@ _TICKET_ID_RE = re.compile(TICKET_ID_PATTERN)
 _FENCE = "---"
 """A front-matter fence line — exactly three dashes on their own line."""
 
-_ID_PATTERN_VIOLATION = f"Ticket id must match {TICKET_ID_PATTERN}"
 _ID_ESCAPES_ROOT = "Ticket id resolves outside the project root"
 
 
@@ -60,7 +59,7 @@ def _safe_resolve(project: Project, ticket_id: str) -> Path:
     ``/tmp`` and ``/var/folders`` on macOS) don't cause a false negative.
     """
     if _TICKET_ID_RE.fullmatch(ticket_id) is None:
-        raise PathTraversal(ticket_id, reason=_ID_PATTERN_VIOLATION)
+        raise PathTraversal.from_pattern_violation(ticket_id)
     candidate = (project.ticketsDir / f"{ticket_id}.md").resolve(strict=False)
     if not candidate.is_relative_to(project.rootPath.resolve()):
         raise PathTraversal(ticket_id, reason=_ID_ESCAPES_ROOT)

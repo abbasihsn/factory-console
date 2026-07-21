@@ -22,7 +22,7 @@ cd my-factory-project
 factory-console
 ```
 
-Within a few seconds the console discovers the project, starts a local server on `127.0.0.1`, prints the URL, and opens a browser tab (no cloud, no server infra) showing:
+Within a few seconds the console discovers the project, starts a local server on `127.0.0.1`, and prints the URL to open in your browser (no cloud, no server infra). The UI shows:
 
 - A searchable, filterable list of every ticket (id / status / title / track).
 - A detail view with the rendered ticket `.md`, resolved `depends_on` / `provides`, and a factory run-state badge.

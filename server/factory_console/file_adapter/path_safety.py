@@ -11,9 +11,11 @@ than only one module's copy.
 
 from __future__ import annotations
 
+from factory_console.domain.ticket import TICKET_ID_PATTERN
 from factory_console.errors import FactoryConsoleError
 
 _DEFAULT_REASON = "ticket id failed path-safety validation"
+_PATTERN_VIOLATION_REASON = f"Ticket id must match {TICKET_ID_PATTERN}"
 
 
 class PathTraversal(FactoryConsoleError):
@@ -35,3 +37,16 @@ class PathTraversal(FactoryConsoleError):
             status=400,
             details={"ticketId": ticket_id},
         )
+
+    @classmethod
+    def from_pattern_violation(cls, ticket_id: str) -> PathTraversal:
+        """Build the ``invalid_ticket_id`` error for an id that fails the id pattern.
+
+        The single owner of the pattern-violation message, shared by the
+        file-adapter re-validation (:mod:`~factory_console.file_adapter.ticket_md`)
+        and the HTTP ``Path``-boundary rejection
+        (:mod:`~factory_console.api.error_handlers`), so the ``invalid_ticket_id``
+        envelope is identical whether an id is rejected at the edge or deeper in
+        resolution — the message is defined here once, never restated at a call site.
+        """
+        return cls(ticket_id, reason=_PATTERN_VIOLATION_REASON)

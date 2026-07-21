@@ -72,6 +72,13 @@ jobs:
       - name: Build wheel + sdist (bundles the SPA into _static/)
         run: bash scripts/package.sh
 
+      - name: Smoke-test the packaged wheel
+        # Boot the freshly built wheel (install into a throwaway venv, --port 0,
+        # curl /api/v1/health) BEFORE it can reach the publish job. PyPI versions
+        # are irreversible, so a wheel whose entrypoint crashes on launch must never
+        # be published. Reuses scripts/smoke.sh, exactly as ci.yml does.
+        run: bash scripts/smoke.sh
+
       - name: Upload dist artifact
         uses: actions/upload-artifact@v4
         with:

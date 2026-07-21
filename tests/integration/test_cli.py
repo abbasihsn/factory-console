@@ -30,9 +30,9 @@ def test_boot_configures_logging_and_runs_uvicorn(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr("factory_console.cli.uvicorn.run", fake_run)
     monkeypatch.setattr("factory_console.cli.configure_logging", fake_configure)
-    # T20 gave create_app a required file_adapter arg; cli.py still calls it zero-arg
-    # (full wiring lands in T25), so stub it here to keep the boot path testable.
-    monkeypatch.setattr("factory_console.cli.create_app", lambda: object())
+    # The CLI boots the zero-arg create_dev_app factory; stub it so the boot path is
+    # exercised without discovering a real project or wiring the filesystem adapter.
+    monkeypatch.setattr("factory_console.cli.create_dev_app", lambda: object())
 
     result = runner.invoke(app, ["--port", "8765", "--log-level", "DEBUG"])
 
@@ -54,9 +54,9 @@ def test_lowercase_log_level_is_normalized_and_boots(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr("factory_console.cli.uvicorn.run", fake_run)
     monkeypatch.setattr("factory_console.cli.configure_logging", fake_configure)
-    # T20 gave create_app a required file_adapter arg; cli.py still calls it zero-arg
-    # (full wiring lands in T25), so stub it here to keep the boot path testable.
-    monkeypatch.setattr("factory_console.cli.create_app", lambda: object())
+    # The CLI boots the zero-arg create_dev_app factory; stub it so the boot path is
+    # exercised without discovering a real project or wiring the filesystem adapter.
+    monkeypatch.setattr("factory_console.cli.create_dev_app", lambda: object())
 
     result = runner.invoke(app, ["--log-level", "debug"])
 
