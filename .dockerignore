@@ -1,0 +1,49 @@
+# Keep the build context minimal and hermetic. Only pyproject.toml, README.md,
+# LICENSE, server/, and frontend/ sources are build inputs; everything the
+# stages regenerate (deps, SPA build, _static/, wheel) is excluded.
+
+# Version control & tooling metadata
+.git
+.github
+.factory
+.claude
+
+# Python caches, build dirs, and packaging artifacts (rebuilt in-image)
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+.eggs
+.venv
+venv
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+coverage.xml
+htmlcov
+dist
+build
+
+# Node deps and SPA build output (regenerated in the frontend-builder stage)
+**/node_modules
+frontend/node_modules
+frontend/build
+frontend/.svelte-kit
+frontend/.vite
+frontend/coverage
+frontend/playwright-report
+frontend/test-results
+
+# The SPA is baked into the package inside the wheel-builder stage, never from
+# the build context.
+server/factory_console/_static
+
+# Tests and planning docs are not build inputs
+tests
+docs/planning
+
+# OS / editor noise
+.DS_Store
+.idea
+.vscode
+*.swp
