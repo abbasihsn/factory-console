@@ -14,8 +14,8 @@ import uvicorn
 
 import factory_console
 from factory_console.app import create_app
-from factory_console.config import LOOPBACK_HOSTS
-from factory_console.logging import configure_logging
+from factory_console.config import require_loopback_host
+from factory_console.logging import LOG_LEVELS, configure_logging, normalize_log_level
 
 app = typer.Typer(add_completion=False)
 
@@ -32,21 +32,26 @@ def main(
     """Boot the walking-skeleton Factory Console server (or print the version).
 
     ``--version`` prints the package version and exits 0. A non-loopback ``host``
-    is rejected (exit 2) to hold the 127.0.0.1 trust boundary. Otherwise logging is
-    configured and Uvicorn serves ``create_app()`` on ``host``/``port``. Real path
-    discovery, port handling, browser opening, and exit codes arrive in backend
-    T25; ``path`` and ``no_browser`` are accepted-but-unused stubs for now.
+    (127.0.0.1 trust boundary) or an unrecognized ``--log-level`` is rejected with
+    exit 2. Otherwise logging is configured and Uvicorn serves ``create_app()`` on
+    ``host``/``port``. Real path discovery, port handling, browser opening, and exit
+    codes arrive in backend T25; ``path`` and ``no_browser`` are accepted-but-unused
+    stubs for now.
     """
     if version:
         typer.echo(factory_console.__version__)
         raise typer.Exit(0)
 
-    if host not in LOOPBACK_HOSTS:
-        typer.echo(
-            f"host must be a loopback address {sorted(LOOPBACK_HOSTS)}, got {host!r}",
-            err=True,
-        )
+    try:
+        require_loopback_host(host)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+
+    normalized_log_level = normalize_log_level(log_level)
+    if normalized_log_level is None:
+        typer.echo(f"log level must be one of {list(LOG_LEVELS)}, got {log_level!r}", err=True)
         raise typer.Exit(2)
 
-    configure_logging(log_level)
-    uvicorn.run(create_app(), host=host, port=port, log_level=log_level.lower())
+    configure_logging(normalized_log_level)
+    uvicorn.run(create_app(), host=host, port=port, log_level=normalized_log_level.lower())

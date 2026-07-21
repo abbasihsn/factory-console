@@ -24,6 +24,7 @@ import yaml
 from factory_console.domain.project import Project
 from factory_console.domain.ticket import TICKET_ID_PATTERN, Ticket
 from factory_console.errors import FactoryConsoleError
+from factory_console.file_adapter.path_safety import PathTraversal
 
 _TICKET_ID_RE = re.compile(TICKET_ID_PATTERN)
 """The canonical ticket-id pattern compiled once at import for re-validation."""
@@ -33,26 +34,6 @@ _FENCE = "---"
 
 _ID_PATTERN_VIOLATION = f"Ticket id must match {TICKET_ID_PATTERN}"
 _ID_ESCAPES_ROOT = "Ticket id resolves outside the project root"
-
-
-class PathTraversal(FactoryConsoleError):
-    """A ticket id is unsafe to resolve to a filesystem path.
-
-    Raised both when the id violates :data:`TICKET_ID_PATTERN` and when its
-    resolved path escapes the project root; both map to the SAME transport
-    contract (status 400, ``invalid_ticket_id``) so the edge layer rejects every
-    unsafe id uniformly. ``details`` echoes the offending ``ticketId`` (already
-    user-supplied input) but never the resolved absolute path, which would
-    disclose the server's filesystem layout.
-    """
-
-    def __init__(self, ticket_id: str, *, reason: str = _ID_PATTERN_VIOLATION) -> None:
-        super().__init__(
-            code="invalid_ticket_id",
-            message=reason,
-            status=400,
-            details={"ticketId": ticket_id},
-        )
 
 
 class TicketFileMissing(FactoryConsoleError):
@@ -79,7 +60,7 @@ def _safe_resolve(project: Project, ticket_id: str) -> Path:
     ``/tmp`` and ``/var/folders`` on macOS) don't cause a false negative.
     """
     if _TICKET_ID_RE.fullmatch(ticket_id) is None:
-        raise PathTraversal(ticket_id)
+        raise PathTraversal(ticket_id, reason=_ID_PATTERN_VIOLATION)
     candidate = (project.ticketsDir / f"{ticket_id}.md").resolve(strict=False)
     if not candidate.is_relative_to(project.rootPath.resolve()):
         raise PathTraversal(ticket_id, reason=_ID_ESCAPES_ROOT)

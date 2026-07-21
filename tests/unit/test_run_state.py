@@ -133,6 +133,17 @@ def test_traversal_ticket_id_is_refused(tmp_path: Path, bad_id: str) -> None:
         probe_ticket_state(run_state_dir, bad_id)
 
 
+def test_path_traversal_uses_the_uniform_invalid_ticket_id_contract() -> None:
+    # run_state and ticket_md must raise the SAME PathTraversal with the uniform
+    # ``invalid_ticket_id`` code (per ARCHITECTURE.md), not two divergent classes.
+    from factory_console.file_adapter.ticket_md import PathTraversal as TicketMdPathTraversal
+
+    exc = PathTraversal("../etc/passwd")
+    assert exc.code == "invalid_ticket_id"
+    assert exc.status == 400
+    assert PathTraversal is TicketMdPathTraversal
+
+
 # --------------------------------------------------------------------------- #
 # find_run_state_dir — fallback probe order
 # --------------------------------------------------------------------------- #

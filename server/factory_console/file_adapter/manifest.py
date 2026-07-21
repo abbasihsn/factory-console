@@ -76,7 +76,8 @@ def load_manifest(manifest_path: Path) -> tuple[str | None, list[dict[str, Any]]
 
     Raises:
         MalformedManifest: if the file is not valid JSON, the top level is not a
-            JSON object, or ``tickets`` is missing or not a list.
+            JSON object, ``tickets`` is missing or not a list, or any ``tickets``
+            entry is not a JSON object.
     """
     with open(manifest_path, encoding="utf-8") as manifest_file:
         raw_text = manifest_file.read()
@@ -91,6 +92,12 @@ def load_manifest(manifest_path: Path) -> tuple[str | None, list[dict[str, Any]]
     if not isinstance(tickets, list):
         cause = ValueError(f"'tickets' must be a list, got {type(tickets).__name__}")
         raise MalformedManifest(manifest_path, cause=cause) from cause
+    for index, entry in enumerate(tickets):
+        if not isinstance(entry, dict):
+            cause = ValueError(
+                f"'tickets'[{index}] must be a JSON object, got {type(entry).__name__}"
+            )
+            raise MalformedManifest(manifest_path, cause=cause) from cause
     schema_version = parsed.get("schemaVersion")
     schema_version_str = None if schema_version is None else str(schema_version)
     return schema_version_str, tickets

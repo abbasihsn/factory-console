@@ -207,3 +207,19 @@ def test_load_manifest_raises_when_top_level_is_not_an_object(tmp_path: Path) ->
     manifest_path.write_text(json.dumps(["not", "an", "object"]), encoding="utf-8")
     with pytest.raises(MalformedManifest):
         load_manifest(manifest_path)
+
+
+@pytest.mark.parametrize(
+    "tickets",
+    [[42], [{"id": "TM-001"}, "oops"], [None]],
+    ids=["scalar-entry", "mixed-list", "null-entry"],
+)
+def test_load_manifest_raises_when_an_entry_is_not_an_object(
+    tmp_path: Path, tickets: list[object]
+) -> None:
+    # A non-dict entry must surface as MalformedManifest (the documented envelope),
+    # not a bare TypeError leaking out of manifest_entry_to_ticket_stub downstream.
+    manifest_path = tmp_path / "tickets.json"
+    manifest_path.write_text(json.dumps({"tickets": tickets}), encoding="utf-8")
+    with pytest.raises(MalformedManifest):
+        load_manifest(manifest_path)

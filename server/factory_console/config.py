@@ -15,6 +15,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 LOOPBACK_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
+def require_loopback_host(host: str) -> str:
+    """Return ``host`` if it is a loopback address, else raise ``ValueError``.
+
+    The single home of the 127.0.0.1 trust-boundary rule and its message, called by
+    both the :class:`Settings` validator and the CLI so the boundary is defined and
+    enforced in exactly one place rather than by two copies that can drift.
+    """
+    if host not in LOOPBACK_HOSTS:
+        raise ValueError(f"host must be a loopback address {sorted(LOOPBACK_HOSTS)}, got {host!r}")
+    return host
+
+
 class Settings(BaseSettings):
     """Operational config for the console, loaded from ``FACTORY_CONSOLE_*`` env vars."""
 
@@ -28,8 +40,4 @@ class Settings(BaseSettings):
     @classmethod
     def _require_loopback_host(cls, value: str) -> str:
         """Reject any host outside the loopback allow-set (127.0.0.1 trust boundary)."""
-        if value not in LOOPBACK_HOSTS:
-            raise ValueError(
-                f"host must be a loopback address {sorted(LOOPBACK_HOSTS)}, got {value!r}"
-            )
-        return value
+        return require_loopback_host(value)

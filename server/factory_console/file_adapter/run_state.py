@@ -16,25 +16,13 @@ import re
 from pathlib import Path
 
 from factory_console.domain import TICKET_ID_PATTERN, RunState
-from factory_console.errors import FactoryConsoleError
+from factory_console.file_adapter.path_safety import PathTraversal
 
 # On-disk run-state directory names in precedence order, highest wins. These are
 # the literal directory names under the run-state dir (``in-flight`` hyphenated);
 # each is mapped to its enum member BY VALUE via ``RunState(name)``, never by
 # string guessing. See ARCHITECTURE.md "Factory run-state directory (read-only)".
 _MARKER_PRECEDENCE = ("merged", "ready", "in-flight", "todo")
-
-
-class PathTraversal(FactoryConsoleError):
-    """Raised when a ticket id fails path-safety re-validation before FS use."""
-
-    def __init__(self, ticket_id: str) -> None:
-        super().__init__(
-            code="path_traversal",
-            message="ticket id failed path-safety validation",
-            status=400,
-            details={"ticketId": ticket_id},
-        )
 
 
 def find_run_state_dir(project_root: Path) -> Path | None:
