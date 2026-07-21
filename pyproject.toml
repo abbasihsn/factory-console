@@ -62,3 +62,9 @@ extend-immutable-calls = ["typer.Argument", "typer.Option"]
 testpaths = ["tests"]
 pythonpath = ["server"]
 asyncio_mode = "auto"
+
+[tool.coverage.report]
+# Enforce the 85% overall coverage gate documented in ARCHITECTURE.md. CI runs
+# `pytest --cov=factory_console`, which honors this fail_under, so coverage can
+# no longer silently regress behind a green check.
+fail_under = 85

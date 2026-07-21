@@ -21,7 +21,11 @@ WORKDIR /build/frontend
 # churn. pnpm-workspace.yaml carries the `allowBuilds` approval (esbuild) that
 # pnpm needs at install time to run that dependency's build script.
 COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
-RUN corepack enable && pnpm install --frozen-lockfile
+# Pin pnpm explicitly (there is no packageManager field in frontend/package.json)
+# so the install is hermetic and stays on pnpm 11 like CI, rather than drifting
+# with whatever pnpm the base image's corepack happens to default to.
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack enable && corepack prepare pnpm@11.15.1 --activate && pnpm install --frozen-lockfile
 
 COPY frontend/ ./
 RUN pnpm build
@@ -53,6 +57,12 @@ COPY --from=wheel-builder --chown=fc:fc /build/dist/*.whl /tmp/
 RUN pip install --user --no-cache-dir /tmp/*.whl && rm /tmp/*.whl
 ENV PATH=/home/fc/.local/bin:$PATH
 
-EXPOSE 8000
+# No EXPOSE: the console binds 127.0.0.1 by design — the loopback trust boundary
+# enforced by the host validator (config.require_loopback_host, which refuses
+# 0.0.0.0) — so a bridge-network `-p 8000:8000` publish can never reach it. To use
+# the served UI, run on the host loopback with `docker run --network host` (Linux)
+# or reach it via `docker exec`; `--version` and other CLI use need no networking.
+# The image is a convenience/CLI artifact, not the primary distribution (see
+# ARCHITECTURE.md).
 ENTRYPOINT ["factory-console"]
 CMD ["--host", "127.0.0.1", "--port", "8000", "--no-browser"]

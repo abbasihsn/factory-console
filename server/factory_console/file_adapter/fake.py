@@ -64,7 +64,6 @@ class FakeFileAdapter:
         seeded map.
         """
         self._project = project
-        self._tickets = tickets
         self._run_states = {} if run_states is None else run_states
         self._roadmap = roadmap
         self._projection = TicketProjection(

@@ -58,7 +58,7 @@ flowchart LR
 - ruff + ruff-format (Python); eslint + prettier (front-end); pre-commit for both.
 - GitHub Actions matrix `{ubuntu-latest, macos-latest} × {Python 3.11, 3.12}` — lint + pytest (85% coverage gate) + Vitest + wheel build + smoke install + Playwright e2e.
 - Release: tag `vX.Y.Z` → PyPI via OIDC trusted publishing + GitHub Release.
-- Multi-stage Dockerfile for reproducible/hermetic builds (NOT the primary distribution).
+- Multi-stage Dockerfile producing a lean, self-contained image (NOT the primary distribution). Base images use floating major-version tags, so it favors upstream security patches over bit-for-bit reproducibility.
 
 ### Rejected alternatives
 - Go+chi (fastest cold start; rejected for stack coherence with surrounding factory tooling).
@@ -136,7 +136,7 @@ factory-console [PATH] [--port N] [--host 127.0.0.1] [--no-browser] [--log-level
 - **Single-command launch**: `uvx factory-console` or `pipx install factory-console && factory-console`. Wheel embeds the pre-built SPA under `factory_console/_static/` — no Node dependency at runtime.
 - **Dev loop**: `scripts/dev.sh` runs Uvicorn `--reload` alongside Vite dev; Vite proxies `/api/*` to the Python port. `factory_console.app:create_dev_app` is the zero-arg factory Uvicorn boots.
 - **Packaging**: `scripts/package.sh` builds SPA → copies to `_static/` → `python -m build`.
-- **Dockerfile**: multi-stage (node builder → python builder → thin runtime) for reproducible builds. Not the primary distribution.
+- **Dockerfile**: multi-stage (node builder → python builder → thin runtime) producing a lean, self-contained image. Not the primary distribution; uses floating major-version base tags (patches over bit-for-bit reproducibility).
 - **CI**: matrix over `{ubuntu-latest, macos-latest} × {Python 3.11, 3.12}` — lint, pytest, Vitest, wheel build, smoke install, Playwright e2e. Concurrency group cancels stale runs.
 - **Release**: tag `vX.Y.Z` → PyPI via OIDC trusted publishing + GitHub Release (wheel + sdist attached).
 - **Environments**: dev (source checkout, hot reload) + prod (installed wheel). No staging, no cloud.

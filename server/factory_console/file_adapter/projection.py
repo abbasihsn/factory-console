@@ -48,12 +48,13 @@ class TicketProjection:
                     continue  # a ticket is never its own dependent
                 self._dependents.setdefault(dep_id, []).append(ticket)
 
-    def summarize(self, ticket: Ticket) -> TicketSummary:
+    def _summarize(self, ticket: Ticket) -> TicketSummary:
         """Project one ``ticket`` to its :class:`TicketSummary`.
 
         ``runState`` comes from the injected ``run_state_for``; ``depCount`` counts
         ALL declared deps (dangling included) while ``dependentCount`` reads the
-        reverse index (only OTHER tickets that name this id).
+        reverse index (only OTHER tickets that name this id). Internal to the
+        projection: :meth:`summaries` and :meth:`neighborhood` are the public API.
         """
         return TicketSummary(
             id=ticket.id,
@@ -68,7 +69,7 @@ class TicketProjection:
 
     def summaries(self) -> list[TicketSummary]:
         """Return a :class:`TicketSummary` for every ticket, in list order."""
-        return [self.summarize(ticket) for ticket in self._tickets]
+        return [self._summarize(ticket) for ticket in self._tickets]
 
     def ticket_for(self, ticket_id: str) -> Ticket | None:
         """Return the ticket with ``id == ticket_id``, or ``None`` if absent."""
@@ -81,17 +82,17 @@ class TicketProjection:
         a known ticket (in ``dependsOn`` order); ``unresolvedDeps`` are the ids
         with no matching ticket (same order); ``directDependents`` are the OTHER
         tickets that depend on this one (in list order). Every summary comes from
-        :meth:`summarize`, so it matches the list view.
+        :meth:`_summarize`, so it matches the list view.
         """
         return DepNeighborhood(
-            ticket=self.summarize(ticket),
+            ticket=self._summarize(ticket),
             directDeps=[
-                self.summarize(self._by_id[dep_id])
+                self._summarize(self._by_id[dep_id])
                 for dep_id in ticket.dependsOn
                 if dep_id in self._by_id
             ],
             directDependents=[
-                self.summarize(dependent) for dependent in self._dependents.get(ticket.id, [])
+                self._summarize(dependent) for dependent in self._dependents.get(ticket.id, [])
             ],
             unresolvedDeps=[dep_id for dep_id in ticket.dependsOn if dep_id not in self._by_id],
         )
