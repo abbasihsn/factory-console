@@ -27,9 +27,10 @@ from fastapi import Path as PathParam
 from pydantic import BaseModel, ConfigDict
 
 from factory_console.api.deps import get_file_adapter
-from factory_console.domain import Ticket, TicketSummary
+from factory_console.domain import DepNeighborhood, Ticket, TicketSummary
 from factory_console.domain.ticket import TICKET_ID_PATTERN
 from factory_console.file_adapter.protocol import FileAdapter
+from factory_console.services.deps_service import DepsService
 from factory_console.services.ticket_service import TicketService
 
 # The package ``__init__`` owns the ``/api/v1`` prefix; this sub-router only names
@@ -86,3 +87,22 @@ async def get_ticket(
     root: Path = request.app.state.project_root
     project = adapter.load_project(root)
     return TicketService(adapter).get_ticket(project, ticket_id)
+
+
+@router.get("/tickets/{ticket_id}/deps")
+async def get_ticket_deps(
+    ticket_id: Annotated[str, PathParam(pattern=TICKET_ID_PATTERN)],
+    request: Request,
+    adapter: FileAdapter = Depends(get_file_adapter),
+) -> DepNeighborhood:
+    """Return the :class:`DepNeighborhood` for ``ticket_id``.
+
+    ``ticket_id`` is validated at the ``Path`` boundary against the shared
+    :data:`TICKET_ID_PATTERN` (an invalid id becomes the ``invalid_ticket_id``
+    400 envelope and never reaches the adapter). Loads the discovered project and
+    delegates to :class:`DepsService`, whose ``TicketNotFound`` propagates to the
+    domain-error handler as a 404 for an id absent from the manifest.
+    """
+    root: Path = request.app.state.project_root
+    project = adapter.load_project(root)
+    return DepsService(adapter).get_neighborhood(project, ticket_id)
