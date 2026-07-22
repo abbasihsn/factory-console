@@ -25,7 +25,7 @@ import time
 from importlib import resources
 from pathlib import Path
 
-from fastapi import APIRouter, FastAPI
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
@@ -38,8 +38,9 @@ from factory_console.file_adapter.protocol import FileAdapter
 from factory_console.logging import request_log_line
 
 # ``API_V1_PREFIX`` (imported above) is owned by the ``api.v1`` package so the
-# ``/api/v1`` prefix lives in one place; the health probe is served at
-# ``/api/v1/health`` and the schema at ``/api/v1/openapi.json``.
+# ``/api/v1`` prefix lives in one place; every v1 endpoint (including the health
+# probe at ``/api/v1/health``) hangs off ``v1_router``, and the schema is served at
+# ``/api/v1/openapi.json``.
 
 # One access-log record per request is emitted on this named logger, so operators
 # (and the tests) can grep/filter request lines independently of application logs.
@@ -64,24 +65,6 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
             request_log_line(request.method, request.url.path, response.status_code, dur_ms)
         )
         return response
-
-
-def _build_v1_router(version: str) -> APIRouter:
-    """Return the v1 API router carrying the ``/health`` liveness probe.
-
-    Built locally (not in an ``api/v1`` package) so this ticket does not create a
-    contested aggregation file; subsequent tickets add their sub-routers. The
-    health body pins ``version`` to the value ``create_app`` was given — matching
-    ``app.state.version`` — and ``projectRoot`` stays ``None`` until T24 wires it.
-    """
-    router = APIRouter(prefix=API_V1_PREFIX)
-
-    @router.get("/health")
-    def health() -> dict[str, object]:
-        """Liveness probe: ``{ok, version, projectRoot}`` (projectRoot null until T24)."""
-        return {"ok": True, "version": version, "projectRoot": None}
-
-    return router
 
 
 def _mount_static(app: FastAPI) -> None:
@@ -120,7 +103,6 @@ def create_app(file_adapter: FileAdapter, *, version: str, project_root: Path) -
 
     register_error_handlers(app)
     app.add_middleware(AccessLogMiddleware)
-    app.include_router(_build_v1_router(version))
     app.include_router(v1_router)
     _mount_static(app)
     return app
