@@ -13,6 +13,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from factory_console.api.v1.project import router as project_router
+from factory_console.api.v1.tickets import router as tickets_router
 
 # Every v1 route hangs off this prefix, so the schema is served at
 # ``/api/v1/openapi.json`` and each endpoint (e.g. ``/api/v1/project``) is prefixed
@@ -21,5 +22,6 @@ API_V1_PREFIX = "/api/v1"
 
 router = APIRouter(prefix=API_V1_PREFIX)
 router.include_router(project_router)
+router.include_router(tickets_router)
 
 __all__ = ["API_V1_PREFIX", "router"]

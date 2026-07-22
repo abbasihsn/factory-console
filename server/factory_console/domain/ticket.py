@@ -37,7 +37,9 @@ class Ticket(BaseModel):
     ``raw`` preserves the unmodified manifest entry — including fields this model
     does not name — for forward-compatibility with future factory versions.
     ``extra='forbid'`` governs the model's *own* fields; it does not restrict the
-    contents of the ``raw`` mapping.
+    contents of the ``raw`` mapping. ``runState`` defaults to
+    :attr:`RunState.unknown` and is resolved per request by the service on the
+    detail path (the manifest/enrichment build sites leave it at the default).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -47,6 +49,7 @@ class Ticket(BaseModel):
     status: str
     track: str | None = None
     milestone: str | None = None
+    runState: RunState = RunState.unknown
     dependsOn: list[str] = Field(default_factory=list)
     provides: list[str] = Field(default_factory=list)
     files: list[str] = Field(default_factory=list)
