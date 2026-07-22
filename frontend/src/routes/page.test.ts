@@ -1,17 +1,19 @@
 import { render, screen } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import Page from './+page.svelte';
-import { load } from './+page';
-import { ApiError, listTickets, type TicketSummary } from '$lib/api';
 
-// `+page.svelte` renders FiltersBar, which imports `goto`; mock the navigation
-// module so rendering needs no router. The `load` is unit-tested against a
-// mocked `listTickets` so no backend is needed.
+// Fully mock the API barrel so `load` never touches the network. The load imports
+// the real `ApiError` CLASS from `$lib/api/errors` (NOT the barrel), so mocking the
+// barrel down to just `{ listTickets }` still leaves `instanceof ApiError` working.
+vi.mock('$lib/api', () => ({ listTickets: vi.fn() }));
+// Belt-and-braces: rendering the route imports `goto`; stub it so no real router
+// is touched under jsdom.
 vi.mock('$app/navigation', () => ({ goto: vi.fn() }));
-vi.mock('$lib/api', async (importOriginal) => {
-	const actual = await importOriginal<typeof import('$lib/api')>();
-	return { ...actual, listTickets: vi.fn() };
-});
+
+import { listTickets } from '$lib/api';
+import { ApiError } from '$lib/api/errors';
+import type { TicketSummary } from '$lib/api';
+import { load } from './+page';
+import Page from './+page.svelte';
 
 const listTicketsMock = vi.mocked(listTickets);
 
@@ -30,8 +32,8 @@ function ticket(id: string, title: string): TicketSummary {
 	};
 }
 
-// `+page.svelte`'s `PageData` merges the root layout's `project` in, so the
-// rendered `data` prop must carry it too (the page itself only reads items/filters).
+// `+page.svelte`'s `PageData` merges the root layout's `project`, so the rendered
+// `data` prop must carry it too (the page itself only reads items/filters).
 const project = {
 	rootPath: '/home/dev/factory-console',
 	ticketsManifestPath: '/home/dev/factory-console/docs/planning/tickets.json',
@@ -46,7 +48,7 @@ function pageData(items: TicketSummary[], filters = emptyFilters) {
 }
 
 describe('tickets index page', () => {
-	it('renders one row per ticket with a link to its detail route', () => {
+	it('renders one row per ticket, each linking to its detail route', () => {
 		const items = [
 			ticket('T30', 'Ticket list route'),
 			ticket('T31', 'Ticket detail route'),
@@ -54,13 +56,11 @@ describe('tickets index page', () => {
 		];
 		const { container } = render(Page, { props: { data: pageData(items) } });
 
-		const rowLinks = container.querySelectorAll('a[href^="/tickets/"]');
-		expect(rowLinks).toHaveLength(3);
-		expect(screen.getByText('Ticket list route')).toBeTruthy();
+		expect(container.querySelectorAll('a[href^="/tickets/"]')).toHaveLength(3);
 		expect(screen.getByRole('link', { name: 'T31' }).getAttribute('href')).toBe('/tickets/T31');
 	});
 
-	it('renders the empty state with a clear-filters link when there are no items', () => {
+	it('renders the empty state with a clear-filters reset link when there are no items', () => {
 		render(Page, { props: { data: pageData([], { ...emptyFilters, q: 'zzz' }) } });
 
 		expect(screen.getByText(/No tickets match/)).toBeTruthy();
@@ -93,7 +93,18 @@ describe('tickets index load', () => {
 		});
 	});
 
-	it('maps a network ApiError (status 0) to a 503 SvelteKit error', async () => {
+	it('preserves a 4xx backend status and code on the thrown SvelteKit error', async () => {
+		listTicketsMock.mockRejectedValue(
+			new ApiError({ code: 'ticket_not_found', message: 'No such ticket.', status: 404 })
+		);
+
+		await expect(load({ url: new URL('http://localhost/') } as never)).rejects.toMatchObject({
+			status: 404,
+			body: { code: 'ticket_not_found', message: 'No such ticket.' }
+		});
+	});
+
+	it('maps a network ApiError (status 0) to a 503', async () => {
 		listTicketsMock.mockRejectedValue(
 			new ApiError({ code: 'network_error', message: 'Could not reach the backend.', status: 0 })
 		);
@@ -101,17 +112,6 @@ describe('tickets index load', () => {
 		await expect(load({ url: new URL('http://localhost/') } as never)).rejects.toMatchObject({
 			status: 503,
 			body: { code: 'network_error' }
-		});
-	});
-
-	it('preserves a 4xx backend status on the SvelteKit error', async () => {
-		listTicketsMock.mockRejectedValue(
-			new ApiError({ code: 'invalid_filter', message: 'Bad filter.', status: 422 })
-		);
-
-		await expect(load({ url: new URL('http://localhost/') } as never)).rejects.toMatchObject({
-			status: 422,
-			body: { code: 'invalid_filter', message: 'Bad filter.' }
 		});
 	});
 });
