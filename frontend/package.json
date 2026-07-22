@@ -10,7 +10,7 @@
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"test": "vitest run --passWithNoTests",
 		"e2e": "playwright test",
-		"codegen": "openapi-typescript http://127.0.0.1:8000/api/v1/openapi.json -o src/lib/api/types.ts",
+		"codegen": "openapi-typescript ${FC_OPENAPI_URL:-http://127.0.0.1:8000/api/v1/openapi.json} -o src/lib/api/types.ts --immutable && node scripts/postcodegen.mjs",
 		"lint": "eslint . --ext .js,.cjs,.ts,.svelte",
 		"format": "prettier --write .",
 		"format:check": "prettier --check ."
