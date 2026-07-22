@@ -1,23 +1,117 @@
-"""Walking-skeleton Typer CLI entrypoint for Factory Console.
+"""The real ``factory-console`` Typer entrypoint that ships in the wheel.
 
-Exposes the full ``factory-console`` flag surface (``PATH``, ``--port``,
-``--host``, ``--no-browser``, ``--log-level``, ``--version``) but implements only
-``--version`` and a plain ``uvicorn.run`` boot. Real project-path discovery, port
-selection, browser opening, signal handling, and process exit codes live in
-backend T25 — ``path`` and ``no_browser`` are accepted-but-unused stubs until then.
+Extends the T06 walking skeleton into the production launcher and is the ONLY
+place in the codebase that constructs the concrete
+:class:`~factory_console.file_adapter.real.RealFileAdapter` for a production boot
+(the dev loop's :func:`~factory_console.app.create_dev_app` is the other, sole
+runtime user of the real adapter). It wires, in a deliberate cheap-input-first
+order, the full CLI contract from ``ARCHITECTURE.md``:
+
+* ``--version`` prints ``factory-console v{__version__}`` and exits 0;
+* ``--host`` is validated against the 127.0.0.1 loopback trust boundary via the
+  shared :func:`~factory_console.config.require_loopback_host` rule (exit 2);
+* ``--log-level`` is normalized via
+  :func:`~factory_console.logging.normalize_log_level` (exit 2) before logging is
+  configured;
+* the project root is discovered with
+  :func:`~factory_console.file_adapter.discovery.discover_project` (exit 1 when no
+  App Factory project is found);
+* the manifest is force-parsed once at boot so a
+  :class:`~factory_console.file_adapter.manifest.MalformedManifest` fails fast
+  (exit 3) *before* any port is bound or URL printed;
+* the port is chosen/confirmed with a throwaway probe socket (an in-use explicit
+  ``--port`` exits 2, ``--port 0`` resolves a concrete ephemeral port);
+* the exact contract line is printed to stdout, then Uvicorn serves the app.
+
+Signals: this module installs NO hand-rolled signal handlers. ``uvicorn.Server``
+captures SIGINT/SIGTERM itself, sets ``should_exit = True``, and drains — so Ctrl-C
+(or ``kill``) shuts the console down cleanly and the process exits 0, the ticket's
+SIGINT/SIGTERM contract. On SIGTERM ``server.run()`` then returns normally; on
+Python 3.11+ SIGINT the asyncio runner re-raises ``KeyboardInterrupt`` out of
+``server.run()`` *after* that clean shutdown, which :func:`main` catches and
+swallows so Ctrl-C still exits 0 rather than 130.
+
+Exit codes: ``0`` ok · ``1`` project-not-found · ``2`` bad host / bad log level /
+port-in-use · ``3`` malformed manifest.
 """
 
+import contextlib
+import logging
+import socket
+import threading
+import time
+import webbrowser
 from pathlib import Path
 
 import typer
 import uvicorn
 
 import factory_console
-from factory_console.app import create_dev_app
+from factory_console.app import create_app
 from factory_console.config import require_loopback_host
+from factory_console.file_adapter.discovery import ProjectNotFound, discover_project
+from factory_console.file_adapter.manifest import MalformedManifest
+from factory_console.file_adapter.real import RealFileAdapter
 from factory_console.logging import LOG_LEVELS, configure_logging, normalize_log_level
 
+_LOGGER = logging.getLogger(__name__)
+
+# How long the browser-opening daemon thread waits for Uvicorn to report
+# ``server.started`` before giving up, and how often it polls in the meantime.
+# Small so a ready server is opened promptly, bounded so a server that never comes
+# up can never leave the thread spinning forever.
+_BROWSER_READY_TIMEOUT_S = 5.0
+_BROWSER_POLL_INTERVAL_S = 0.05
+
 app = typer.Typer(add_completion=False)
+
+
+def _format_host_for_url(host: str) -> str:
+    """Return ``host`` shaped for an ``http://`` URL, bracketing IPv6 literals.
+
+    ``::1`` becomes ``[::1]`` (so the colon-bearing address is unambiguous against
+    the ``:port`` suffix); an IPv4 address or ``localhost`` is returned unchanged.
+    """
+    return f"[{host}]" if ":" in host else host
+
+
+def _resolve_port(host: str, port: int) -> int:
+    """Bind a throwaway probe socket to choose/confirm ``port``, then release it.
+
+    The address family is picked from ``host`` (``AF_INET6`` for ``::1``, else
+    ``AF_INET``). With ``port == 0`` the OS assigns a free ephemeral port, read back
+    from ``getsockname()`` so the printed URL and Uvicorn are handed the SAME
+    concrete port. With an explicit ``port`` the probe binds it WITHOUT
+    ``SO_REUSEADDR``, so an already-bound port raises :class:`OSError` (EADDRINUSE),
+    which the caller maps to exit 2. The probe is always closed before returning, so
+    Uvicorn is free to bind the port itself.
+    """
+    family = socket.AF_INET6 if host == "::1" else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as probe:
+        probe.bind((host, port))
+        return probe.getsockname()[1]
+
+
+def _open_browser_when_ready(server: uvicorn.Server, url: str) -> None:
+    """Open ``url`` once ``server`` reports it has started, from a daemon thread.
+
+    Polls ``server.started`` up to :data:`_BROWSER_READY_TIMEOUT_S` so the browser
+    is only launched against a live server, and gives up silently if the server
+    never comes up. The :func:`webbrowser.open` call is wrapped so a headless
+    environment (no display, no browser) can never crash the serving process — the
+    failure is logged at debug and swallowed, since browser-opening is a
+    convenience, not a requirement of serving.
+    """
+    deadline = time.monotonic() + _BROWSER_READY_TIMEOUT_S
+    while not server.started:
+        if time.monotonic() >= deadline:
+            _LOGGER.debug("browser open skipped: server not ready before timeout")
+            return
+        time.sleep(_BROWSER_POLL_INTERVAL_S)
+    try:
+        webbrowser.open(url)
+    except Exception:
+        _LOGGER.debug("browser open failed (headless environment?)", exc_info=True)
 
 
 @app.command()
@@ -29,18 +123,28 @@ def main(
     log_level: str = typer.Option("INFO", "--log-level"),
     version: bool = typer.Option(False, "--version"),
 ) -> None:
-    """Boot the walking-skeleton Factory Console server (or print the version).
+    """Discover an App Factory project, then serve the Factory Console over it.
 
-    ``--version`` prints the package version and exits 0. A non-loopback ``host``
-    (127.0.0.1 trust boundary) or an unrecognized ``--log-level`` is rejected with
-    exit 2. Otherwise logging is configured and Uvicorn serves the app built by
-    ``create_dev_app()`` (which discovers the project root from the current working
-    directory) on ``host``/``port``. Honoring an explicit ``path``, port handling,
-    browser opening, and the richer exit codes arrive in backend T25; ``path`` and
-    ``no_browser`` are accepted-but-unused stubs for now.
+    Validation runs cheapest-first so bad input fails before any filesystem or
+    network work: ``--version`` prints ``factory-console v{version}`` and exits 0; a
+    non-loopback ``host`` (127.0.0.1 trust boundary) or an unrecognized
+    ``--log-level`` exits 2. Logging is then configured and the project root is
+    discovered from ``path`` (an explicit path wins, else an upward walk from the
+    cwd) — a missing project exits 1. The concrete
+    :class:`~factory_console.file_adapter.real.RealFileAdapter` is wired into
+    :func:`~factory_console.app.create_app`, and the manifest is force-parsed once
+    so a malformed ``tickets.json`` exits 3 before a port is bound. The port is then
+    resolved via a probe socket (an in-use explicit ``--port`` exits 2), the exact
+    contract line is printed to stdout, and Uvicorn serves the app.
+
+    Shutdown is delegated to Uvicorn: it captures SIGINT/SIGTERM, sets
+    ``should_exit = True``, and drains. A post-shutdown ``KeyboardInterrupt`` (the
+    Python 3.11+ asyncio runner re-raises it on SIGINT) is caught so Ctrl-C exits 0.
+    Unless ``--no-browser`` is given, a daemon thread opens the served URL once the
+    server is ready; a headless environment can never crash the process.
     """
     if version:
-        typer.echo(factory_console.__version__)
+        typer.echo(f"factory-console v{factory_console.__version__}")
         raise typer.Exit(0)
 
     try:
@@ -53,6 +157,46 @@ def main(
     if normalized_log_level is None:
         typer.echo(f"log level must be one of {list(LOG_LEVELS)}, got {log_level!r}", err=True)
         raise typer.Exit(2)
-
     configure_logging(normalized_log_level)
-    uvicorn.run(create_dev_app(), host=host, port=port, log_level=normalized_log_level.lower())
+
+    try:
+        root = discover_project(path, Path.cwd())
+    except ProjectNotFound as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
+
+    file_adapter = RealFileAdapter()
+    fastapi_app = create_app(file_adapter, version=factory_console.__version__, project_root=root)
+
+    # Discovery only checks the manifest FILE exists; force a real parse now so a
+    # malformed manifest fails fast (exit 3) at boot rather than on the first request.
+    try:
+        project = file_adapter.load_project(root)
+        file_adapter.list_tickets(project)
+    except MalformedManifest as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(3) from exc
+
+    try:
+        resolved_port = _resolve_port(host, port)
+    except OSError as exc:
+        typer.echo(f"port {port} on {host} is already in use", err=True)
+        raise typer.Exit(2) from exc
+
+    url = f"http://{_format_host_for_url(host)}:{resolved_port}"
+    typer.echo(f"Factory Console v{factory_console.__version__} — serving {root} at {url}")
+
+    config = uvicorn.Config(
+        fastapi_app, host=host, port=resolved_port, log_level=normalized_log_level.lower()
+    )
+    server = uvicorn.Server(config)
+    if not no_browser:
+        threading.Thread(target=_open_browser_when_ready, args=(server, url), daemon=True).start()
+    # Uvicorn traps SIGINT itself and shuts down gracefully (draining then
+    # returning), but on Python 3.11+ the asyncio runner re-raises KeyboardInterrupt
+    # out of ``server.run()`` *after* that clean shutdown completes. Suppress it so
+    # Ctrl-C exits 0 (the CLI contract) instead of 130 — the graceful shutdown has
+    # already run. SIGTERM never takes this path: it flips ``should_exit`` and lets
+    # ``server.run()`` return normally.
+    with contextlib.suppress(KeyboardInterrupt):
+        server.run()
