@@ -1,17 +1,9 @@
-import { error } from '@sveltejs/kit';
 import type { PageLoad } from './$types';
 import { listTickets, type Filters } from '$lib/api';
-// Import the ApiError CLASS from its own module, NOT the barrel: the load's tests
-// mock the barrel (`$lib/api`) to stub `listTickets`, so reaching for `ApiError`
-// through the barrel there would be `undefined` and break `instanceof`.
-import { ApiError } from '$lib/api/errors';
-import { normalizeError } from '$lib/api/contracts';
-
-// A network-failure `ApiError` carries `status: 0`, which SvelteKit's `error()`
-// rejects (it only accepts 400–599); map anything outside that range to 503 so
-// the boundary still renders — the same mapping the layout loader uses.
-const SERVICE_UNAVAILABLE = 503;
-const INTERNAL_ERROR = 500;
+// The ApiError→boundary status policy is shared with the detail + deps loaders
+// via `throwBoundaryError` in `$lib/api/loadError` — imported directly, NOT
+// through the mocked `$lib/api` barrel, so the load's tests keep working.
+import { throwBoundaryError } from '$lib/api/loadError';
 
 // The URL is the single source of truth for filter + search state: read the four
 // filter params (defaulting each missing one to '') and let the backend do the
@@ -31,11 +23,6 @@ export const load: PageLoad = async ({ url }) => {
 		// `total` and there is no pagination, so the row count is the total.
 		return { items, total: items.length, filters };
 	} catch (err) {
-		if (err instanceof ApiError) {
-			const status = err.status >= 400 && err.status <= 599 ? err.status : SERVICE_UNAVAILABLE;
-			throw error(status, normalizeError(err));
-		}
-		// Anything that isn't a transport error is unexpected → a generic 500.
-		throw error(INTERNAL_ERROR, normalizeError(err));
+		throwBoundaryError(err);
 	}
 };
