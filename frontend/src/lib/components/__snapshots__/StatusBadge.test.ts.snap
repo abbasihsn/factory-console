@@ -1,0 +1,11 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`StatusBadge > renders a color pill for the known status "blocked" 1`] = `"<span class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium bg-red-100 text-red-800">blocked</span>"`;
+
+exports[`StatusBadge > renders a color pill for the known status "done" 1`] = `"<span class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium bg-green-100 text-green-800">done</span>"`;
+
+exports[`StatusBadge > renders a color pill for the known status "in-progress" 1`] = `"<span class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-800">in-progress</span>"`;
+
+exports[`StatusBadge > renders a color pill for the known status "todo" 1`] = `"<span class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-700">todo</span>"`;
+
+exports[`StatusBadge > renders a neutral pill for an unknown status, showing the raw string 1`] = `"<span class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium bg-gray-100 text-muted">archived</span>"`;

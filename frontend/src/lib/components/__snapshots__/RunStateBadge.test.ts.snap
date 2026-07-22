@@ -1,0 +1,11 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`RunStateBadge > renders a pill for run-state "in-flight" 1`] = `"<span class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-800" title="A team-lead lane is actively building this ticket.">in-flight</span>"`;
+
+exports[`RunStateBadge > renders a pill for run-state "merged" 1`] = `"<span class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium bg-indigo-100 text-indigo-800" title="Merged into the main branch.">merged</span>"`;
+
+exports[`RunStateBadge > renders a pill for run-state "ready" 1`] = `"<span class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium bg-green-100 text-green-800" title="Built and passing — ready to review and merge.">ready</span>"`;
+
+exports[`RunStateBadge > renders a pill for run-state "todo" 1`] = `"<span class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-700" title="Not started — no run-state directory yet.">todo</span>"`;
+
+exports[`RunStateBadge > renders a pill for run-state "unknown" 1`] = `"<span class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium bg-gray-100 text-muted" title="Run-state could not be determined.">unknown</span>"`;
