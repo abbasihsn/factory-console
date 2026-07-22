@@ -9,6 +9,11 @@ export const prerender = false;
 
 const PROJECT_ENDPOINT = '/api/v1/project';
 
+// Abort the project fetch if the backend accepts the socket but never responds,
+// so a hung connection surfaces as the NETWORK_ERROR boundary instead of a
+// permanently blank screen (nothing renders until this SPA-mode load settles).
+const PROJECT_FETCH_TIMEOUT_MS = 10_000;
+
 // Client-derived error for when the backend can't be reached at all (fetch
 // rejects), as opposed to a backend error envelope from a non-OK response.
 const NETWORK_ERROR: ApiError = {
@@ -23,8 +28,12 @@ const NETWORK_ERROR: ApiError = {
 export const load: LayoutLoad = async ({ fetch }) => {
 	let response: Response;
 	try {
-		response = await fetch(PROJECT_ENDPOINT);
+		response = await fetch(PROJECT_ENDPOINT, {
+			signal: AbortSignal.timeout(PROJECT_FETCH_TIMEOUT_MS)
+		});
 	} catch {
+		// Covers connection refused AND a timeout (AbortSignal.timeout throws a
+		// TimeoutError DOMException) — both mean "couldn't reach the backend".
 		throw error(503, NETWORK_ERROR);
 	}
 
