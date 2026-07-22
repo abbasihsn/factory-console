@@ -55,8 +55,9 @@ known-first-party = ["factory_console"]
 
 [tool.ruff.lint.flake8-bugbear]
 # Typer's Argument()/Option() are the framework's required default-factories for
-# CLI parameters, so calling them in argument defaults is the intended idiom (not B008).
-extend-immutable-calls = ["typer.Argument", "typer.Option"]
+# CLI parameters, and FastAPI's Depends() is the framework's dependency-injection
+# idiom, so calling them in argument defaults is intended (not B008).
+extend-immutable-calls = ["typer.Argument", "typer.Option", "fastapi.Depends"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

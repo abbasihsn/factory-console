@@ -32,12 +32,14 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from factory_console.api.error_handlers import register_error_handlers
+from factory_console.api.v1 import API_V1_PREFIX
+from factory_console.api.v1 import router as v1_router
 from factory_console.file_adapter.protocol import FileAdapter
 from factory_console.logging import request_log_line
 
-# Every v1 route hangs off this prefix, so the health probe is served at
+# ``API_V1_PREFIX`` (imported above) is owned by the ``api.v1`` package so the
+# ``/api/v1`` prefix lives in one place; the health probe is served at
 # ``/api/v1/health`` and the schema at ``/api/v1/openapi.json``.
-API_V1_PREFIX = "/api/v1"
 
 # One access-log record per request is emitted on this named logger, so operators
 # (and the tests) can grep/filter request lines independently of application logs.
@@ -119,6 +121,7 @@ def create_app(file_adapter: FileAdapter, *, version: str, project_root: Path) -
     register_error_handlers(app)
     app.add_middleware(AccessLogMiddleware)
     app.include_router(_build_v1_router(version))
+    app.include_router(v1_router)
     _mount_static(app)
     return app
 
