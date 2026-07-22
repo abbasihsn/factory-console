@@ -1,22 +1,11 @@
 /**
  * REST v1 API contracts consumed by the SPA shell.
  *
- * TEMPORARY hand-written `Project`. Swap it for the generated `Project` from
- * `$lib/api/types` when T28 (`pnpm codegen`) lands, then delete the local
- * definition here.
+ * `Project` is re-exported from the generated `$lib/api/types` (via `./models`)
+ * now that T28's `pnpm codegen` has landed. The SPA shell only reads `rootPath`,
+ * but consumers get the full generated entity.
  */
-
-/**
- * Narrow view of the `Project` entity from `GET /api/v1/project`.
- *
- * Only the field the SPA shell consumes (`rootPath`, shown in the top bar) is
- * modelled. The full entity also carries `ticketsManifestPath`, `ticketsDir`,
- * `roadmapPath`, `runStateDir`, and `discoveredAt` — those arrive with the
- * generated type in T28.
- */
-export interface Project {
-	rootPath: string;
-}
+export type { Project } from './models';
 
 /**
  * Normalized, client-facing API error — the shape of `App.Error`, i.e. what
