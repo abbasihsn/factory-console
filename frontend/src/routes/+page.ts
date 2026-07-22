@@ -1,6 +1,6 @@
 import { error } from '@sveltejs/kit';
 import type { PageLoad } from './$types';
-import { listTickets } from '$lib/api';
+import { listTickets, type Filters } from '$lib/api';
 // Import the ApiError CLASS from its own module, NOT the barrel: the load's tests
 // mock the barrel (`$lib/api`) to stub `listTickets`, so reaching for `ApiError`
 // through the barrel there would be `undefined` and break `instanceof`.
@@ -18,7 +18,7 @@ const INTERNAL_ERROR = 500;
 // filtering. The client wrapper drops empty-string params, so `filters` passes
 // straight through. (`ssr`/`prerender` are set once on the root layout, not here.)
 export const load: PageLoad = async ({ url }) => {
-	const filters = {
+	const filters: Filters = {
 		status: url.searchParams.get('status') ?? '',
 		track: url.searchParams.get('track') ?? '',
 		milestone: url.searchParams.get('milestone') ?? '',

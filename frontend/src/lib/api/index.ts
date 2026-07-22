@@ -15,7 +15,8 @@ export {
 	getRoadmap,
 	getHealth,
 	type Health,
-	type ListTicketsParams
+	type ListTicketsParams,
+	type Filters
 } from './client';
 export { ApiError } from './errors';
 export type { ApiErrorInit } from './errors';

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import type { PageData } from './$types';
+	import type { Filters } from '$lib/api';
 	import FiltersBar from '$lib/components/FiltersBar.svelte';
 	import TicketRow from '$lib/components/TicketRow.svelte';
 
@@ -42,10 +43,19 @@
 		)
 	);
 
-	// Re-run `+page.ts` with the chosen filters by pushing them onto the URL, so
-	// filtering stays server-side and the URL is the source of truth. An empty
-	// query resets to `/`.
-	function navigate(search: string): void {
+	// Serialize the chosen filters into the URL (omitting empty values) and push
+	// them, so filtering stays server-side and the URL is the single source of
+	// truth. Owning the query-string serialization here — next to the URL read in
+	// `+page.ts` — keeps both halves of the URL contract in one layer and lets
+	// FiltersBar stay presentational. An empty set resets to `/`.
+	function navigate(next: Filters): void {
+		const params = new URLSearchParams();
+		for (const [key, value] of Object.entries(next)) {
+			if (value !== '') {
+				params.set(key, value);
+			}
+		}
+		const search = params.toString();
 		goto(search ? `?${search}` : '?', { keepFocus: true, noScroll: true });
 	}
 </script>
