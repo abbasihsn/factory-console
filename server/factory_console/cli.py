@@ -164,6 +164,12 @@ def main(
     except ProjectNotFound as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(1) from exc
+    # Canonicalize the root: discover_project returns an explicit PATH verbatim (a
+    # relative or symlinked argument stays as typed), but create_app stashes this on
+    # app.state and the health/project endpoints report it as the *resolved*
+    # projectRoot. Resolve here so that contract holds (the cwd-walk branch already
+    # returns a resolved path, so this is a no-op there).
+    root = root.resolve()
 
     file_adapter = RealFileAdapter()
     fastapi_app = create_app(file_adapter, version=factory_console.__version__, project_root=root)
