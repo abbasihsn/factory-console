@@ -31,9 +31,9 @@ const ABSOLUTE_REFERENCE = /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i;
 /**
  * Liveness-probe shape for `GET /api/v1/health`.
  *
- * The handler returns a loose `dict[str, object]`, so the generated type is not
- * useful; this local shape documents the fields the probe returns today. T24
- * will enrich `/health` (and give it a real schema).
+ * The handler now returns a typed `HealthResponse` (`ok`, `version`,
+ * `projectRoot`), but the committed `types.ts` predates that endpoint, so this
+ * local shape mirrors it until `types.ts` is regenerated.
  */
 export interface Health {
 	readonly ok: boolean;
@@ -131,7 +131,7 @@ export function getTicketDeps(id: string): Promise<DepNeighborhood> {
 	return request<DepNeighborhood>(`tickets/${encodeURIComponent(id)}/deps`);
 }
 
-/** `GET /api/v1/roadmap` — the rendered roadmap document. */
+/** `GET /api/v1/roadmap` — whether the project has a roadmap, and its path when present. */
 export function getRoadmap(): Promise<Roadmap> {
 	return request<Roadmap>('roadmap');
 }

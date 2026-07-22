@@ -49,15 +49,17 @@ async def get_roadmap(
 ) -> RoadmapPresent | RoadmapAbsent:
     """Return whether the discovered project has a roadmap, and its path when present.
 
-    Loads the discovered project from ``request.app.state.project_root`` and probes
-    it through the injected adapter's ``get_roadmap``; returns
-    :class:`RoadmapPresent` (with the resolved path) when a roadmap exists, else
-    :class:`RoadmapAbsent`. Does no error handling of its own: a ``ProjectNotFound``
-    from ``load_project`` propagates to the registered domain-error handler.
+    Loads the discovered project from ``request.app.state.project_root`` and reads
+    presence straight off ``project.roadmapPath`` (``None`` exactly when discovery
+    found no roadmap): returns :class:`RoadmapPresent` with that resolved path, else
+    :class:`RoadmapAbsent`. It deliberately does NOT call ``adapter.get_roadmap``,
+    which reads and renders the whole document — wasteful when the MVP serves only
+    presence and the path (the rendered body lands with a later milestone). Does no
+    error handling of its own: a ``ProjectNotFound`` from ``load_project`` propagates
+    to the registered domain-error handler.
     """
     root: Path = request.app.state.project_root
     project = adapter.load_project(root)
-    roadmap = adapter.get_roadmap(project)
-    if roadmap is None:
+    if project.roadmapPath is None:
         return RoadmapAbsent()
-    return RoadmapPresent(path=roadmap.path)
+    return RoadmapPresent(path=project.roadmapPath)

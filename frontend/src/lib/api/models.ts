@@ -1,15 +1,15 @@
 /**
  * Friendly names for the API domain types.
  *
- * The four types backing endpoints that exist on the base backend are aliased
- * straight from the generated `./types` (`--immutable`, so every field is
- * `readonly`). `Roadmap` and `DepNeighborhood` back the `getRoadmap` /
- * `getTicketDeps` wrappers, whose endpoints (`/api/v1/roadmap`,
- * `/api/v1/tickets/{id}/deps`) are NOT in this base backend yet (they land with
- * tickets T23/T24), so their schemas are not in the generated OpenAPI document.
- * They are hand-written here to mirror the server domain models
- * (`server/factory_console/domain/deps.py`, frozen pydantic) and MUST be swapped
- * for the generated types once those endpoints ship — see the banner below.
+ * The types backing endpoints present in the generated `./types` are aliased
+ * straight from it (`--immutable`, so every field is `readonly`). `Roadmap` and
+ * `DepNeighborhood` back the `getRoadmap` / `getTicketDeps` wrappers: those routes
+ * (`/api/v1/roadmap`, `/api/v1/tickets/{id}/deps`) now exist on the backend
+ * (T23/T24), but the committed `types.ts` was generated against an earlier backend
+ * that predated them, so their schemas are not in it yet. They are hand-written
+ * here to mirror the server response shapes and MUST be swapped for the generated
+ * types once `types.ts` is regenerated against a backend that serves them — see the
+ * banner below.
  *
  * Keeping the aliases and the two temporary types here (rather than in
  * `client.ts`) gives `client.ts`, `index.ts`, and `contracts.ts` one shared
@@ -24,22 +24,26 @@ export type TicketListResponse = components['schemas']['TicketListResponse'];
 export type RunState = components['schemas']['RunState'];
 
 /* -------------------------------------------------------------------------- *
- * TEMPORARY hand-written types — DELETE when the endpoints land.
+ * TEMPORARY hand-written types — DELETE when `types.ts` is regenerated.
  *
- * `/api/v1/roadmap` and `/api/v1/tickets/{id}/deps` are not exposed by this base
- * backend, so `openapi-typescript` cannot emit `Roadmap` / `DepNeighborhood`.
- * These mirror the frozen pydantic domain models and use `readonly` to match the
- * generated `--immutable` style. Swap each for
- * `components['schemas']['Roadmap' | 'DepNeighborhood']` after `pnpm codegen`
- * against a backend that serves those routes, then remove this block.
+ * `/api/v1/roadmap` and `/api/v1/tickets/{id}/deps` exist on the backend but are
+ * absent from the committed `types.ts` (generated against an earlier backend), so
+ * `openapi-typescript` has not emitted their schemas yet. These mirror the server
+ * response shapes and use `readonly` to match the generated `--immutable` style.
+ * After `pnpm codegen` against a backend that serves these routes, swap `Roadmap`
+ * for `components['schemas']['RoadmapPresent'] | components['schemas']['RoadmapAbsent']`
+ * and `DepNeighborhood` for `components['schemas']['DepNeighborhood']`, then remove
+ * this block.
  * -------------------------------------------------------------------------- */
 
-/** Rendered roadmap document from `GET /api/v1/roadmap` (Path serializes to a string). */
-export interface Roadmap {
-	readonly path: string;
-	readonly bodyMarkdown: string;
-	readonly bodyHtml: string;
-}
+/**
+ * Presence probe from `GET /api/v1/roadmap`: whether the discovered project has a
+ * roadmap and, when present, its resolved path (a `Path` serializes to a string).
+ * Presence-only in the MVP — the rendered `bodyMarkdown`/`bodyHtml` land with a
+ * later milestone — so this is a discriminated union on `present`, not a document.
+ */
+export type Roadmap =
+	{ readonly present: true; readonly path: string } | { readonly present: false };
 
 /** Dependency neighborhood of one ticket from `GET /api/v1/tickets/{id}/deps`. */
 export interface DepNeighborhood {
