@@ -1,3 +1,31 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Design tokens (light theme). Referenced semantically through Tailwind's
+   color scale — see tailwind.config.js, which maps bg / surface / text /
+   muted / accent / danger to these custom properties. */
+:root {
+	--bg: #f8fafc;
+	--surface: #ffffff;
+	--text: #0f172a;
+	--muted: #64748b;
+	--accent: #2563eb;
+	--danger: #dc2626;
+}
+
+@layer base {
+	body {
+		background-color: var(--bg);
+		color: var(--text);
+		font-family:
+			ui-sans-serif,
+			system-ui,
+			-apple-system,
+			'Segoe UI',
+			Roboto,
+			Helvetica,
+			Arial,
+			sans-serif;
+	}
+}
