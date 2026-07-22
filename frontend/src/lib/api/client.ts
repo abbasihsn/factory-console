@@ -19,6 +19,11 @@ import type {
 
 const API_V1_PREFIX = '/api/v1';
 
+// Abort a request if the backend accepts the socket but never responds, so a hung
+// connection surfaces as the `network_error` envelope instead of a promise that
+// never settles. Mirrors the layout loader's PROJECT_FETCH_TIMEOUT_MS.
+const REQUEST_TIMEOUT_MS = 10_000;
+
 // An absolute reference: a URL scheme (`http:`, `file:`, …) or a
 // protocol-relative `//host` prefix. Same-origin paths never match.
 const ABSOLUTE_REFERENCE = /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i;
@@ -62,7 +67,13 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 	let response: Response;
 	try {
-		response = await fetch(`${API_V1_PREFIX}/${path}`, init);
+		response = await fetch(`${API_V1_PREFIX}/${path}`, {
+			...init,
+			// A caller-supplied signal wins; otherwise default to a timeout so no
+			// request can hang forever. A fired timeout rejects fetch with a
+			// TimeoutError, which the catch below maps to `network_error`.
+			signal: init?.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+		});
 	} catch (cause) {
 		throw new ApiError({
 			code: 'network_error',
