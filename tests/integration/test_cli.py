@@ -1,95 +1,424 @@
-"""Integration tests for the walking-skeleton Typer CLI.
+"""Integration tests for the real ``factory-console`` Typer entrypoint (T25).
 
-``--version`` is exercised directly; the boot path is exercised with ``uvicorn.run``
-and ``configure_logging`` monkeypatched so no real server ever starts in tests.
+Two complementary layers:
+
+* **Subprocess** — the ticket's explicit end-to-end requirement. Each case launches
+  ``[sys.executable, "-m", "factory_console", ...]`` with a ``PYTHONPATH`` pointing
+  at *this* worktree's ``server/`` (never the possibly-stale global console
+  script), so the child runs the code under test on macOS and Linux alike. The
+  happy path parses the printed contract URL, hits ``/api/v1/health`` over it, and
+  asserts a clean SIGINT exit 0; the failure cases assert exit codes 1/2/3.
+* **In-process** — fast :class:`~typer.testing.CliRunner` runs that also give
+  coverage of ``cli.py`` (subprocess execution is invisible to coverage.py). The
+  full boot path is driven with ``uvicorn.Server`` stubbed to a no-op so
+  ``server.run()`` returns immediately without ever binding a real socket.
 """
 
+import os
+import re
+import signal
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import httpx
 import pytest
 from typer.testing import CliRunner
 
 import factory_console
+from factory_console import cli
 from factory_console.cli import app
 
 runner = CliRunner()
 
+_TESTS_DIR = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_SERVER_DIR = _REPO_ROOT / "server"
+_FIXTURES = _TESTS_DIR / "fixtures" / "projects"
+_MINIMAL = _FIXTURES / "minimal"
+_MALFORMED = _FIXTURES / "malformed"
 
-def test_version_flag_prints_version_and_exits_zero() -> None:
+# Matches the URL inside the contract line for both IPv4 (127.0.0.1) and bracketed
+# IPv6 (`[::1]`) hosts, capturing the resolved port.
+_CONTRACT_URL_RE = re.compile(r"http://(?:\[[0-9a-fA-F:]+\]|[\d.]+):\d+")
+
+
+# --------------------------------------------------------------------------- #
+# In-process stubs
+# --------------------------------------------------------------------------- #
+
+
+class _StubServer:
+    """Stand-in for ``uvicorn.Server`` whose ``run()`` is a no-op.
+
+    Reports ``started = True`` so any browser-opening path sees a "ready" server;
+    ``run()`` returns immediately so the in-process boot path never binds a real
+    socket or blocks the test.
+    """
+
+    started = True
+
+    def __init__(self, config: object) -> None:
+        self.config = config
+
+    def run(self) -> None:
+        return None
+
+
+class _SyncThread:
+    """Stand-in for ``threading.Thread`` that runs its target synchronously.
+
+    Lets the "open the browser" branch be exercised deterministically in-process:
+    ``start()`` invokes the target inline instead of racing a real daemon thread.
+    """
+
+    def __init__(self, target: object, args: tuple = (), daemon: bool = False) -> None:
+        self._target = target
+        self._args = args
+
+    def start(self) -> None:
+        self._target(*self._args)
+
+
+class _ReadyServer:
+    """Minimal server double for :func:`_open_browser_when_ready` unit tests."""
+
+    started = True
+
+
+# --------------------------------------------------------------------------- #
+# Subprocess helpers
+# --------------------------------------------------------------------------- #
+
+
+def _child_env() -> dict[str, str]:
+    """Return the child env with this worktree's ``server/`` prepended to PYTHONPATH."""
+    existing = os.environ.get("PYTHONPATH", "")
+    entries = [str(_SERVER_DIR), *([existing] if existing else [])]
+    return {**os.environ, "PYTHONPATH": os.pathsep.join(entries)}
+
+
+def _launch(*args: str, **popen_kwargs: object) -> subprocess.Popen:
+    """Launch ``python -m factory_console <args>`` against this worktree's code."""
+    return subprocess.Popen(
+        [sys.executable, "-m", "factory_console", *args],
+        env=_child_env(),
+        **popen_kwargs,
+    )
+
+
+def _read_contract_url(proc: subprocess.Popen, timeout: float) -> str | None:
+    """Read ``proc``'s stdout until the contract URL line appears, or return ``None``.
+
+    Bounded by a wall-clock ``timeout`` and by the child dying (``poll()`` /
+    EOF) so a launch that never prints the line can never hang the test.
+    """
+    deadline = time.monotonic() + timeout
+    assert proc.stdout is not None
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            return None
+        line = proc.stdout.readline()
+        if line == "":
+            return None
+        if "Factory Console" in line:
+            match = _CONTRACT_URL_RE.search(line)
+            if match is not None:
+                return match.group(0)
+    return None
+
+
+def _terminate(proc: subprocess.Popen) -> None:
+    """Best-effort teardown so no child process leaks past a test."""
+    if proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+    if proc.stdout is not None:
+        proc.stdout.close()
+
+
+def _get_health(url: str, timeout: float) -> httpx.Response:
+    """GET ``{url}/api/v1/health``, retrying until the server is accepting connections.
+
+    The contract line is printed *before* ``server.run()`` binds the socket, so the
+    first request can race the server's startup and be refused. Retry on
+    :class:`httpx.ConnectError` up to ``timeout`` rather than sleeping a fixed
+    (flaky) amount.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return httpx.get(f"{url}/api/v1/health", timeout=5.0)
+        except httpx.ConnectError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
+
+
+# --------------------------------------------------------------------------- #
+# Subprocess tests (end-to-end)
+# --------------------------------------------------------------------------- #
+
+
+def test_subprocess_boot_serves_health_and_exits_zero_on_sigint() -> None:
+    proc = _launch(
+        str(_MINIMAL),
+        "--no-browser",
+        "--port",
+        "0",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    try:
+        url = _read_contract_url(proc, timeout=10.0)
+        assert url is not None, "CLI never printed the contract URL line"
+
+        resp = _get_health(url, timeout=10.0)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["projectRoot"] == str(_MINIMAL)
+
+        proc.send_signal(signal.SIGINT)
+        assert proc.wait(timeout=3) == 0
+    finally:
+        _terminate(proc)
+
+
+def test_subprocess_unknown_path_exits_one(tmp_path: Path) -> None:
+    missing = tmp_path / "not-a-project"
+    proc = _launch(
+        str(missing),
+        "--no-browser",
+        "--port",
+        "0",
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        assert proc.wait(timeout=10) == 1
+    finally:
+        _terminate(proc)
+
+
+def test_subprocess_malformed_manifest_exits_three() -> None:
+    proc = _launch(
+        str(_MALFORMED),
+        "--no-browser",
+        "--port",
+        "0",
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        assert proc.wait(timeout=10) == 3
+    finally:
+        _terminate(proc)
+
+
+def test_subprocess_port_in_use_exits_two() -> None:
+    holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        port = holder.getsockname()[1]
+        proc = _launch(
+            str(_MINIMAL),
+            "--no-browser",
+            "--port",
+            str(port),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            assert proc.wait(timeout=10) == 2
+        finally:
+            _terminate(proc)
+    finally:
+        holder.close()
+
+
+def test_subprocess_version_exits_zero() -> None:
+    proc = _launch(
+        "--version",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    try:
+        out, _ = proc.communicate(timeout=10)
+        assert proc.returncode == 0
+        assert f"factory-console v{factory_console.__version__}" in out
+    finally:
+        _terminate(proc)
+
+
+# --------------------------------------------------------------------------- #
+# In-process tests (CliRunner) — fast + coverage of cli.py
+# --------------------------------------------------------------------------- #
+
+
+def test_version_flag_prints_prefixed_version() -> None:
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
-    assert result.output.strip() == factory_console.__version__
+    assert result.output.strip() == f"factory-console v{factory_console.__version__}"
 
 
-def test_boot_configures_logging_and_runs_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: dict[str, object] = {}
-
-    def fake_run(_app: object, **kwargs: object) -> None:
-        calls["run_kwargs"] = kwargs
-
-    def fake_configure(level: str) -> None:
-        calls["log_level"] = level
-
-    monkeypatch.setattr("factory_console.cli.uvicorn.run", fake_run)
-    monkeypatch.setattr("factory_console.cli.configure_logging", fake_configure)
-    # The CLI boots the zero-arg create_dev_app factory; stub it so the boot path is
-    # exercised without discovering a real project or wiring the filesystem adapter.
-    monkeypatch.setattr("factory_console.cli.create_dev_app", lambda: object())
-
-    result = runner.invoke(app, ["--port", "8765", "--log-level", "DEBUG"])
-
-    assert result.exit_code == 0
-    assert calls["log_level"] == "DEBUG"
-    assert calls["run_kwargs"] == {"host": "127.0.0.1", "port": 8765, "log_level": "debug"}
-
-
-def test_lowercase_log_level_is_normalized_and_boots(monkeypatch: pytest.MonkeyPatch) -> None:
-    # A lowercase level (the natural uvicorn form) must be normalized to the
-    # uppercase name ``logging`` requires, not crash before boot.
-    calls: dict[str, object] = {}
-
-    def fake_run(_app: object, **kwargs: object) -> None:
-        calls["run_kwargs"] = kwargs
-
-    def fake_configure(level: str) -> None:
-        calls["log_level"] = level
-
-    monkeypatch.setattr("factory_console.cli.uvicorn.run", fake_run)
-    monkeypatch.setattr("factory_console.cli.configure_logging", fake_configure)
-    # The CLI boots the zero-arg create_dev_app factory; stub it so the boot path is
-    # exercised without discovering a real project or wiring the filesystem adapter.
-    monkeypatch.setattr("factory_console.cli.create_dev_app", lambda: object())
-
-    result = runner.invoke(app, ["--log-level", "debug"])
-
-    assert result.exit_code == 0
-    assert calls["log_level"] == "DEBUG"
-    assert calls["run_kwargs"]["log_level"] == "debug"
-
-
-def test_unknown_log_level_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-    booted = False
-
-    def fake_run(_app: object, **kwargs: object) -> None:
-        nonlocal booted
-        booted = True
-
-    monkeypatch.setattr("factory_console.cli.uvicorn.run", fake_run)
-
-    result = runner.invoke(app, ["--log-level", "bogus"])
-
-    assert result.exit_code == 2
-    assert not booted
-
-
-def test_non_loopback_host_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-    booted = False
-
-    def fake_run(_app: object, **kwargs: object) -> None:
-        nonlocal booted
-        booted = True
-
-    monkeypatch.setattr("factory_console.cli.uvicorn.run", fake_run)
-
+def test_non_loopback_host_is_rejected() -> None:
     result = runner.invoke(app, ["--host", "0.0.0.0"])
+    assert result.exit_code == 2
 
-    assert result.exit_code != 0
-    assert not booted
+
+def test_unknown_log_level_is_rejected() -> None:
+    result = runner.invoke(app, ["--log-level", "bogus"])
+    assert result.exit_code == 2
+
+
+def test_full_boot_prints_contract_line_and_configures_logging(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr("factory_console.cli.uvicorn.Server", _StubServer)
+    monkeypatch.setattr(
+        "factory_console.cli.configure_logging",
+        lambda level: captured.__setitem__("level", level),
+    )
+
+    result = runner.invoke(
+        app, [str(_MINIMAL), "--no-browser", "--port", "0", "--log-level", "debug"]
+    )
+
+    assert result.exit_code == 0
+    assert captured["level"] == "DEBUG"
+    prefix = (
+        f"Factory Console v{factory_console.__version__} — serving {_MINIMAL} at http://127.0.0.1:"
+    )
+    assert prefix in result.output
+    match = re.search(r"http://127\.0\.0\.1:(\d+)", result.output)
+    assert match is not None and int(match.group(1)) > 0
+
+
+def test_unknown_path_in_process_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("factory_console.cli.uvicorn.Server", _StubServer)
+    monkeypatch.setattr("factory_console.cli.configure_logging", lambda level: None)
+    missing = tmp_path / "not-a-project"
+
+    result = runner.invoke(app, [str(missing), "--no-browser", "--port", "0"])
+
+    assert result.exit_code == 1
+
+
+def test_malformed_manifest_in_process_exits_three(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("factory_console.cli.uvicorn.Server", _StubServer)
+    monkeypatch.setattr("factory_console.cli.configure_logging", lambda level: None)
+
+    result = runner.invoke(app, [str(_MALFORMED), "--no-browser", "--port", "0"])
+
+    assert result.exit_code == 3
+
+
+def test_explicit_port_in_use_in_process_exits_two(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("factory_console.cli.uvicorn.Server", _StubServer)
+    monkeypatch.setattr("factory_console.cli.configure_logging", lambda level: None)
+    holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        holder.bind(("127.0.0.1", 0))
+        port = holder.getsockname()[1]
+        result = runner.invoke(app, [str(_MINIMAL), "--no-browser", "--port", str(port)])
+        assert result.exit_code == 2
+    finally:
+        holder.close()
+
+
+def test_boot_starts_browser_thread_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    opened: dict[str, str] = {}
+    monkeypatch.setattr("factory_console.cli.uvicorn.Server", _StubServer)
+    monkeypatch.setattr("factory_console.cli.configure_logging", lambda level: None)
+    monkeypatch.setattr("factory_console.cli.threading.Thread", _SyncThread)
+    monkeypatch.setattr(
+        "factory_console.cli._open_browser_when_ready",
+        lambda server, url: opened.__setitem__("url", url),
+    )
+
+    result = runner.invoke(app, [str(_MINIMAL), "--port", "0"])
+
+    assert result.exit_code == 0
+    assert opened["url"].startswith("http://127.0.0.1:")
+
+
+# --------------------------------------------------------------------------- #
+# Unit tests for the small CLI helpers
+# --------------------------------------------------------------------------- #
+
+
+def test_format_host_for_url_brackets_ipv6() -> None:
+    assert cli._format_host_for_url("::1") == "[::1]"
+    assert cli._format_host_for_url("127.0.0.1") == "127.0.0.1"
+
+
+def test_open_browser_when_ready_opens_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    opened: dict[str, str] = {}
+    monkeypatch.setattr(
+        "factory_console.cli.webbrowser.open", lambda u: opened.__setitem__("url", u)
+    )
+    cli._open_browser_when_ready(_ReadyServer(), "http://127.0.0.1:9001")
+    assert opened["url"] == "http://127.0.0.1:9001"
+
+
+def test_open_browser_when_ready_swallows_headless_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _boom(_url: str) -> None:
+        raise RuntimeError("no display")
+
+    monkeypatch.setattr("factory_console.cli.webbrowser.open", _boom)
+    # Must not raise: a headless environment can never crash the process.
+    cli._open_browser_when_ready(_ReadyServer(), "http://127.0.0.1:9001")
+
+
+def test_open_browser_when_ready_gives_up_after_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("factory_console.cli._BROWSER_READY_TIMEOUT_S", 0.0)
+    opened = {"called": False}
+    monkeypatch.setattr(
+        "factory_console.cli.webbrowser.open",
+        lambda u: opened.__setitem__("called", True),
+    )
+
+    class _NeverReady:
+        started = False
+
+    cli._open_browser_when_ready(_NeverReady(), "http://127.0.0.1:9001")
+    assert opened["called"] is False
+
+
+def test_open_browser_when_ready_polls_until_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("factory_console.cli.time.sleep", lambda _s: None)
+    opened: dict[str, str] = {}
+    monkeypatch.setattr(
+        "factory_console.cli.webbrowser.open", lambda u: opened.__setitem__("url", u)
+    )
+
+    class _EventuallyReady:
+        """Reports not-started on the first poll, started on the second."""
+
+        def __init__(self) -> None:
+            self._checks = 0
+
+        @property
+        def started(self) -> bool:
+            self._checks += 1
+            return self._checks >= 2
+
+    cli._open_browser_when_ready(_EventuallyReady(), "http://127.0.0.1:9001")
+    assert opened["url"] == "http://127.0.0.1:9001"

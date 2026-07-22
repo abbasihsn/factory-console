@@ -1,0 +1,44 @@
+<script lang="ts">
+	import type { RunState } from '$lib/api';
+
+	// Presentational only: no `$app/*` imports, so it renders deterministically
+	// under vitest/jsdom with a supplied run-state. Each state maps to a colored
+	// pill, a humanized label, and a short tooltip explaining what it means. The
+	// prop is typed against the generated `RunState` (values are hyphenated, e.g.
+	// `in-flight`, not the Python enum member `in_flight`).
+	let { runState }: { runState: RunState } = $props();
+
+	// Full literal Tailwind class strings: the JIT scanner only sees complete
+	// class strings, so these must never be built dynamically (e.g. `bg-${c}-100`)
+	// or they get purged and the badge ships unstyled.
+	const STATE_CLASSES: Record<RunState, string> = {
+		todo: 'bg-gray-100 text-gray-800',
+		'in-flight': 'bg-amber-100 text-amber-800',
+		ready: 'bg-green-100 text-green-800',
+		merged: 'bg-violet-100 text-violet-800',
+		unknown: 'bg-slate-100 text-slate-500'
+	};
+	const STATE_LABELS: Record<RunState, string> = {
+		todo: 'To do',
+		'in-flight': 'In flight',
+		ready: 'Ready',
+		merged: 'Merged',
+		unknown: 'Unknown'
+	};
+	const STATE_TITLES: Record<RunState, string> = {
+		todo: 'Queued — no factory lane has started this ticket yet',
+		'in-flight': 'A factory lane is actively building this ticket',
+		ready: 'Built and reviewed — the PR is ready to merge',
+		merged: 'The ticket PR has been merged',
+		unknown: 'run-state directory not present or unresolved'
+	};
+</script>
+
+<span
+	class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {STATE_CLASSES[
+		runState
+	]}"
+	title={STATE_TITLES[runState]}
+>
+	{STATE_LABELS[runState]}
+</span>
