@@ -25,7 +25,7 @@ import time
 from importlib import resources
 from pathlib import Path
 
-from fastapi import APIRouter, FastAPI
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
@@ -66,24 +66,6 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         return response
 
 
-def _build_v1_router(version: str) -> APIRouter:
-    """Return the v1 API router carrying the ``/health`` liveness probe.
-
-    Built locally (not in an ``api/v1`` package) so this ticket does not create a
-    contested aggregation file; subsequent tickets add their sub-routers. The
-    health body pins ``version`` to the value ``create_app`` was given — matching
-    ``app.state.version`` — and ``projectRoot`` stays ``None`` until T24 wires it.
-    """
-    router = APIRouter(prefix=API_V1_PREFIX)
-
-    @router.get("/health")
-    def health() -> dict[str, object]:
-        """Liveness probe: ``{ok, version, projectRoot}`` (projectRoot null until T24)."""
-        return {"ok": True, "version": version, "projectRoot": None}
-
-    return router
-
-
 def _mount_static(app: FastAPI) -> None:
     """Mount the built SPA at ``/`` when ``factory_console/_static/`` exists.
 
@@ -120,7 +102,6 @@ def create_app(file_adapter: FileAdapter, *, version: str, project_root: Path) -
 
     register_error_handlers(app)
     app.add_middleware(AccessLogMiddleware)
-    app.include_router(_build_v1_router(version))
     app.include_router(v1_router)
     _mount_static(app)
     return app
