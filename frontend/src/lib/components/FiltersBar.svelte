@@ -55,28 +55,29 @@
 		onNavigate(params.toString());
 	}
 
+	// The four-field filter set behind the current selection: the URL-driven
+	// selects plus the live (possibly just-typed) search term. Both navigation
+	// paths build it here so the shape lives in exactly one place.
+	function currentFilters(): Filters {
+		return {
+			status: filters.status,
+			track: filters.track,
+			milestone: filters.milestone,
+			q: currentSearch()
+		};
+	}
+
 	// A select change navigates immediately, carrying the currently-typed search
 	// term; cancel any pending search debounce first (this navigation supersedes it).
 	function selectFilter(patch: Partial<Filters>): void {
 		clearTimeout(debounceTimer);
-		navigate({
-			status: filters.status,
-			track: filters.track,
-			milestone: filters.milestone,
-			q: currentSearch(),
-			...patch
-		});
+		navigate({ ...currentFilters(), ...patch });
 	}
 
 	function onSearchInput(): void {
 		clearTimeout(debounceTimer);
 		debounceTimer = setTimeout(() => {
-			navigate({
-				status: filters.status,
-				track: filters.track,
-				milestone: filters.milestone,
-				q: currentSearch()
-			});
+			navigate(currentFilters());
 		}, SEARCH_DEBOUNCE_MS);
 	}
 

@@ -63,4 +63,26 @@ describe('FiltersBar', () => {
 		// The changed track plus the active status + search term; empty milestone dropped.
 		expect(props.onNavigate).toHaveBeenCalledWith('status=done&track=frontend&q=auth');
 	});
+
+	it('cancels a pending search debounce when a select changes, navigating once', async () => {
+		vi.useFakeTimers();
+		const props = baseProps();
+		render(FiltersBar, { props });
+
+		// Start a debounced search, then change a select before the timer elapses.
+		await fireEvent.input(screen.getByLabelText('Search tickets'), {
+			target: { value: 'route' }
+		});
+		await fireEvent.change(screen.getByLabelText('Filter by status'), {
+			target: { value: 'done' }
+		});
+
+		// The select navigated immediately, carrying the typed term.
+		expect(props.onNavigate).toHaveBeenCalledTimes(1);
+		expect(props.onNavigate).toHaveBeenCalledWith('status=done&q=route');
+
+		// The superseded debounce must not fire a second navigation.
+		vi.advanceTimersByTime(250);
+		expect(props.onNavigate).toHaveBeenCalledTimes(1);
+	});
 });

@@ -8,6 +8,10 @@
 	import RunStateBadge from '$lib/components/RunStateBadge.svelte';
 
 	let { ticket }: { ticket: TicketSummary } = $props();
+
+	// Shared styling for the optional track/milestone chips (mirrors FiltersBar's
+	// SELECT_CLASS): one complete literal so the Tailwind JIT keeps the classes.
+	const CHIP_CLASS = 'shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600';
 </script>
 
 <div class="flex items-center gap-3 px-4 py-3">
@@ -18,18 +22,12 @@
 	<StatusBadge status={ticket.status} />
 	<RunStateBadge runState={ticket.runState} />
 	{#if ticket.track}
-		<span
-			class="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600"
-			title="track"
-		>
+		<span class={CHIP_CLASS} title="track">
 			{ticket.track}
 		</span>
 	{/if}
 	{#if ticket.milestone}
-		<span
-			class="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600"
-			title="milestone"
-		>
+		<span class={CHIP_CLASS} title="milestone">
 			{ticket.milestone}
 		</span>
 	{/if}

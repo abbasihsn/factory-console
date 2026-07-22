@@ -66,6 +66,34 @@ describe('tickets index page', () => {
 		expect(screen.getByText(/No tickets match/)).toBeTruthy();
 		expect(screen.getByRole('link', { name: 'clear filters' }).getAttribute('href')).toBe('/');
 	});
+
+	it('keeps a URL-active filter value selectable even when no loaded ticket carries it', () => {
+		// Every loaded ticket is status 'todo', but the URL filters to 'blocked'.
+		const items = [ticket('T30', 'Ticket list route')];
+		render(Page, { props: { data: pageData(items, { ...emptyFilters, status: 'blocked' }) } });
+
+		// distinctOptions unions the active value into the options, so the select
+		// still offers (and shows) it instead of silently reverting to "All statuses".
+		const statusSelect = screen.getByLabelText('Filter by status') as HTMLSelectElement;
+		expect(screen.getByRole('option', { name: 'blocked' })).toBeTruthy();
+		expect(statusSelect.value).toBe('blocked');
+	});
+
+	it('sorts and de-duplicates the filter options built from the loaded tickets', () => {
+		const items = [
+			{ ...ticket('T1', 'a'), status: 'todo' },
+			{ ...ticket('T2', 'b'), status: 'done' },
+			{ ...ticket('T3', 'c'), status: 'todo' },
+			{ ...ticket('T4', 'd'), status: 'blocked' }
+		];
+		render(Page, { props: { data: pageData(items) } });
+
+		const options = [...screen.getByLabelText('Filter by status').querySelectorAll('option')].map(
+			(option) => option.value
+		);
+		// '' is the "All statuses" placeholder; the rest are distinct + sorted.
+		expect(options).toEqual(['', 'blocked', 'done', 'todo']);
+	});
 });
 
 describe('tickets index load', () => {
@@ -112,6 +140,15 @@ describe('tickets index load', () => {
 		await expect(load({ url: new URL('http://localhost/') } as never)).rejects.toMatchObject({
 			status: 503,
 			body: { code: 'network_error' }
+		});
+	});
+
+	it('maps a non-ApiError rejection to a generic 500', async () => {
+		listTicketsMock.mockRejectedValue(new Error('boom'));
+
+		await expect(load({ url: new URL('http://localhost/') } as never)).rejects.toMatchObject({
+			status: 500,
+			body: { code: 'unknown_error', message: 'boom' }
 		});
 	});
 });
