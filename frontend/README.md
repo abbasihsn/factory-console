@@ -22,4 +22,4 @@ The SvelteKit SPA served by the Python server. Built via `adapter-static` (SPA m
 
 - The SPA is same-origin with the API — all fetches use relative URLs (`/api/v1/...`).
 - **Never render markdown client-side.** Server ships sanitized `bodyHtml`; the ONE component that uses `{@html}` is `MarkdownBody.svelte` (T29).
-- Types come from `src/lib/api/types.ts` (generated, `DO NOT EDIT`). Regenerate with `pnpm codegen` against a running backend.
+- Types come from `src/lib/api/types.ts` (generated, `DO NOT EDIT`). Regenerate with `pnpm codegen` against a running backend: it runs `openapi-typescript` (`--immutable`, so every field is `readonly`), then `scripts/postcodegen.mjs` to prepend the DO-NOT-EDIT banner. Override the source with `FC_OPENAPI_URL` (e.g. a saved `openapi.json`); it defaults to the dev backend at `http://127.0.0.1:8000/api/v1/openapi.json`.
