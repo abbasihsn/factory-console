@@ -43,8 +43,13 @@ def _real_app() -> FastAPI:
 
 
 def _absent_app() -> FastAPI:
-    """Build the real app over a FakeFileAdapter seeded with no roadmap."""
-    adapter = FakeFileAdapter(project=_FAKE_PROJECT, tickets=[], roadmap=None)
+    """Build the real app over a FakeFileAdapter whose project has no roadmap.
+
+    The endpoint decides presence from ``project.roadmapPath`` (it never calls
+    ``adapter.get_roadmap``), and ``_FAKE_PROJECT`` leaves ``roadmapPath`` unset, so
+    this pins the ``{present: false}`` branch.
+    """
+    adapter = FakeFileAdapter(project=_FAKE_PROJECT, tickets=[])
     return create_app(adapter, version="0.0.0", project_root=_FAKE_PROJECT.rootPath)
 
 

@@ -3,10 +3,9 @@
 The health handler moved out of ``app.py`` into ``api/v1/health.py`` (T24) and now
 reports the resolved ``projectRoot`` bound on ``app.state`` at boot instead of a
 hard-coded ``null``. Drive an app built over a :class:`FakeFileAdapter` with
-FastAPI's ``TestClient`` and pin: the enriched body over a bound root, the
-``projectRoot: null`` branch when the root is unbound, and that the schema still
-publishes the prefixed ``/api/v1/health`` path (folded in from the retired
-``test_health.py``).
+FastAPI's ``TestClient`` and pin: the enriched body over the bound root
+``create_app`` always binds, and that the schema still publishes the prefixed
+``/api/v1/health`` path (folded in from the retired ``test_health.py``).
 """
 
 from datetime import datetime
@@ -47,17 +46,6 @@ def test_health_reports_ok_version_and_bound_project_root() -> None:
         "version": factory_console.__version__,
         "projectRoot": str(_ROOT),
     }
-
-
-def test_health_reports_null_project_root_when_unbound() -> None:
-    app = _make_app()
-    # create_app always binds a real Path, so clearing it after boot is the only way
-    # to exercise the defensive ``projectRoot: null`` branch the getattr default guards.
-    app.state.project_root = None
-    client = TestClient(app)
-    resp = client.get("/api/v1/health")
-    assert resp.status_code == 200
-    assert resp.json()["projectRoot"] is None
 
 
 def test_openapi_publishes_prefixed_health_path() -> None:

@@ -10,6 +10,8 @@ so the probe reports the exact target project the console is bound to.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict
 
@@ -25,7 +27,7 @@ class HealthResponse(BaseModel):
 
     ok: bool
     version: str
-    projectRoot: str | None
+    projectRoot: Path
 
 
 @router.get("/health")
@@ -33,14 +35,14 @@ async def get_health(request: Request) -> HealthResponse:
     """Return the liveness probe with the resolved ``projectRoot`` from ``app.state``.
 
     Reads ``version`` and ``project_root`` that ``create_app`` stashed on
-    ``app.state`` at boot. ``project_root`` is read defensively via
-    ``getattr(..., None)`` (mirroring ``api/deps.py``) so the ``projectRoot: null``
-    branch stays reachable when the root is unbound; a bound root serializes as
-    ``str(root)``.
+    ``app.state`` at boot and trusts them: ``create_app`` binds a non-optional
+    ``project_root`` (the CLI always discovers a root; tests always pass a fixture
+    root), so — like its sibling handlers and the ``version`` read beside it — this
+    reads the root directly and lets Pydantic serialize the ``Path`` to a string.
     """
-    root = getattr(request.app.state, "project_root", None)
+    root: Path = request.app.state.project_root
     return HealthResponse(
         ok=True,
         version=request.app.state.version,
-        projectRoot=str(root) if root else None,
+        projectRoot=root,
     )

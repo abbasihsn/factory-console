@@ -32,8 +32,9 @@ const ABSOLUTE_REFERENCE = /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i;
  * Liveness-probe shape for `GET /api/v1/health`.
  *
  * The handler now returns a typed `HealthResponse` (`ok`, `version`,
- * `projectRoot`), but the committed `types.ts` predates that endpoint, so this
- * local shape mirrors it until `types.ts` is regenerated.
+ * `projectRoot`), but the committed `types.ts` was generated while `/health` still
+ * returned an untyped dict, so its response body is not typed there yet; this local
+ * shape mirrors `HealthResponse` until `types.ts` is regenerated.
  */
 export interface Health {
 	readonly ok: boolean;
