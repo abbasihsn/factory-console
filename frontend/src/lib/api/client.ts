@@ -51,6 +51,15 @@ export interface ListTicketsParams {
 }
 
 /**
+ * Resolved filter state for the tickets index — the four {@link ListTicketsParams}
+ * fields with every value present (an empty string means "unset"). The URL is the
+ * source of truth, so each param is always a defined string; deriving it as
+ * `Required<ListTicketsParams>` ties the UI filter shape to the API params, so a
+ * new filter is declared in exactly one place instead of three.
+ */
+export type Filters = Required<ListTicketsParams>;
+
+/**
  * Same-origin fetch + envelope normalization behind every wrapper.
  *
  * Exported for the co-located tests (the same-origin guard has no public
