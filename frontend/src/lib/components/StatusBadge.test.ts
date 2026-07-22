@@ -22,15 +22,28 @@ describe('StatusBadge', () => {
 		`);
 	});
 
-	it('renders the in-progress variant', () => {
-		const { container } = render(StatusBadge, { props: { status: 'in-progress' } });
+	it('renders the in_progress variant', () => {
+		const { container } = render(StatusBadge, { props: { status: 'in_progress' } });
 
-		expect(screen.getByText('in-progress')).toBeTruthy();
+		expect(screen.getByText('in_progress')).toBeTruthy();
 		expect(container.querySelector('span')).toMatchInlineSnapshot(`
 			<span
 			  class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-800"
 			>
-			  in-progress
+			  in_progress
+			</span>
+		`);
+	});
+
+	it('renders the in_review variant', () => {
+		const { container } = render(StatusBadge, { props: { status: 'in_review' } });
+
+		expect(screen.getByText('in_review')).toBeTruthy();
+		expect(container.querySelector('span')).toMatchInlineSnapshot(`
+			<span
+			  class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-800"
+			>
+			  in_review
 			</span>
 		`);
 	});
