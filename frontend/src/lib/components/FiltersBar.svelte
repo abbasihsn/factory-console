@@ -31,14 +31,15 @@
 	// a backend round-trip); the selects navigate immediately on change.
 	const SEARCH_DEBOUNCE_MS = 250;
 
-	// Local mirror of the search term, seeded from the URL-driven `q` and re-synced
-	// whenever it changes (e.g. a reset navigation clears it) so the box never
-	// drifts from the URL. The seed is read inside the effect (not the `$state`
-	// initializer) so it tracks every `filters.q` change, not just the first.
-	let searchTerm = $state('');
-	$effect(() => {
-		searchTerm = filters.q;
-	});
+	// Read the live search-box value directly rather than mirroring it into local
+	// state: the box is seeded one-way from the URL-driven `filters.q`, so a
+	// reset/replace navigation updates it, while typing (which never touches
+	// `filters.q`) leaves it alone between navigations. This keeps navigation
+	// deterministic — no effect timing to race.
+	let searchInput: HTMLInputElement | undefined;
+	function currentSearch(): string {
+		return searchInput?.value ?? filters.q;
+	}
 
 	let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -54,28 +55,27 @@
 		onNavigate(params.toString());
 	}
 
-	// A select change navigates immediately; cancel any pending search debounce and
-	// carry the currently-typed search term into this navigation.
+	// A select change navigates immediately, carrying the currently-typed search
+	// term; cancel any pending search debounce first (this navigation supersedes it).
 	function selectFilter(patch: Partial<Filters>): void {
 		clearTimeout(debounceTimer);
 		navigate({
 			status: filters.status,
 			track: filters.track,
 			milestone: filters.milestone,
-			q: searchTerm,
+			q: currentSearch(),
 			...patch
 		});
 	}
 
-	function onSearchInput(event: Event): void {
-		searchTerm = (event.currentTarget as HTMLInputElement).value;
+	function onSearchInput(): void {
 		clearTimeout(debounceTimer);
 		debounceTimer = setTimeout(() => {
 			navigate({
 				status: filters.status,
 				track: filters.track,
 				milestone: filters.milestone,
-				q: searchTerm
+				q: currentSearch()
 			});
 		}, SEARCH_DEBOUNCE_MS);
 	}
@@ -135,11 +135,12 @@
 	<label class="flex flex-1 flex-col gap-1 text-xs text-muted">
 		Search
 		<input
+			bind:this={searchInput}
 			type="search"
 			class={SELECT_CLASS}
 			aria-label="Search tickets"
 			placeholder="Search tickets…"
-			value={searchTerm}
+			value={filters.q}
 			oninput={onSearchInput}
 		/>
 	</label>
