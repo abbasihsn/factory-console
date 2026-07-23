@@ -26,7 +26,7 @@ from factory_console.domain import (
 )
 from factory_console.file_adapter import FileAdapter
 from factory_console.file_adapter.manifest import MalformedManifest
-from factory_console.file_adapter.real import RealFileAdapter
+from factory_console.file_adapter.real import RealFileAdapter, RoadmapUnreadable
 
 PROJECTS_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "projects"
 WITH_RUN_STATE = PROJECTS_DIR / "with_run_state"
@@ -220,6 +220,23 @@ def test_get_roadmap_returns_none_when_project_has_no_roadmap() -> None:
     project = adapter.load_project(MALFORMED)
     assert project.roadmapPath is None
     assert adapter.get_roadmap(project) is None
+
+
+def test_get_roadmap_maps_a_non_utf8_read_to_the_unreadable_envelope(tmp_path: Path) -> None:
+    # A discovered ROADMAP.md whose bytes are not valid UTF-8 must surface as the
+    # mapped RoadmapUnreadable envelope — like a ticket .md that cannot be decoded —
+    # rather than escaping as a raw UnicodeDecodeError / unmapped 500.
+    planning = tmp_path / "docs" / "planning"
+    planning.mkdir(parents=True)
+    (planning / "tickets.json").write_text('{"schemaVersion": 1, "tickets": []}', encoding="utf-8")
+    (tmp_path / "ROADMAP.md").write_bytes(b"\xff\xfe not valid utf-8")
+    adapter = RealFileAdapter()
+    project = adapter.load_project(tmp_path)
+    assert project.roadmapPath is not None
+    with pytest.raises(RoadmapUnreadable) as excinfo:
+        adapter.get_roadmap(project)
+    assert excinfo.value.code == "roadmap_unreadable"
+    assert excinfo.value.status == 500
 
 
 # --------------------------------------------------------------------------- #
