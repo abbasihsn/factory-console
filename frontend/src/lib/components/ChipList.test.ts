@@ -33,4 +33,25 @@ describe('ChipList', () => {
 		expect(screen.getByText('alpha')).toBeTruthy();
 		expect(screen.getByText('beta')).toBeTruthy();
 	});
+
+	// `ticket.dependsOn` / `ticket.provides` reach this component verbatim and no
+	// upstream layer promises their values are distinct — keying a repeated label
+	// used to throw `each_key_duplicate` and take the whole ticket detail page down.
+	it('renders a repeated label once instead of crashing', () => {
+		expect(() =>
+			render(ChipList, {
+				props: {
+					items: [
+						{ label: 'T30', href: '/tickets/T30' },
+						{ label: 'T30', href: '/tickets/T30' },
+						{ label: 'shared capability' },
+						{ label: 'shared capability' }
+					]
+				}
+			})
+		).not.toThrow();
+
+		expect(screen.getAllByRole('link', { name: 'T30' })).toHaveLength(1);
+		expect(screen.getAllByText('shared capability')).toHaveLength(1);
+	});
 });
