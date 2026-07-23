@@ -237,6 +237,22 @@ def test_duplicate_depends_on_does_not_inflate_the_reverse_index() -> None:
     assert [dep.id for dep in neighborhood.directDependents] == ["T-D"]  # no duplicate link
 
 
+def test_duplicate_depends_on_does_not_repeat_a_forward_neighbor() -> None:
+    # The forward side of the neighborhood must name each neighbour ONCE too, in
+    # first-seen order: a repeated id in either directDeps or unresolvedDeps is a
+    # duplicate key for the deps route's keyed {#each}, which crashes the page.
+    tickets = [
+        _make_ticket("T-A"),
+        _make_ticket("T-D", depends_on=["T-A", "GHOST-1", "T-A", "GHOST-1"]),
+    ]
+    fake = FakeFileAdapter(project=_make_project(), tickets=tickets)
+    neighborhood = fake.get_deps(_make_project(), "T-D")
+    assert neighborhood is not None
+    assert [dep.id for dep in neighborhood.directDeps] == ["T-A"]
+    assert neighborhood.unresolvedDeps == ["GHOST-1"]
+    assert neighborhood.ticket.depCount == 4  # all four declared edges still counted
+
+
 def test_self_dependency_counts_toward_dep_count_but_not_dependents() -> None:
     # A ticket that lists itself: the self-edge counts as a declared dependency
     # (depCount) and resolves in directDeps, but the reverse index never treats a
