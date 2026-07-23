@@ -77,12 +77,21 @@ def load_manifest(manifest_path: Path) -> tuple[str | None, list[dict[str, Any]]
     :class:`Ticket` stub by :func:`manifest_entry_to_ticket_stub`.
 
     Raises:
-        MalformedManifest: if the file is not valid JSON, the top level is not a
-            JSON object, ``tickets`` is missing or not a list, or any ``tickets``
-            entry is not a JSON object.
+        MalformedManifest: if the file cannot be read as UTF-8 text (a non-UTF-8
+            manifest, a permission-denied read, or a vanished file), if it is not
+            valid JSON, if the top level is not a JSON object, if ``tickets`` is
+            missing or not a list, or if any ``tickets`` entry is not a JSON object.
     """
-    with open(manifest_path, encoding="utf-8") as manifest_file:
-        raw_text = manifest_file.read()
+    # Guard the read itself, not just json.loads: a non-UTF-8 manifest raises
+    # UnicodeDecodeError and a permission-denied/vanished file raises OSError, and
+    # neither is a JSONDecodeError — so without this they would escape as an
+    # unmapped error (CLI exit 1 instead of the documented 3, a raw 500 on the
+    # request path). Mirrors read_ticket_md's read guard.
+    try:
+        with open(manifest_path, encoding="utf-8") as manifest_file:
+            raw_text = manifest_file.read()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise MalformedManifest(manifest_path, cause=exc) from exc
     try:
         parsed = json.loads(raw_text)
     except json.JSONDecodeError as exc:

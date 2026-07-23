@@ -209,6 +209,16 @@ def test_load_manifest_raises_when_top_level_is_not_an_object(tmp_path: Path) ->
         load_manifest(manifest_path)
 
 
+def test_load_manifest_raises_on_non_utf8_bytes(tmp_path: Path) -> None:
+    # The read itself must be guarded, not only json.loads: non-UTF-8 bytes raise
+    # UnicodeDecodeError (not JSONDecodeError), which must still surface as the
+    # documented MalformedManifest envelope rather than an unmapped error.
+    manifest_path = tmp_path / "tickets.json"
+    manifest_path.write_bytes(b"\xff\xfe not valid utf-8")
+    with pytest.raises(MalformedManifest):
+        load_manifest(manifest_path)
+
+
 @pytest.mark.parametrize(
     "tickets",
     [[42], [{"id": "TM-001"}, "oops"], [None]],

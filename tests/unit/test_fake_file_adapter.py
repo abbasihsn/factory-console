@@ -221,6 +221,22 @@ def test_get_deps_returns_none_for_unknown_id() -> None:
     assert fake.get_deps(_make_project(), "NOPE") is None
 
 
+def test_duplicate_depends_on_does_not_inflate_the_reverse_index() -> None:
+    # A ticket that declares the same dependency twice must count as ONE dependent
+    # of that id — the reverse index counts distinct dependent TICKETS, not declared
+    # edges — even though its own depCount still counts both declared edges.
+    fake = FakeFileAdapter(
+        project=_make_project(),
+        tickets=[_make_ticket("T-A"), _make_ticket("T-D", depends_on=["T-A", "T-A"])],
+    )
+    summaries = fake.list_tickets(_make_project())
+    assert _summary_by_id(summaries, "T-A").dependentCount == 1  # T-D counted once
+    assert _summary_by_id(summaries, "T-D").depCount == 2  # both declared edges counted
+    neighborhood = fake.get_deps(_make_project(), "T-A")
+    assert neighborhood is not None
+    assert [dep.id for dep in neighborhood.directDependents] == ["T-D"]  # no duplicate link
+
+
 def test_self_dependency_counts_toward_dep_count_but_not_dependents() -> None:
     # A ticket that lists itself: the self-edge counts as a declared dependency
     # (depCount) and resolves in directDeps, but the reverse index never treats a
