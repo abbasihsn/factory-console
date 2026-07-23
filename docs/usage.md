@@ -65,6 +65,18 @@ malformed-manifest) arrive with the full CLI wiring in backend T25.
 
 ## What you'll see
 
-_TODO (T34): browser screenshots of the ticket list, ticket detail, and
-dependency-neighborhood views, captured by the Playwright screenshots pipeline._
-Until that lands, run `factory-console` in a factory project to see the live UI.
+Captured from the real UI by the Playwright screenshots pipeline against the
+`with_run_state` fixture — see the ["Screenshots"](../README.md#screenshots)
+section of the root README to regenerate them.
+
+![Ticket list](screenshots/list.png)
+
+_The searchable ticket list at `/`._
+
+![Ticket detail](screenshots/detail.png)
+
+_The `CAD-125` detail view with rendered body, deps, and run-state badge._
+
+![Dependency neighborhood](screenshots/deps.png)
+
+_The `CAD-125` dependency neighborhood listing its direct deps._
