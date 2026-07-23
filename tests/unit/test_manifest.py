@@ -209,6 +209,16 @@ def test_load_manifest_raises_when_top_level_is_not_an_object(tmp_path: Path) ->
         load_manifest(manifest_path)
 
 
+def test_load_manifest_raises_on_non_utf8_bytes(tmp_path: Path) -> None:
+    # The read itself must be guarded, not only json.loads: non-UTF-8 bytes raise
+    # UnicodeDecodeError (not JSONDecodeError), which must still surface as the
+    # documented MalformedManifest envelope rather than an unmapped error.
+    manifest_path = tmp_path / "tickets.json"
+    manifest_path.write_bytes(b"\xff\xfe not valid utf-8")
+    with pytest.raises(MalformedManifest):
+        load_manifest(manifest_path)
+
+
 @pytest.mark.parametrize(
     "tickets",
     [[42], [{"id": "TM-001"}, "oops"], [None]],
@@ -223,3 +233,40 @@ def test_load_manifest_raises_when_an_entry_is_not_an_object(
     manifest_path.write_text(json.dumps({"tickets": tickets}), encoding="utf-8")
     with pytest.raises(MalformedManifest):
         load_manifest(manifest_path)
+
+
+# --------------------------------------------------------------------------- #
+# iter_ticket_stubs — a bad per-entry id surfaces as MalformedManifest (not raw)
+# --------------------------------------------------------------------------- #
+
+
+def _tmp_project(tmp_path: Path, tickets: list[object]) -> Project:
+    """A Project whose manifest holds ``tickets`` (structurally a valid list)."""
+    root = tmp_path / "proj"
+    manifest_path = root / "docs" / "planning" / "tickets.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps({"tickets": tickets}), encoding="utf-8")
+    return Project(
+        rootPath=root,
+        ticketsManifestPath=manifest_path,
+        ticketsDir=root / "docs" / "planning" / "tickets",
+        discoveredAt=datetime(2026, 7, 20, 12, 0, 0),
+    )
+
+
+def test_iter_ticket_stubs_maps_missing_id_to_malformed_manifest(tmp_path: Path) -> None:
+    # load_manifest validates structure but not that each entry carries an id, so a
+    # dict entry missing `id` would KeyError inside manifest_entry_to_ticket_stub;
+    # iter_ticket_stubs must re-raise it as the documented MalformedManifest envelope
+    # (CLI exit 3 / HTTP 500) rather than a raw traceback / bare 500.
+    project = _tmp_project(tmp_path, [{"title": "no id here", "status": "todo"}])
+    with pytest.raises(MalformedManifest):
+        list(iter_ticket_stubs(project))
+
+
+def test_iter_ticket_stubs_maps_invalid_id_to_malformed_manifest(tmp_path: Path) -> None:
+    # A regex-invalid id raises a pydantic ValidationError from the Ticket model;
+    # iter_ticket_stubs likewise surfaces it as MalformedManifest.
+    project = _tmp_project(tmp_path, [{"id": "bad/id", "title": "t", "status": "todo"}])
+    with pytest.raises(MalformedManifest):
+        list(iter_ticket_stubs(project))

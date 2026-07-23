@@ -43,7 +43,12 @@ class TicketProjection:
         self._by_id: dict[str, Ticket] = {ticket.id: ticket for ticket in tickets}
         self._dependents: dict[str, list[Ticket]] = {}
         for ticket in tickets:
-            for dep_id in ticket.dependsOn:
+            # ``dict.fromkeys`` collapses a ticket's own duplicate ``dependsOn`` ids
+            # (order-preserving) so a ``dependsOn=["B", "B"]`` counts the ticket as a
+            # dependent of B ONCE — the reverse index counts distinct dependent
+            # TICKETS, not declared edges. (``depCount = len(dependsOn)`` on the
+            # forward side still intentionally counts every declared edge.)
+            for dep_id in dict.fromkeys(ticket.dependsOn):
                 if dep_id == ticket.id:
                     continue  # a ticket is never its own dependent
                 self._dependents.setdefault(dep_id, []).append(ticket)

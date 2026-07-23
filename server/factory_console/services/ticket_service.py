@@ -59,18 +59,22 @@ class TicketService:
         seeded-map lookup in the fake, an on-disk probe in the real adapter via
         the shared projection), so this method only filters — it never re-probes
         run-state. ``status`` / ``track`` / ``milestone`` are exact-equality
-        filters applied only when the argument is not ``None``; ``q`` (when not
-        ``None``) is a case-insensitive substring match over the ticket id AND
-        title. Multiple filters combine with AND and input order is preserved.
+        filters applied only when the argument is a non-empty string; ``q`` (when
+        truthy) is a case-insensitive substring match over the ticket id AND
+        title. A blank value (``""``, how FastAPI parses ``?status=`` — not
+        ``None``) is treated as "unset" for ALL four params, so an empty query
+        param means "no filter" rather than "match only the empty string" (which
+        would silently return zero tickets). Multiple filters combine with AND and
+        input order is preserved.
         """
         summaries = self._adapter.list_tickets(project)
-        needle = q.lower() if q is not None else None
+        needle = q.lower() if q else None
         return [
             summary
             for summary in summaries
-            if (status is None or summary.status == status)
-            and (track is None or summary.track == track)
-            and (milestone is None or summary.milestone == milestone)
+            if (not status or summary.status == status)
+            and (not track or summary.track == track)
+            and (not milestone or summary.milestone == milestone)
             and (needle is None or needle in summary.id.lower() or needle in summary.title.lower())
         ]
 

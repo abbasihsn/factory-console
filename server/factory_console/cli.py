@@ -10,6 +10,9 @@ order, the full CLI contract from ``ARCHITECTURE.md``:
 * ``--version`` prints ``factory-console v{__version__}`` and exits 0;
 * ``--host`` is validated against the 127.0.0.1 loopback trust boundary via the
   shared :func:`~factory_console.config.require_loopback_host` rule (exit 2);
+* ``--port`` is range-checked to ``0..65535`` up front (exit 2) so an out-of-range
+  value fails like every other bad input instead of reaching ``socket.bind``
+  (whose ``OverflowError`` the bind ``except OSError`` would miss);
 * ``--log-level`` is normalized via
   :func:`~factory_console.logging.normalize_log_level` (exit 2) before logging is
   configured;
@@ -31,8 +34,14 @@ Python 3.11+ SIGINT the asyncio runner re-raises ``KeyboardInterrupt`` out of
 ``server.run()`` *after* that clean shutdown, which :func:`main` catches and
 swallows so Ctrl-C still exits 0 rather than 130.
 
-Exit codes: ``0`` ok · ``1`` project-not-found · ``2`` bad host / bad log level /
-port-in-use · ``3`` malformed manifest.
+``--host``/``--port``/``--log-level`` also read the documented
+``FACTORY_CONSOLE_HOST``/``FACTORY_CONSOLE_PORT``/``FACTORY_CONSOLE_LOG_LEVEL`` env
+vars (Typer ``envvar=``), with an explicit flag winning over the env var and the
+env var over the default — so the config surface the README advertises is live and
+still runs through the same host/log-level/port validation.
+
+Exit codes: ``0`` ok · ``1`` project-not-found · ``2`` bad host / out-of-range port
+/ bad log level / port-in-use · ``3`` malformed manifest.
 """
 
 import contextlib
@@ -117,10 +126,10 @@ def _open_browser_when_ready(server: uvicorn.Server, url: str) -> None:
 @app.command()
 def main(
     path: Path | None = typer.Argument(None),
-    port: int = typer.Option(0, "--port"),
-    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(0, "--port", envvar="FACTORY_CONSOLE_PORT"),
+    host: str = typer.Option("127.0.0.1", "--host", envvar="FACTORY_CONSOLE_HOST"),
     no_browser: bool = typer.Option(False, "--no-browser"),
-    log_level: str = typer.Option("INFO", "--log-level"),
+    log_level: str = typer.Option("INFO", "--log-level", envvar="FACTORY_CONSOLE_LOG_LEVEL"),
     version: bool = typer.Option(False, "--version"),
 ) -> None:
     """Discover an App Factory project, then serve the Factory Console over it.
@@ -152,6 +161,14 @@ def main(
     except ValueError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(2) from exc
+
+    # Range-check the port up front (cheap-input-first) so an out-of-range value
+    # exits 2 with a message like every other bad input, rather than reaching
+    # ``socket.bind`` — which raises OverflowError (NOT an OSError, so the bind
+    # try/except below would miss it) and dies with a raw traceback.
+    if not 0 <= port <= 65535:
+        typer.echo(f"port must be between 0 and 65535, got {port}", err=True)
+        raise typer.Exit(2)
 
     normalized_log_level = normalize_log_level(log_level)
     if normalized_log_level is None:

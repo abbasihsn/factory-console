@@ -63,6 +63,12 @@ def _make_app(fake: FakeFileAdapter | None = None) -> FastAPI:
     def _probe_ticket(ticket_id: str = PathParam(..., pattern=TICKET_ID_PATTERN)) -> dict[str, str]:
         return {"ticketId": ticket_id}
 
+    @app.get("/probe-boom")
+    def _probe_boom() -> None:
+        # A genuinely unhandled exception (not a FactoryConsoleError) so it escapes
+        # the registered handlers and becomes a 500 via ServerErrorMiddleware.
+        raise RuntimeError("boom")
+
     return app
 
 
@@ -116,6 +122,22 @@ def test_exactly_one_access_log_line_per_request(caplog: pytest.LogCaptureFixtur
     assert "GET" in message
     assert "/api/v1/health" in message
     assert "200" in message
+
+
+def test_access_log_line_emitted_for_unhandled_500(caplog: pytest.LogCaptureFixture) -> None:
+    # The one-line-per-request invariant must hold even when the handler raises an
+    # unhandled exception (turned into a 500 by ServerErrorMiddleware): exactly one
+    # access line, carrying status 500, is still emitted.
+    client = TestClient(_make_app(), raise_server_exceptions=False)
+    caplog.set_level(logging.INFO, logger="factory_console.access")
+    resp = client.get("/probe-boom")
+    assert resp.status_code == 500
+    records = [record for record in caplog.records if record.name == "factory_console.access"]
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert "GET" in message
+    assert "/probe-boom" in message
+    assert "500" in message
 
 
 def test_get_file_adapter_raises_when_unbound() -> None:

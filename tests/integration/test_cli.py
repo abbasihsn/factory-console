@@ -281,6 +281,53 @@ def test_unknown_log_level_is_rejected() -> None:
     assert result.exit_code == 2
 
 
+def test_out_of_range_port_is_rejected() -> None:
+    # A port past 65535 must fail fast with exit 2 (a clean message) rather than
+    # reaching socket.bind, which raises OverflowError (not caught by the bind's
+    # except OSError) and dies with a raw traceback.
+    result = runner.invoke(app, ["--port", "70000"])
+    assert result.exit_code == 2
+
+
+def test_env_var_configures_log_level_when_no_flag_given(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The documented FACTORY_CONSOLE_* env vars must actually take effect (Typer
+    # envvar=): with no --log-level flag, FACTORY_CONSOLE_LOG_LEVEL drives logging.
+    captured: dict[str, object] = {}
+    monkeypatch.setattr("factory_console.cli.uvicorn.Server", _StubServer)
+    monkeypatch.setattr(
+        "factory_console.cli.configure_logging",
+        lambda level: captured.__setitem__("level", level),
+    )
+
+    result = runner.invoke(
+        app,
+        [str(_MINIMAL), "--no-browser", "--port", "0"],
+        env={"FACTORY_CONSOLE_LOG_LEVEL": "debug"},
+    )
+
+    assert result.exit_code == 0
+    assert captured["level"] == "DEBUG"
+
+
+def test_explicit_log_level_flag_overrides_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Precedence: an explicit flag wins over the env var (which wins over the default).
+    captured: dict[str, object] = {}
+    monkeypatch.setattr("factory_console.cli.uvicorn.Server", _StubServer)
+    monkeypatch.setattr(
+        "factory_console.cli.configure_logging",
+        lambda level: captured.__setitem__("level", level),
+    )
+
+    result = runner.invoke(
+        app,
+        [str(_MINIMAL), "--no-browser", "--port", "0", "--log-level", "warning"],
+        env={"FACTORY_CONSOLE_LOG_LEVEL": "debug"},
+    )
+
+    assert result.exit_code == 0
+    assert captured["level"] == "WARNING"
+
+
 def test_full_boot_prints_contract_line_and_configures_logging(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

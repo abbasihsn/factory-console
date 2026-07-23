@@ -19,6 +19,7 @@ from factory_console.errors import to_error_response
 from factory_console.file_adapter.ticket_md import (
     PathTraversal,
     TicketFileMissing,
+    TicketFileUnreadable,
     enrich_ticket,
     read_ticket_md,
 )
@@ -128,6 +129,24 @@ def test_missing_file_raises_ticket_file_missing(tmp_path: Path) -> None:
         read_ticket_md(project, "T404")
 
 
+def test_non_utf8_ticket_file_raises_ticket_file_unreadable(tmp_path: Path) -> None:
+    # A ticket .md whose bytes are not valid UTF-8 must surface as the mapped
+    # unreadable envelope, not escape as a raw UnicodeDecodeError / unmapped 500.
+    project = _make_project(tmp_path)
+    (project.ticketsDir / "Tbad.md").write_bytes(b"\xff\xfe not valid utf-8")
+    with pytest.raises(TicketFileUnreadable):
+        read_ticket_md(project, "Tbad")
+
+
+def test_directory_at_ticket_path_raises_ticket_file_unreadable(tmp_path: Path) -> None:
+    # A directory sitting at <id>.md is present-but-unreadable (IsADirectoryError,
+    # an OSError) — it maps to the unreadable envelope, not a 404 or a raw 500.
+    project = _make_project(tmp_path)
+    (project.ticketsDir / "Tdir.md").mkdir()
+    with pytest.raises(TicketFileUnreadable):
+        read_ticket_md(project, "Tdir")
+
+
 def test_symlink_escaping_root_raises_path_traversal(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     outside_file = tmp_path / "outside" / "secret.md"
@@ -216,11 +235,18 @@ def test_ticket_file_missing_error_contract() -> None:
     assert exc.status == 404
 
 
+def test_ticket_file_unreadable_error_contract() -> None:
+    exc = TicketFileUnreadable("T500")
+    assert exc.code == "ticket_file_unreadable"
+    assert exc.status == 500
+    assert exc.details == {"ticketId": "T500"}
+
+
 def test_error_details_never_leak_resolved_path(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     resolved_path = str((project.ticketsDir / "T1.md").resolve())
 
-    for exc in (PathTraversal("T1"), TicketFileMissing("T1")):
+    for exc in (PathTraversal("T1"), TicketFileMissing("T1"), TicketFileUnreadable("T1")):
         envelope = to_error_response(exc)
         # Only the (user-supplied) ticket id is echoed back.
         assert envelope["error"]["details"] == {"ticketId": "T1"}

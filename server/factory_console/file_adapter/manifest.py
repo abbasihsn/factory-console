@@ -20,6 +20,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from factory_console.domain import Project, Ticket
 from factory_console.errors import FactoryConsoleError
 
@@ -75,12 +77,21 @@ def load_manifest(manifest_path: Path) -> tuple[str | None, list[dict[str, Any]]
     :class:`Ticket` stub by :func:`manifest_entry_to_ticket_stub`.
 
     Raises:
-        MalformedManifest: if the file is not valid JSON, the top level is not a
-            JSON object, ``tickets`` is missing or not a list, or any ``tickets``
-            entry is not a JSON object.
+        MalformedManifest: if the file cannot be read as UTF-8 text (a non-UTF-8
+            manifest, a permission-denied read, or a vanished file), if it is not
+            valid JSON, if the top level is not a JSON object, if ``tickets`` is
+            missing or not a list, or if any ``tickets`` entry is not a JSON object.
     """
-    with open(manifest_path, encoding="utf-8") as manifest_file:
-        raw_text = manifest_file.read()
+    # Guard the read itself, not just json.loads: a non-UTF-8 manifest raises
+    # UnicodeDecodeError and a permission-denied/vanished file raises OSError, and
+    # neither is a JSONDecodeError — so without this they would escape as an
+    # unmapped error (CLI exit 1 instead of the documented 3, a raw 500 on the
+    # request path). Mirrors read_ticket_md's read guard.
+    try:
+        with open(manifest_path, encoding="utf-8") as manifest_file:
+            raw_text = manifest_file.read()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise MalformedManifest(manifest_path, cause=exc) from exc
     try:
         parsed = json.loads(raw_text)
     except json.JSONDecodeError as exc:
@@ -139,7 +150,18 @@ def iter_ticket_stubs(project: Project) -> Iterator[Ticket]:
     from ``project.ticketsDir``. Lazy by design so a large manifest is streamed
     rather than materialized; a :class:`MalformedManifest` from :func:`load_manifest`
     propagates to the caller on first iteration.
+
+    ``load_manifest`` validates STRUCTURE (top-level object, ``tickets`` list, each
+    entry a dict) but not that an entry carries a valid ``id``; a per-entry
+    ``KeyError`` (missing ``id``) or pydantic ``ValidationError`` (an ``id`` failing
+    ``TICKET_ID_PATTERN``, or another mistyped field) is therefore re-raised here as
+    :class:`MalformedManifest` so a hand-edited manifest fails with the documented
+    envelope (CLI exit 3 / HTTP 500) rather than a raw traceback or a bare 500.
     """
-    _schema_version, entries = load_manifest(project.ticketsManifestPath)
+    manifest_path = project.ticketsManifestPath
+    _schema_version, entries = load_manifest(manifest_path)
     for entry in entries:
-        yield manifest_entry_to_ticket_stub(entry, project.ticketsDir)
+        try:
+            yield manifest_entry_to_ticket_stub(entry, project.ticketsDir)
+        except (KeyError, ValidationError) as exc:
+            raise MalformedManifest(manifest_path, cause=exc) from exc

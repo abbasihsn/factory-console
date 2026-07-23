@@ -53,13 +53,22 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
     Times the downstream handler with ``time.perf_counter()`` around
     ``call_next`` and logs AFTER the response is produced (so the status code is
     known), formatting the line with
-    :func:`~factory_console.logging.request_log_line`.
+    :func:`~factory_console.logging.request_log_line`. An UNHANDLED exception from
+    ``call_next`` (which ``BaseHTTPMiddleware`` re-raises) becomes a 500 line
+    before it propagates, so the one-line-per-request invariant holds even when the
+    outer ``ServerErrorMiddleware`` is the one that turns the exception into the
+    500 response.
     """
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         """Time the request and emit one access line once the handler returns."""
         started = time.perf_counter()
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception:
+            dur_ms = (time.perf_counter() - started) * 1000
+            _ACCESS_LOGGER.info(request_log_line(request.method, request.url.path, 500, dur_ms))
+            raise
         dur_ms = (time.perf_counter() - started) * 1000
         _ACCESS_LOGGER.info(
             request_log_line(request.method, request.url.path, response.status_code, dur_ms)

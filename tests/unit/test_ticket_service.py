@@ -138,6 +138,15 @@ def test_combined_status_and_track_filters_and_together() -> None:
     assert _ids(result) == ["T-100"]
 
 
+def test_blank_filters_are_treated_as_unset_and_return_every_ticket() -> None:
+    # FastAPI parses `?status=` as "" (not None). A blank value must mean "no
+    # filter" for all three exact-match params — like `q` — rather than matching
+    # only tickets whose field equals "" (which would silently return zero).
+    service, project = _service()
+    result = service.list_tickets(project, status="", track="", milestone="", q="")
+    assert _ids(result) == ["T-100", "T-118", "T-125", "T-140"]
+
+
 # --------------------------------------------------------------------------- #
 # list_tickets — q substring (case-insensitive over id AND title)
 # --------------------------------------------------------------------------- #

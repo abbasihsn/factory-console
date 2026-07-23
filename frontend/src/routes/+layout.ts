@@ -22,6 +22,15 @@ const NETWORK_ERROR: ApiError = {
 	hint: 'Is the backend running?'
 };
 
+// A 2xx whose body isn't the expected JSON (e.g. an HTML proxy page at 200) would
+// otherwise throw a raw SyntaxError out of this load, blanking the whole shell
+// instead of rendering the error boundary. Route it to the boundary like any
+// other unreachable-project failure.
+const INVALID_RESPONSE: ApiError = {
+	code: 'invalid_response',
+	message: 'The backend returned an unreadable response.'
+};
+
 // Fetch the resolved project once so every route can show it in the top bar.
 // Failures become SvelteKit errors so `page.error` carries a normalized
 // `ApiError` that `+error.svelte` renders.
@@ -42,6 +51,11 @@ export const load: LayoutLoad = async ({ fetch }) => {
 		throw error(response.status, normalizeError(body));
 	}
 
-	const project = (await response.json()) as Project;
+	let project: Project;
+	try {
+		project = (await response.json()) as Project;
+	} catch {
+		throw error(503, INVALID_RESPONSE);
+	}
 	return { project };
 };

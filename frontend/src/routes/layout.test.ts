@@ -56,4 +56,21 @@ describe('layout load', () => {
 
 		await expect(load({ fetch } as never)).resolves.toEqual({ project: { rootPath } });
 	});
+
+	it('maps a 2xx body that is not valid JSON to a 503 invalid_response boundary', async () => {
+		// A 200 whose body is not JSON must render the error boundary, not blank the
+		// whole shell with a raw SyntaxError out of the load.
+		const fetch = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => {
+				throw new SyntaxError('not json');
+			}
+		} as unknown as Response);
+
+		await expect(load({ fetch } as never)).rejects.toMatchObject({
+			status: 503,
+			body: { code: 'invalid_response' }
+		});
+	});
 });
