@@ -10,7 +10,10 @@ root, so a symlink pointing outside the project can never be read.
 Both unsafe-id causes — a pattern violation and a resolved path that escapes the
 root — surface as the same transport contract (:class:`PathTraversal`, status
 400, ``invalid_ticket_id``); a valid id with no file on disk surfaces as
-:class:`TicketFileMissing` (status 404, ``ticket_file_missing``).
+:class:`TicketFileMissing` (status 404, ``ticket_file_missing``); and a resolved
+path that exists but cannot be read as UTF-8 (a directory, a permission-denied
+read, or non-UTF-8 bytes) surfaces as :class:`TicketFileUnreadable` (status 500,
+``ticket_file_unreadable``) rather than escaping as an unmapped 500.
 """
 
 from __future__ import annotations
@@ -46,6 +49,28 @@ class TicketFileMissing(FactoryConsoleError):
             code="ticket_file_missing",
             message=f"No ticket file found for id '{ticket_id}'",
             status=404,
+            details={"ticketId": ticket_id},
+        )
+
+
+class TicketFileUnreadable(FactoryConsoleError):
+    """A ticket ``.md`` exists but cannot be read as UTF-8 text.
+
+    Distinct from :class:`TicketFileMissing` (no file at all): the path resolves to
+    something present that still cannot be turned into text — a directory at the
+    ``.md`` path (:class:`IsADirectoryError`), a permission-denied read
+    (:class:`PermissionError`), or bytes that are not valid UTF-8
+    (:class:`UnicodeDecodeError`). Mapped to HTTP 500 (a server-side data problem,
+    like :class:`~factory_console.file_adapter.manifest.MalformedManifest`) so the
+    edge layer renders a graceful envelope instead of leaking a raw traceback.
+    ``details`` carries the ``ticketId`` only — never the probed filesystem path.
+    """
+
+    def __init__(self, ticket_id: str) -> None:
+        super().__init__(
+            code="ticket_file_unreadable",
+            message=f"Ticket file for id '{ticket_id}' could not be read as UTF-8 text",
+            status=500,
             details={"ticketId": ticket_id},
         )
 
@@ -96,14 +121,22 @@ def read_ticket_md(project: Project, ticket_id: str) -> tuple[dict[str, Any], st
     the full original text (fences included) — this function never raises on
     malformed YAML.
 
-    Raises :class:`PathTraversal` for an unsafe id and :class:`TicketFileMissing`
-    when the resolved file does not exist.
+    Raises :class:`PathTraversal` for an unsafe id, :class:`TicketFileMissing`
+    when the resolved file does not exist, and :class:`TicketFileUnreadable` when
+    it exists but cannot be read as UTF-8 (a directory, a permission-denied read,
+    or non-UTF-8 bytes) — so every read failure surfaces as a mapped envelope
+    rather than escaping as an unmapped 500.
     """
     path = _safe_resolve(project, ticket_id)
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         raise TicketFileMissing(ticket_id) from exc
+    except (OSError, UnicodeDecodeError) as exc:
+        # FileNotFoundError is handled above; every OTHER read failure —
+        # IsADirectoryError/PermissionError (both OSError) or a non-UTF-8
+        # UnicodeDecodeError — maps to the graceful unreadable envelope.
+        raise TicketFileUnreadable(ticket_id) from exc
 
     front_matter_yaml, body = _split_front_matter(text)
     if front_matter_yaml is None:

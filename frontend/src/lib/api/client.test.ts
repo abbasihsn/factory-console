@@ -82,6 +82,24 @@ describe('API client', () => {
 		expect(error.status).toBe(500);
 	});
 
+	it('throws ApiError invalid_response when a 2xx body is not valid JSON', async () => {
+		// An HTML proxy/captive-portal page served with 200: response.json() rejects.
+		// The wrapper must still throw ApiError (not leak a raw SyntaxError).
+		const fetchMock = stubFetch();
+		fetchMock.mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => {
+				throw new SyntaxError('Unexpected token < in JSON');
+			}
+		} as unknown as Response);
+
+		const error = await rejection(getProject());
+		expect(error).toBeInstanceOf(ApiError);
+		expect(error.code).toBe('invalid_response');
+		expect(error.status).toBe(200);
+	});
+
 	it('URL-encodes listTickets query params and unwraps the items envelope', async () => {
 		const items = [
 			{

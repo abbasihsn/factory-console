@@ -106,7 +106,19 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 		});
 	}
 
-	return (await response.json()) as T;
+	// Parse the success body inside the guard too: a 2xx that isn't the expected
+	// JSON (e.g. an HTML proxy/captive-portal page served with 200) would otherwise
+	// throw a raw SyntaxError, breaking the "wrappers always throw ApiError" contract.
+	try {
+		return (await response.json()) as T;
+	} catch (cause) {
+		throw new ApiError({
+			code: 'invalid_response',
+			message: 'The backend returned an unreadable response.',
+			status: response.status,
+			details: cause
+		});
+	}
 }
 
 /** `GET /api/v1/project` — the discovered target project. */

@@ -20,6 +20,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from factory_console.domain import Project, Ticket
 from factory_console.errors import FactoryConsoleError
 
@@ -139,7 +141,18 @@ def iter_ticket_stubs(project: Project) -> Iterator[Ticket]:
     from ``project.ticketsDir``. Lazy by design so a large manifest is streamed
     rather than materialized; a :class:`MalformedManifest` from :func:`load_manifest`
     propagates to the caller on first iteration.
+
+    ``load_manifest`` validates STRUCTURE (top-level object, ``tickets`` list, each
+    entry a dict) but not that an entry carries a valid ``id``; a per-entry
+    ``KeyError`` (missing ``id``) or pydantic ``ValidationError`` (an ``id`` failing
+    ``TICKET_ID_PATTERN``, or another mistyped field) is therefore re-raised here as
+    :class:`MalformedManifest` so a hand-edited manifest fails with the documented
+    envelope (CLI exit 3 / HTTP 500) rather than a raw traceback or a bare 500.
     """
-    _schema_version, entries = load_manifest(project.ticketsManifestPath)
+    manifest_path = project.ticketsManifestPath
+    _schema_version, entries = load_manifest(manifest_path)
     for entry in entries:
-        yield manifest_entry_to_ticket_stub(entry, project.ticketsDir)
+        try:
+            yield manifest_entry_to_ticket_stub(entry, project.ticketsDir)
+        except (KeyError, ValidationError) as exc:
+            raise MalformedManifest(manifest_path, cause=exc) from exc
