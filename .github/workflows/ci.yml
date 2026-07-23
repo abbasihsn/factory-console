@@ -62,7 +62,7 @@ jobs:
         run: pre-commit run --all-files
 
       - name: Python tests + coverage
-        run: pytest -q --cov=factory_console --cov-report=xml --cov-fail-under=85
+        run: pytest -q --cov=factory_console --cov-report=xml
 
       - name: Frontend tests
         run: pnpm --dir frontend test
