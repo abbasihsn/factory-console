@@ -10,6 +10,7 @@
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"test": "vitest run --passWithNoTests",
 		"e2e": "playwright test",
+		"screenshots": "playwright test --grep screenshots && node scripts/copy-screenshots.mjs",
 		"codegen": "openapi-typescript ${FC_OPENAPI_URL:-http://127.0.0.1:8000/api/v1/openapi.json} -o src/lib/api/types.ts --immutable && node scripts/postcodegen.mjs",
 		"lint": "eslint . --ext .js,.cjs,.ts,.svelte",
 		"format": "prettier --write .",
