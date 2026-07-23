@@ -4,9 +4,10 @@
 contract: unknown entry fields are preserved verbatim on :attr:`Ticket.raw`,
 missing optionals default sensibly, and ``schemaVersion`` is surfaced as a string
 but never enforced — so a newer factory schema still parses here. Only genuinely
-unreadable input (invalid JSON, or a top level that is not an object carrying a
-``tickets`` list) raises :class:`MalformedManifest`, which the CLI maps to exit
-code 3 and the backend to HTTP 500.
+unreadable input (invalid JSON, a top level that is not an object carrying a
+``tickets`` list, or two entries sharing one ticket id) raises
+:class:`MalformedManifest`, which the CLI maps to exit code 3 and the backend to
+HTTP 500.
 
 The stubs this module builds carry empty ``bodyMarkdown`` / ``bodyHtml``; the
 rendered ticket ``.md`` body is joined in later (T13). The ``open`` here is one of
@@ -80,7 +81,8 @@ def load_manifest(manifest_path: Path) -> tuple[str | None, list[dict[str, Any]]
         MalformedManifest: if the file cannot be read as UTF-8 text (a non-UTF-8
             manifest, a permission-denied read, or a vanished file), if it is not
             valid JSON, if the top level is not a JSON object, if ``tickets`` is
-            missing or not a list, or if any ``tickets`` entry is not a JSON object.
+            missing or not a list, if any ``tickets`` entry is not a JSON object,
+            or if two entries carry the same ticket ``id``.
     """
     # Guard the read itself, not just json.loads: a non-UTF-8 manifest raises
     # UnicodeDecodeError and a permission-denied/vanished file raises OSError, and
@@ -103,12 +105,33 @@ def load_manifest(manifest_path: Path) -> tuple[str | None, list[dict[str, Any]]
     if not isinstance(tickets, list):
         cause = ValueError(f"'tickets' must be a list, got {type(tickets).__name__}")
         raise MalformedManifest(manifest_path, cause=cause) from cause
+    # Ids must be unique, and the check has to happen HERE — eagerly, before any
+    # entry is yielded — not while streaming stubs: ``get_ticket`` stops at the
+    # first matching id, so a later duplicate would go unnoticed there and the
+    # list/detail/deps views would silently disagree (list emits two rows, detail
+    # returns the first entry, deps the last). A duplicate id is a malformed
+    # manifest, so it is REJECTED rather than de-duplicated. Only the entry
+    # indexes are reported, never the id itself, keeping manifest content out of
+    # the error envelope.
+    seen_ids: dict[str, int] = {}
     for index, entry in enumerate(tickets):
         if not isinstance(entry, dict):
             cause = ValueError(
                 f"'tickets'[{index}] must be a JSON object, got {type(entry).__name__}"
             )
             raise MalformedManifest(manifest_path, cause=cause) from cause
+        entry_id = entry.get("id")
+        # A non-str/missing id is not this check's business: it surfaces per-entry
+        # as KeyError/ValidationError from manifest_entry_to_ticket_stub.
+        if not isinstance(entry_id, str):
+            continue
+        if entry_id in seen_ids:
+            cause = ValueError(
+                f"duplicate ticket id at 'tickets'[{index}], "
+                f"first seen at 'tickets'[{seen_ids[entry_id]}]"
+            )
+            raise MalformedManifest(manifest_path, cause=cause) from cause
+        seen_ids[entry_id] = index
     schema_version = parsed.get("schemaVersion")
     schema_version_str = None if schema_version is None else str(schema_version)
     return schema_version_str, tickets
@@ -152,7 +175,8 @@ def iter_ticket_stubs(project: Project) -> Iterator[Ticket]:
     propagates to the caller on first iteration.
 
     ``load_manifest`` validates STRUCTURE (top-level object, ``tickets`` list, each
-    entry a dict) but not that an entry carries a valid ``id``; a per-entry
+    entry a dict, no repeated ticket id) but not that an entry carries a valid
+    ``id`` in the first place; a per-entry
     ``KeyError`` (missing ``id``) or pydantic ``ValidationError`` (an ``id`` failing
     ``TICKET_ID_PATTERN``, or another mistyped field) is therefore re-raised here as
     :class:`MalformedManifest` so a hand-edited manifest fails with the documented

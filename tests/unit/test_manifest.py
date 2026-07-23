@@ -235,6 +235,32 @@ def test_load_manifest_raises_when_an_entry_is_not_an_object(
         load_manifest(manifest_path)
 
 
+def test_load_manifest_rejects_duplicate_ticket_ids(tmp_path: Path) -> None:
+    # Two entries sharing an id are a malformed manifest, not something to de-dup:
+    # tolerated, the list view emits two rows while detail returns the first entry
+    # and deps the last, so the three views silently disagree. The rejection is
+    # eager (in load_manifest) so every caller fails the same way.
+    manifest_path = tmp_path / "tickets.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "tickets": [
+                    {"id": "TM-001", "title": "First", "status": "todo"},
+                    {"id": "TM-002", "title": "Other", "status": "todo"},
+                    {"id": "TM-001", "title": "Second", "status": "done"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(MalformedManifest) as exc_info:
+        load_manifest(manifest_path)
+    # The message names the colliding entry indexes, never the manifest content.
+    assert "'tickets'[2]" in str(exc_info.value)
+    assert exc_info.value.details == {"path": str(manifest_path)}
+
+
 # --------------------------------------------------------------------------- #
 # iter_ticket_stubs — a bad per-entry id surfaces as MalformedManifest (not raw)
 # --------------------------------------------------------------------------- #
@@ -270,3 +296,18 @@ def test_iter_ticket_stubs_maps_invalid_id_to_malformed_manifest(tmp_path: Path)
     project = _tmp_project(tmp_path, [{"id": "bad/id", "title": "t", "status": "todo"}])
     with pytest.raises(MalformedManifest):
         list(iter_ticket_stubs(project))
+
+
+def test_iter_ticket_stubs_rejects_duplicate_ticket_ids(tmp_path: Path) -> None:
+    # The rejection happens before the FIRST stub is yielded, so a streaming caller
+    # (and get_ticket, which stops at the first matching id) cannot miss a duplicate
+    # that appears later in the manifest.
+    project = _tmp_project(
+        tmp_path,
+        [
+            {"id": "TM-001", "title": "First", "status": "todo"},
+            {"id": "TM-001", "title": "Second", "status": "done"},
+        ],
+    )
+    with pytest.raises(MalformedManifest):
+        next(iter_ticket_stubs(project))

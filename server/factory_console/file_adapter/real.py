@@ -38,6 +38,7 @@ from factory_console.domain import (
     Ticket,
     TicketSummary,
 )
+from factory_console.errors import FactoryConsoleError
 from factory_console.file_adapter.discovery import find_project_root
 from factory_console.file_adapter.manifest import iter_ticket_stubs
 from factory_console.file_adapter.markdown_render import render_markdown, render_ticket_html
@@ -47,6 +48,29 @@ from factory_console.file_adapter.ticket_md import enrich_ticket
 
 _ROADMAP_RELPATHS = (Path("ROADMAP.md"), Path("docs") / "ROADMAP.md")
 """Documented roadmap locations, probed in order: project root, then ``docs/``."""
+
+
+class RoadmapUnreadable(FactoryConsoleError):
+    """A discovered ``ROADMAP.md`` exists but cannot be read as UTF-8 text.
+
+    The roadmap's own read-failure envelope, mirroring
+    :class:`~factory_console.file_adapter.ticket_md.TicketFileUnreadable` for
+    ticket bodies and :class:`~factory_console.file_adapter.manifest.MalformedManifest`
+    for the manifest: a permission-denied read or a vanished file
+    (:class:`OSError`) and non-UTF-8 bytes (:class:`UnicodeDecodeError`) are
+    server-side data problems, so they map to HTTP 500 rather than escaping as an
+    unmapped 500. ``details`` carries the roadmap ``path`` — which discovery
+    already surfaces on ``Project.roadmapPath`` — never the file contents.
+    """
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(
+            code="roadmap_unreadable",
+            message=f"Roadmap at {path} could not be read as UTF-8 text",
+            status=500,
+            details={"path": str(path)},
+        )
+        self.path = path
 
 
 class RealFileAdapter:
@@ -143,10 +167,19 @@ class RealFileAdapter:
         ``None`` when ``project.roadmapPath`` is ``None`` (no roadmap discovered);
         otherwise reads the file with :meth:`Path.read_text` and renders the body
         via :func:`~factory_console.file_adapter.markdown_render.render_markdown`.
+
+        Raises :class:`RoadmapUnreadable` when the discovered file cannot be read
+        as UTF-8 (non-UTF-8 bytes, a permission-denied read, or a file that
+        vanished after discovery), so the failure surfaces as a mapped envelope
+        instead of an unmapped 500 — the same read guard ``read_ticket_md`` and
+        ``load_manifest`` use.
         """
         if project.roadmapPath is None:
             return None
-        body = project.roadmapPath.read_text(encoding="utf-8")
+        try:
+            body = project.roadmapPath.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise RoadmapUnreadable(project.roadmapPath) from exc
         return Roadmap(
             path=project.roadmapPath,
             bodyMarkdown=body,

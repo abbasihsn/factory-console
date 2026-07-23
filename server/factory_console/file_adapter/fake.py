@@ -90,9 +90,10 @@ class FakeFileAdapter:
     def get_deps(self, project: Project, ticket_id: str) -> DepNeighborhood | None:
         """Return the :class:`DepNeighborhood` for ``ticket_id``, or ``None`` if unseeded.
 
-        ``directDeps`` are the summaries of each ``dependsOn`` id that resolves to
-        a seeded ticket (in ``dependsOn`` order); ``unresolvedDeps`` are the
-        ``dependsOn`` ids with no seeded ticket (same order); ``directDependents``
+        ``directDeps`` are the summaries of each distinct ``dependsOn`` id that
+        resolves to a seeded ticket (in first-seen ``dependsOn`` order);
+        ``unresolvedDeps`` are the distinct ``dependsOn`` ids with no seeded
+        ticket (same order); ``directDependents``
         are the summaries of every OTHER seeded ticket that depends on
         ``ticket_id`` (in seeded order).
         """

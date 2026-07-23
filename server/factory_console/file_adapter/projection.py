@@ -18,6 +18,8 @@ The two derived semantics pinned here (and covered by the adapter tests):
 * the reverse index (``dependentCount`` / ``directDependents``) counts only
   OTHER tickets that name the id, so a self-referential edge never inflates it
   (that edge still counts toward the ticket's own ``depCount``).
+* the neighborhood's ``directDeps`` / ``unresolvedDeps`` name each neighbour ONCE
+  (first-seen order), so a repeated ``dependsOn`` id never returns a duplicate.
 """
 
 from __future__ import annotations
@@ -84,20 +86,28 @@ class TicketProjection:
         """Build the :class:`DepNeighborhood` for ``ticket``.
 
         ``directDeps`` are the summaries of each ``dependsOn`` id that resolves to
-        a known ticket (in ``dependsOn`` order); ``unresolvedDeps`` are the ids
-        with no matching ticket (same order); ``directDependents`` are the OTHER
-        tickets that depend on this one (in list order). Every summary comes from
-        :meth:`_summarize`, so it matches the list view.
+        a known ticket (in first-seen ``dependsOn`` order); ``unresolvedDeps`` are
+        the ids with no matching ticket (same order); ``directDependents`` are the
+        OTHER tickets that depend on this one (in list order). Every summary comes
+        from :meth:`_summarize`, so it matches the list view.
+
+        Both forward lists name each NEIGHBOUR once: ``dict.fromkeys`` collapses a
+        ticket's own duplicate ``dependsOn`` ids (order-preserving) the same way
+        the reverse index does, so a ``dependsOn=["B", "B"]`` cannot return B
+        twice — a repeated neighbour would crash the deps route's keyed ``{#each}``
+        in the frontend. (``depCount = len(dependsOn)`` on the summary still
+        intentionally counts every declared edge.)
         """
+        distinct_dep_ids = list(dict.fromkeys(ticket.dependsOn))
         return DepNeighborhood(
             ticket=self._summarize(ticket),
             directDeps=[
                 self._summarize(self._by_id[dep_id])
-                for dep_id in ticket.dependsOn
+                for dep_id in distinct_dep_ids
                 if dep_id in self._by_id
             ],
             directDependents=[
                 self._summarize(dependent) for dependent in self._dependents.get(ticket.id, [])
             ],
-            unresolvedDeps=[dep_id for dep_id in ticket.dependsOn if dep_id not in self._by_id],
+            unresolvedDeps=[dep_id for dep_id in distinct_dep_ids if dep_id not in self._by_id],
         )
