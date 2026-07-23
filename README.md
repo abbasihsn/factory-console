@@ -30,6 +30,24 @@ Within a few seconds the console discovers the project, starts a local server on
 
 Press Ctrl-C to stop. See [`docs/usage.md`](docs/usage.md) for flags, exit codes, and path resolution.
 
+## Screenshots
+
+Captured from the real UI by the Playwright screenshots pipeline against the `with_run_state` fixture.
+
+![Ticket list](docs/screenshots/list.png)
+
+_The searchable ticket list at `/`._
+
+![Ticket detail](docs/screenshots/detail.png)
+
+_The `CAD-125` detail view with rendered body, deps, and run-state badge._
+
+![Dependency neighborhood](docs/screenshots/deps.png)
+
+_The `CAD-125` dependency neighborhood listing its direct deps._
+
+Regenerate with `pnpm --dir frontend screenshots` (equivalently `pnpm --dir frontend e2e --grep screenshots && node frontend/scripts/copy-screenshots.mjs`).
+
 ## Docs
 
 - [`docs/usage.md`](docs/usage.md) — install, run, flags, exit codes.

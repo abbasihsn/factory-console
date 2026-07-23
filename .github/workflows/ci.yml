@@ -76,11 +76,8 @@ jobs:
         # and curls /api/v1/health.
         run: bash scripts/smoke.sh
 
-      - name: Playwright e2e (conditional; skips until fixtures + config land)
-        run: |
-          if [ -d tests/fixtures/projects/with_run_state ] && [ -f frontend/playwright.config.ts ]; then
-            pnpm --dir frontend exec playwright install --with-deps chromium && pnpm --dir frontend e2e
-          fi
+      - name: Playwright e2e
+        run: pnpm --dir frontend exec playwright install --with-deps chromium && pnpm --dir frontend e2e
 
       - name: Upload coverage report
         # Unique name per matrix cell — upload-artifact@v4 errors on duplicate
