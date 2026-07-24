@@ -5,23 +5,31 @@ extends. :func:`create_app` takes an injected
 :class:`~factory_console.file_adapter.protocol.FileAdapter` and stashes it — with
 the discovered ``project_root`` and the package ``version`` — on ``app.state`` so
 handlers reach the adapter through the ``Depends(get_file_adapter)`` seam without
-importing a concrete adapter. It wires the two cross-cutting concerns every
-endpoint relies on: the domain/validation exception handlers
+importing a concrete adapter. It also accepts an optional long-lived
+:class:`~factory_console.file_adapter.watcher.FileWatcher` (T39's port), stashed on
+``app.state.file_watcher`` for the ``Depends(get_file_watcher)`` seam and driven by
+a FastAPI ``lifespan`` that ``start()``s it at boot and ``stop()``s it on shutdown
+— the first (deliberate) deviation from the MVP's no-watcher rule, plumbing the
+watcher backbone the SSE endpoint (T45) builds on. It wires the two cross-cutting
+concerns every endpoint relies on: the domain/validation exception handlers
 (:func:`~factory_console.api.error_handlers.register_error_handlers`) and a single
 access-log line per request (:class:`AccessLogMiddleware`). The packaged SPA is
 served last, unchanged from the walking skeleton.
 
 :func:`create_dev_app` is the zero-arg factory ``scripts/dev.sh``'s
 ``uvicorn --factory`` invocation targets; it discovers the project root and
-instantiates the filesystem-backed ``RealFileAdapter`` lazily, so importing this
-module never imports ``real.py`` (whose only runtime users are this dev shortcut
-and T25's production CLI).
+instantiates the filesystem-backed ``RealFileAdapter`` and the watchdog-backed
+``RealFileWatcher`` lazily, so importing this module never imports ``real.py`` or
+``watcher_real.py`` (and never pulls in ``watchdog``) — their only runtime users
+are this dev shortcut and T25's production CLI.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
+from collections.abc import AsyncIterator
 from importlib import resources
 from pathlib import Path
 
@@ -37,6 +45,7 @@ from factory_console.api.error_handlers import register_error_handlers
 from factory_console.api.v1 import API_V1_PREFIX
 from factory_console.api.v1 import router as v1_router
 from factory_console.file_adapter.protocol import FileAdapter
+from factory_console.file_adapter.watcher import FileWatcher
 from factory_console.logging import request_log_line
 
 # ``API_V1_PREFIX`` (imported above) is owned by the ``api.v1`` package so the
@@ -128,15 +137,49 @@ def _mount_static(app: FastAPI) -> None:
     app.mount("/", _SpaStaticFiles(directory=str(static_dir), html=True), name="static")
 
 
-def create_app(file_adapter: FileAdapter, *, version: str, project_root: Path) -> FastAPI:
+@contextlib.asynccontextmanager
+async def _watcher_lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Start/stop the bound :class:`FileWatcher` around the app's serving window.
+
+    Reads the watcher off ``app.state.file_watcher`` (set by :func:`create_app`)
+    rather than closing over the argument, so there is no construct-vs-startup
+    ordering hazard. When a watcher is bound, its SYNCHRONOUS ``start()`` runs on
+    entry — from inside this async context so ``RealFileWatcher`` captures the
+    running loop it later hands watchdog callbacks to — and its ``stop()`` runs in
+    a ``finally`` on exit, so uvicorn's SIGINT/SIGTERM drain always joins the
+    observer thread even if serving raised, leaving no thread/observer leak. A
+    ``None`` watcher (the common test/adapter-only path) makes both a no-op.
+    """
+    file_watcher: FileWatcher | None = getattr(app.state, "file_watcher", None)
+    if file_watcher is not None:
+        file_watcher.start()
+    try:
+        yield
+    finally:
+        if file_watcher is not None:
+            file_watcher.stop()
+
+
+def create_app(
+    file_adapter: FileAdapter,
+    *,
+    version: str,
+    project_root: Path,
+    file_watcher: FileWatcher | None = None,
+) -> FastAPI:
     """Build the Factory Console app around an injected ``FileAdapter``.
 
     ``file_adapter`` is stashed on ``app.state`` for the
     ``Depends(get_file_adapter)`` seam, alongside ``project_root`` (the discovered
-    target project) and ``version``. Registers the domain/validation exception
-    handlers and the access-log middleware, includes the v1 router, and mounts the
-    packaged SPA last. ``project_root`` is non-optional: the CLI always discovers a
-    root before boot and tests always pass a fixture root.
+    target project) and ``version``. The optional ``file_watcher`` (T39's
+    :class:`FileWatcher` port) is stashed on ``app.state.file_watcher`` for the
+    ``Depends(get_file_watcher)`` seam and driven by :func:`_watcher_lifespan`,
+    which ``start()``s it at boot and ``stop()``s it on shutdown; leaving it
+    ``None`` keeps the app watcher-free (the adapter-only default). Registers the
+    domain/validation exception handlers and the access-log middleware, includes
+    the v1 router, and mounts the packaged SPA last. ``project_root`` is
+    non-optional: the CLI always discovers a root before boot and tests always pass
+    a fixture root.
     """
     app = FastAPI(
         title="Factory Console",
@@ -144,10 +187,12 @@ def create_app(file_adapter: FileAdapter, *, version: str, project_root: Path) -
         openapi_url=f"{API_V1_PREFIX}/openapi.json",
         docs_url=None,
         redoc_url=None,
+        lifespan=_watcher_lifespan,
     )
     app.state.file_adapter = file_adapter
     app.state.project_root = project_root
     app.state.version = version
+    app.state.file_watcher = file_watcher
 
     register_error_handlers(app)
     app.add_middleware(AccessLogMiddleware)
@@ -160,13 +205,23 @@ def create_dev_app() -> FastAPI:
     """Zero-arg app factory targeted by ``scripts/dev.sh``'s ``uvicorn --factory``.
 
     Discovers the project root from the current working directory and wires the
-    filesystem-backed :class:`~factory_console.file_adapter.real.RealFileAdapter`.
-    The imports are lazy so importing this module never pulls in ``real.py`` — the
-    only runtime users of the real adapter are this dev shortcut and T25's CLI.
+    filesystem-backed :class:`~factory_console.file_adapter.real.RealFileAdapter`
+    plus the watchdog-backed
+    :class:`~factory_console.file_adapter.watcher_real.RealFileWatcher` rooted at
+    that same root. The imports are lazy so importing this module never pulls in
+    ``real.py`` or ``watcher_real.py`` (and never imports ``watchdog``) — the only
+    runtime users of the concrete adapter/watcher are this dev shortcut and T25's
+    CLI.
     """
     from factory_console import __version__
     from factory_console.file_adapter.discovery import discover_project
     from factory_console.file_adapter.real import RealFileAdapter
+    from factory_console.file_adapter.watcher_real import RealFileWatcher
 
     root = discover_project(None, Path.cwd())
-    return create_app(RealFileAdapter(), version=__version__, project_root=root)
+    return create_app(
+        RealFileAdapter(),
+        version=__version__,
+        project_root=root,
+        file_watcher=RealFileWatcher(root),
+    )
