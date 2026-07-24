@@ -23,6 +23,13 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+# The change-event vocabularies, exported as named types so producers (the T40
+# watcher) share ONE source of truth instead of re-listing the verbs/scopes or
+# scraping them back out of Pydantic internals. ``ChangeKind`` is the change
+# verb; ``ChangeScope`` is the watched subtree a change belongs to.
+ChangeKind = Literal["created", "modified", "deleted", "moved"]
+ChangeScope = Literal["planning", "run-state"]
+
 
 class ChangeEvent(BaseModel):
     """One filesystem change observed under the watched project.
@@ -37,9 +44,9 @@ class ChangeEvent(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    kind: Literal["created", "modified", "deleted", "moved"]
+    kind: ChangeKind
     path: str
-    scope: Literal["planning", "run-state"]
+    scope: ChangeScope
     at: datetime
 
     @field_validator("path")

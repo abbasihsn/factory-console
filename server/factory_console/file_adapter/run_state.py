@@ -56,6 +56,25 @@ def find_run_state_dir(project_root: Path) -> Path | None:
     return None
 
 
+def is_run_state_marker(rel_path: str) -> bool:
+    """True if ``rel_path`` (project-relative, POSIX) names a run-state marker.
+
+    A marker lives exactly two segments below a run-state location —
+    ``<location>/<state>/<ticket_id>`` — which is the layout
+    :func:`probe_ticket_state` reads (``run_state_dir / state / ticket_id``).
+    Owning that structural rule here, next to the locations it belongs to, keeps
+    the T40 watcher's marker detection from drifting from the prober's marker
+    layout — the same single-source guarantee both already share via
+    :data:`RUN_STATE_RELATIVE_LOCATIONS`.
+    """
+    for location in RUN_STATE_RELATIVE_LOCATIONS:
+        prefix = location.as_posix()
+        if rel_path.startswith(prefix + "/"):
+            remainder = rel_path[len(prefix) + 1 :]
+            return remainder.count("/") == 1
+    return False
+
+
 def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
     """Resolve ``ticket_id``'s :class:`RunState` by probing ``run_state_dir``.
 

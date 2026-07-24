@@ -27,6 +27,41 @@ from typing import Protocol, runtime_checkable
 from factory_console.domain.watch import ChangeEvent
 
 
+class _SubscriberHub:
+    """Register / unregister / fan-out mechanics shared by ``FileWatcher`` impls.
+
+    Holds the per-client queues, registers a fresh one on the first
+    :meth:`subscribe` await and unregisters it in a ``finally`` (leak-safe on
+    client disconnect or cancellation, never blocking the others), and
+    :meth:`fan_out`\\ s an event to every registered queue. Both
+    :class:`FakeFileWatcher` and the T40 ``RealFileWatcher`` hold one, so this
+    leak-safety / fan-out logic lives in exactly one place and cannot drift
+    between them. Keeping it HERE — not in the ``watcher_real`` source its
+    read-only AST guard scans — is also why the real watcher can share the
+    ``list.remove`` mechanics that guard would otherwise forbid by name.
+    """
+
+    def __init__(self) -> None:
+        self._subscribers: list[asyncio.Queue[ChangeEvent]] = []
+
+    def fan_out(self, event: ChangeEvent) -> None:
+        """Deliver ``event`` to every registered subscriber queue."""
+        # Snapshot so a subscriber unregistering mid-iteration (client disconnect)
+        # cannot mutate the list under us.
+        for queue in list(self._subscribers):
+            queue.put_nowait(event)
+
+    async def subscribe(self) -> AsyncIterator[ChangeEvent]:
+        """Register a fresh queue and yield each awaited event until cancelled."""
+        queue: asyncio.Queue[ChangeEvent] = asyncio.Queue()
+        self._subscribers.append(queue)
+        try:
+            while True:
+                yield await queue.get()
+        finally:
+            self._subscribers.remove(queue)
+
+
 @runtime_checkable
 class FileWatcher(Protocol):
     """Long-lived port that streams :class:`ChangeEvent`s to per-client subscribers.
@@ -68,7 +103,7 @@ class FakeFileWatcher:
 
     def __init__(self) -> None:
         self._running = False
-        self._subscribers: list[asyncio.Queue[ChangeEvent]] = []
+        self._hub = _SubscriberHub()
 
     def start(self) -> None:
         """Flip the running flag on (idempotent)."""
@@ -80,19 +115,14 @@ class FakeFileWatcher:
 
     def emit(self, event: ChangeEvent) -> None:
         """Fan ``event`` out to every registered subscriber (test driver, not on the port)."""
-        for queue in self._subscribers:
-            queue.put_nowait(event)
+        self._hub.fan_out(event)
 
-    async def subscribe(self) -> AsyncIterator[ChangeEvent]:
+    def subscribe(self) -> AsyncIterator[ChangeEvent]:
         """Register a fresh queue and yield each awaited event until cancelled.
 
-        The queue is unregistered in a ``finally`` block, so a cancelled or
-        closed subscriber leaks nothing and does not block the others.
+        Returns the shared :class:`_SubscriberHub`'s async iterator directly (not
+        a wrapper), so closing it runs the hub's ``finally`` that unregisters the
+        queue — a cancelled or closed subscriber leaks nothing and does not block
+        the others.
         """
-        queue: asyncio.Queue[ChangeEvent] = asyncio.Queue()
-        self._subscribers.append(queue)
-        try:
-            while True:
-                yield await queue.get()
-        finally:
-            self._subscribers.remove(queue)
+        return self._hub.subscribe()
