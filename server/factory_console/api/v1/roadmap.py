@@ -1,12 +1,11 @@
-"""The ``GET /api/v1/roadmap`` presence probe for the project ``ROADMAP.md``.
+"""The ``GET /api/v1/roadmap`` endpoint: the project's rendered ``ROADMAP.md``.
 
-Presence-only in the MVP: the endpoint reports whether the discovered project has a
-roadmap document and, when present, its resolved path — never the rendered body
-(the ``bodyMarkdown``/``bodyHtml`` on the
-:class:`~factory_console.domain.deps.Roadmap` domain model land in a later
-milestone). Mirrors ``api/v1/project.py``: the package ``__init__`` owns the
+Serves the full roadmap document — the rendered body (``bodyMarkdown`` +
+``bodyHtml``) plus the structured ``milestones[]`` parsed from it — for the
+discovered project, or the slim ``{present: false}`` envelope when the project
+has no roadmap. Mirrors ``api/v1/project.py``: the package ``__init__`` owns the
 ``/api/v1`` prefix; this sub-router only names the route, its OpenAPI tag, and the
-slim presence envelopes.
+backend-owned :class:`RoadmapAbsent` envelope.
 """
 
 from __future__ import annotations
@@ -18,6 +17,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict
 
 from factory_console.api.deps import get_file_adapter
+from factory_console.domain import Roadmap
 from factory_console.file_adapter.protocol import FileAdapter
 
 # The package ``__init__`` owns the ``/api/v1`` prefix; this sub-router only names
@@ -25,17 +25,13 @@ from factory_console.file_adapter.protocol import FileAdapter
 router = APIRouter(tags=["roadmap"])
 
 
-class RoadmapPresent(BaseModel):
-    """Presence response when the project has a roadmap: ``present: true`` and its ``path``."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    present: Literal[True] = True
-    path: Path
-
-
 class RoadmapAbsent(BaseModel):
-    """Presence response when the project has no roadmap: ``present: false``."""
+    """Response when the project has no roadmap: ``present: false``.
+
+    The backend-owned discriminator: :class:`~factory_console.domain.deps.Roadmap`
+    carries no ``present`` field, so the frontend discriminates the present branch
+    from this absent one on that key's presence.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -46,20 +42,20 @@ class RoadmapAbsent(BaseModel):
 async def get_roadmap(
     request: Request,
     adapter: FileAdapter = Depends(get_file_adapter),
-) -> RoadmapPresent | RoadmapAbsent:
-    """Return whether the discovered project has a roadmap, and its path when present.
+) -> Roadmap | RoadmapAbsent:
+    """Return the project's full :class:`Roadmap`, or :class:`RoadmapAbsent`.
 
-    Loads the discovered project from ``request.app.state.project_root`` and reads
-    presence straight off ``project.roadmapPath`` (``None`` exactly when discovery
-    found no roadmap): returns :class:`RoadmapPresent` with that resolved path, else
-    :class:`RoadmapAbsent`. It deliberately does NOT call ``adapter.get_roadmap``,
-    which reads and renders the whole document — wasteful when the MVP serves only
-    presence and the path (the rendered body lands with a later milestone). Does no
-    error handling of its own: a ``ProjectNotFound`` from ``load_project`` propagates
-    to the registered domain-error handler.
+    Loads the discovered project from ``request.app.state.project_root`` and calls
+    ``adapter.get_roadmap(project)``, returning the full :class:`Roadmap` — its
+    ``bodyMarkdown``, ``bodyHtml``, and structured ``milestones[]`` — when the
+    project has one, else :class:`RoadmapAbsent`. Does no error handling of its
+    own: a ``ProjectNotFound`` from ``load_project`` or a ``RoadmapUnreadable``
+    (500) from ``adapter.get_roadmap`` propagates to the registered domain-error
+    handler, which renders the mapped envelope.
     """
     root: Path = request.app.state.project_root
     project = adapter.load_project(root)
-    if project.roadmapPath is None:
+    roadmap = adapter.get_roadmap(project)
+    if roadmap is None:
         return RoadmapAbsent()
-    return RoadmapPresent(path=project.roadmapPath)
+    return roadmap
