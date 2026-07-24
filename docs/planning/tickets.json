@@ -2,40 +2,755 @@
   "project": "factory-console",
   "schemaVersion": 1,
   "tickets": [
-    {"id": "T01", "title": "Monorepo skeleton (dirs, LICENSE, .gitignore, README stub, .python-version)", "track": "foundation", "milestone": "MVP", "depends_on": [], "provides": "Empty repo tree matching PROJECT_STRUCTURE.md", "path": "docs/planning/tickets/mvp/T01-monorepo-skeleton.md", "status": "todo"},
-    {"id": "T02", "title": "Python package skeleton + pyproject.toml + factory-console entry point", "track": "foundation", "milestone": "MVP", "depends_on": ["T01"], "provides": "Installable factory_console package with factory-console entry point", "path": "docs/planning/tickets/mvp/T02-python-package-skeleton.md", "status": "todo"},
-    {"id": "T03", "title": "Frontend skeleton (SvelteKit + adapter-static + Tailwind + Vitest + Playwright + openapi-typescript)", "track": "foundation", "milestone": "MVP", "depends_on": ["T01"], "provides": "Buildable SvelteKit SPA scaffold", "path": "docs/planning/tickets/mvp/T03-frontend-skeleton.md", "status": "todo"},
-    {"id": "T04", "title": "Observability skeleton (logging.py + errors.py base + config.py)", "track": "foundation", "milestone": "MVP", "depends_on": ["T02"], "provides": "Shared logging formatter, FactoryConsoleError base + to_error_response, Settings pinned to 127.0.0.1", "path": "docs/planning/tickets/mvp/T04-observability-skeleton.md", "status": "todo"},
-    {"id": "T05", "title": "Pre-commit config (ruff + ruff-format + eslint + prettier)", "track": "foundation", "milestone": "MVP", "depends_on": ["T02", "T03"], "provides": "Pre-commit hook config", "path": "docs/planning/tickets/mvp/T05-pre-commit-config.md", "status": "todo"},
-    {"id": "T06", "title": "Walking-skeleton FastAPI app + trivial Typer CLI + /api/v1/health", "track": "foundation", "milestone": "MVP", "depends_on": ["T02", "T04"], "provides": "Boot-and-serve spine + /api/v1/health returning { ok, version, projectRoot: null }", "path": "docs/planning/tickets/mvp/T06-walking-skeleton-app.md", "status": "todo"},
-    {"id": "T07", "title": "Domain models (Project, Ticket, TicketSummary, RunState, DepNeighborhood, Roadmap) + TICKET_ID_PATTERN", "track": "file-adapter", "milestone": "MVP", "depends_on": ["T02"], "provides": "Shared Pydantic v2 domain models + TICKET_ID_PATTERN constant", "path": "docs/planning/tickets/mvp/T07-domain-models.md", "status": "todo"},
-    {"id": "T08", "title": "Fixture projects (minimal, with_run_state, malformed)", "track": "file-adapter", "milestone": "MVP", "depends_on": ["T01"], "provides": "Shared executable test contract at tests/fixtures/projects/", "path": "docs/planning/tickets/mvp/T08-fixture-projects.md", "status": "todo"},
-    {"id": "T09", "title": "Dev + package scripts + Makefile (SPA-into-wheel packaging)", "track": "foundation", "milestone": "MVP", "depends_on": ["T02", "T03", "T06"], "provides": "make dev/test/build/package/smoke/release + scripts/{dev,package}.sh", "path": "docs/planning/tickets/mvp/T09-dev-and-package-scripts.md", "status": "todo"},
-    {"id": "T10", "title": "FileAdapter Protocol + FakeFileAdapter (in-memory)", "track": "file-adapter", "milestone": "MVP", "depends_on": ["T07"], "provides": "FileAdapter port + FakeFileAdapter (unblocks backend early)", "path": "docs/planning/tickets/mvp/T10-file-adapter-protocol-and-fake.md", "status": "todo"},
-    {"id": "T11", "title": "Upward-walk project discovery (discovery.py + ProjectNotFound)", "track": "file-adapter", "milestone": "MVP", "depends_on": ["T07"], "provides": "discover_project(explicit, cwd); ProjectNotFound exception", "path": "docs/planning/tickets/mvp/T11-project-discovery.md", "status": "todo"},
-    {"id": "T12", "title": "tickets.json manifest parser (manifest.py + MalformedManifest)", "track": "file-adapter", "milestone": "MVP", "depends_on": ["T07", "T08"], "provides": "Schema-tolerant manifest parser + MalformedManifest exception", "path": "docs/planning/tickets/mvp/T12-manifest-parser.md", "status": "todo"},
-    {"id": "T13", "title": "Ticket .md + front-matter parser (ticket_md.py + PathTraversal + TicketFileMissing)", "track": "file-adapter", "milestone": "MVP", "depends_on": ["T07", "T08"], "provides": "read_ticket_md + enrich_ticket + PathTraversal + TicketFileMissing", "path": "docs/planning/tickets/mvp/T13-ticket-md-parser.md", "status": "todo"},
-    {"id": "T14", "title": "Server-side markdown renderer (markdown_render.py + sanitization)", "track": "file-adapter", "milestone": "MVP", "depends_on": ["T07"], "provides": "render_markdown + render_ticket_html (sanitized HTML the SPA can inject)", "path": "docs/planning/tickets/mvp/T14-markdown-renderer.md", "status": "todo"},
-    {"id": "T15", "title": "Run-state directory prober (run_state.py, read-only)", "track": "file-adapter", "milestone": "MVP", "depends_on": ["T07", "T08"], "provides": "find_run_state_dir + probe_ticket_state", "path": "docs/planning/tickets/mvp/T15-run-state-prober.md", "status": "todo"},
-    {"id": "T16", "title": "Multi-stage Dockerfile for reproducible builds", "track": "foundation", "milestone": "MVP", "depends_on": ["T02", "T03", "T09"], "provides": "Multi-stage Dockerfile (node → python builder → python runtime)", "path": "docs/planning/tickets/mvp/T16-dockerfile.md", "status": "todo"},
-    {"id": "T17", "title": "RealFileAdapter composing discovery + manifest + ticket_md + markdown + run_state", "track": "file-adapter", "milestone": "MVP", "depends_on": ["T10", "T11", "T12", "T13", "T14", "T15"], "provides": "RealFileAdapter implementing all six FileAdapter methods", "path": "docs/planning/tickets/mvp/T17-real-file-adapter.md", "status": "todo"},
-    {"id": "T18", "title": "CI workflow (matrix lint + pytest + pnpm test + build + smoke; conditional e2e)", "track": "foundation", "milestone": "MVP", "depends_on": ["T02", "T03", "T05", "T06", "T09"], "provides": "GitHub Actions ci.yml matrix", "path": "docs/planning/tickets/mvp/T18-ci-workflow.md", "status": "todo"},
-    {"id": "T19", "title": "Docs skeleton (architecture.md + usage.md + contributing.md) + README quickstart", "track": "foundation", "milestone": "MVP", "depends_on": ["T01", "T09"], "provides": "docs/{architecture,usage,contributing}.md + README refresh", "path": "docs/planning/tickets/mvp/T19-docs-skeleton.md", "status": "todo"},
-    {"id": "T20", "title": "Rewrite app factory: create_app(file_adapter, *, version, project_root) + DI seam + error handler + create_dev_app for scripts/dev.sh", "track": "backend", "milestone": "MVP", "depends_on": ["T04", "T06", "T09", "T10", "T11", "T12", "T13", "T14", "T15", "T17"], "provides": "create_app + create_dev_app + DI seam + error handlers + access-log middleware", "path": "docs/planning/tickets/mvp/T20-app-factory-rewrite.md", "status": "todo"},
-    {"id": "T21", "title": "Project endpoint (GET /api/v1/project) + OpenAPI publish", "track": "backend", "milestone": "MVP", "depends_on": ["T20"], "provides": "GET /api/v1/project + non-trivial OpenAPI schema at /api/v1/openapi.json", "path": "docs/planning/tickets/mvp/T21-project-endpoint.md", "status": "todo"},
-    {"id": "T22", "title": "Tickets list + detail endpoints + TicketService", "track": "backend", "milestone": "MVP", "depends_on": ["T20", "T21"], "provides": "GET /api/v1/tickets + GET /api/v1/tickets/{id}", "path": "docs/planning/tickets/mvp/T22-tickets-endpoints.md", "status": "todo"},
-    {"id": "T23", "title": "Deps endpoint (GET /api/v1/tickets/{id}/deps) + DepsService", "track": "backend", "milestone": "MVP", "depends_on": ["T22"], "provides": "GET /api/v1/tickets/{id}/deps", "path": "docs/planning/tickets/mvp/T23-deps-endpoint.md", "status": "todo"},
-    {"id": "T24", "title": "Roadmap endpoint + relocated + enriched health handler", "track": "backend", "milestone": "MVP", "depends_on": ["T20", "T21"], "provides": "GET /api/v1/roadmap (presence-only) + GET /api/v1/health with projectRoot", "path": "docs/planning/tickets/mvp/T24-roadmap-and-health-endpoints.md", "status": "todo"},
-    {"id": "T25", "title": "CLI extension: discovery + port + browser + signals + exit codes", "track": "backend", "milestone": "MVP", "depends_on": ["T20", "T21", "T22", "T23", "T24", "T11", "T17"], "provides": "factory-console CLI per ARCHITECTURE.md CLI contract", "path": "docs/planning/tickets/mvp/T25-cli-extension.md", "status": "todo"},
-    {"id": "T26", "title": "Release workflow (tag vX.Y.Z → PyPI via OIDC + GitHub Release)", "track": "foundation", "milestone": "MVP", "depends_on": ["T18"], "provides": "GitHub Actions release.yml", "path": "docs/planning/tickets/mvp/T26-release-workflow.md", "status": "todo"},
-    {"id": "T27", "title": "SPA shell + routing + Tailwind base + global error page", "track": "frontend", "milestone": "MVP", "depends_on": ["T03", "T21"], "provides": "SPA shell + top bar + Reload + Tailwind base + global +error.svelte", "path": "docs/planning/tickets/mvp/T27-spa-shell.md", "status": "todo"},
-    {"id": "T28", "title": "API client + generated TS types (openapi-typescript codegen)", "track": "frontend", "milestone": "MVP", "depends_on": ["T27", "T21"], "provides": "Typed same-origin API client + generated src/lib/api/types.ts", "path": "docs/planning/tickets/mvp/T28-api-client-and-types.md", "status": "todo"},
-    {"id": "T29", "title": "Shared components: StatusBadge, RunStateBadge, MarkdownBody", "track": "frontend", "milestone": "MVP", "depends_on": ["T28"], "provides": "StatusBadge + RunStateBadge + MarkdownBody (the ONE place using {@html})", "path": "docs/planning/tickets/mvp/T29-shared-components.md", "status": "todo"},
-    {"id": "T30", "title": "Ticket list route `/` with server-side filter + search", "track": "frontend", "milestone": "MVP", "depends_on": ["T28", "T29", "T22"], "provides": "Root route with FiltersBar + TicketRow list", "path": "docs/planning/tickets/mvp/T30-ticket-list-route.md", "status": "todo"},
-    {"id": "T31", "title": "Ticket detail route `/tickets/[id]`", "track": "frontend", "milestone": "MVP", "depends_on": ["T30", "T29", "T22"], "provides": "Detail route with badges, chips, deps/provides, files, MarkdownBody", "path": "docs/planning/tickets/mvp/T31-ticket-detail-route.md", "status": "todo"},
-    {"id": "T32", "title": "Dep neighborhood route `/tickets/[id]/deps`", "track": "frontend", "milestone": "MVP", "depends_on": ["T31", "T29", "T23"], "provides": "Deps route with direct deps + dependents + unresolved lists", "path": "docs/planning/tickets/mvp/T32-dep-neighborhood-route.md", "status": "todo"},
-    {"id": "T33", "title": "Playwright e2e harness (config + global setup/teardown + happy-path spec)", "track": "frontend", "milestone": "MVP", "depends_on": ["T27", "T28", "T29", "T30", "T31", "T32", "T25", "T08"], "provides": "Playwright config + global-setup/teardown + happy-path.spec.ts (MVP acceptance harness)", "path": "docs/planning/tickets/mvp/T33-playwright-harness.md", "status": "todo"},
-    {"id": "T34", "title": "README screenshots pipeline (Playwright captures + copy script + docs/screenshots + README refresh)", "track": "frontend", "milestone": "MVP", "depends_on": ["T33", "T19"], "provides": "screenshots.spec.ts + copy-screenshots.mjs + docs/screenshots/ + README embed", "path": "docs/planning/tickets/mvp/T34-screenshots-pipeline.md", "status": "todo"},
-    {"id": "T35", "title": "Tighten CI: unconditional Playwright + coverage gate at 85%", "track": "foundation", "milestone": "MVP", "depends_on": ["T33", "T18"], "provides": "pyproject.toml coverage gate at 85 + ci.yml unconditional Playwright step", "path": "docs/planning/tickets/mvp/T35-ci-tightening.md", "status": "todo"}
+    {
+      "id": "T01",
+      "title": "Monorepo skeleton (dirs, LICENSE, .gitignore, README stub, .python-version)",
+      "track": "foundation",
+      "milestone": "MVP",
+      "depends_on": [],
+      "provides": "Empty repo tree matching PROJECT_STRUCTURE.md",
+      "path": "docs/planning/tickets/mvp/T01-monorepo-skeleton.md",
+      "status": "todo"
+    },
+    {
+      "id": "T02",
+      "title": "Python package skeleton + pyproject.toml + factory-console entry point",
+      "track": "foundation",
+      "milestone": "MVP",
+      "depends_on": [
+        "T01"
+      ],
+      "provides": "Installable factory_console package with factory-console entry point",
+      "path": "docs/planning/tickets/mvp/T02-python-package-skeleton.md",
+      "status": "todo"
+    },
+    {
+      "id": "T03",
+      "title": "Frontend skeleton (SvelteKit + adapter-static + Tailwind + Vitest + Playwright + openapi-typescript)",
+      "track": "foundation",
+      "milestone": "MVP",
+      "depends_on": [
+        "T01"
+      ],
+      "provides": "Buildable SvelteKit SPA scaffold",
+      "path": "docs/planning/tickets/mvp/T03-frontend-skeleton.md",
+      "status": "todo"
+    },
+    {
+      "id": "T04",
+      "title": "Observability skeleton (logging.py + errors.py base + config.py)",
+      "track": "foundation",
+      "milestone": "MVP",
+      "depends_on": [
+        "T02"
+      ],
+      "provides": "Shared logging formatter, FactoryConsoleError base + to_error_response, Settings pinned to 127.0.0.1",
+      "path": "docs/planning/tickets/mvp/T04-observability-skeleton.md",
+      "status": "todo"
+    },
+    {
+      "id": "T05",
+      "title": "Pre-commit config (ruff + ruff-format + eslint + prettier)",
+      "track": "foundation",
+      "milestone": "MVP",
+      "depends_on": [
+        "T02",
+        "T03"
+      ],
+      "provides": "Pre-commit hook config",
+      "path": "docs/planning/tickets/mvp/T05-pre-commit-config.md",
+      "status": "todo"
+    },
+    {
+      "id": "T06",
+      "title": "Walking-skeleton FastAPI app + trivial Typer CLI + /api/v1/health",
+      "track": "foundation",
+      "milestone": "MVP",
+      "depends_on": [
+        "T02",
+        "T04"
+      ],
+      "provides": "Boot-and-serve spine + /api/v1/health returning { ok, version, projectRoot: null }",
+      "path": "docs/planning/tickets/mvp/T06-walking-skeleton-app.md",
+      "status": "todo"
+    },
+    {
+      "id": "T07",
+      "title": "Domain models (Project, Ticket, TicketSummary, RunState, DepNeighborhood, Roadmap) + TICKET_ID_PATTERN",
+      "track": "file-adapter",
+      "milestone": "MVP",
+      "depends_on": [
+        "T02"
+      ],
+      "provides": "Shared Pydantic v2 domain models + TICKET_ID_PATTERN constant",
+      "path": "docs/planning/tickets/mvp/T07-domain-models.md",
+      "status": "todo"
+    },
+    {
+      "id": "T08",
+      "title": "Fixture projects (minimal, with_run_state, malformed)",
+      "track": "file-adapter",
+      "milestone": "MVP",
+      "depends_on": [
+        "T01"
+      ],
+      "provides": "Shared executable test contract at tests/fixtures/projects/",
+      "path": "docs/planning/tickets/mvp/T08-fixture-projects.md",
+      "status": "todo"
+    },
+    {
+      "id": "T09",
+      "title": "Dev + package scripts + Makefile (SPA-into-wheel packaging)",
+      "track": "foundation",
+      "milestone": "MVP",
+      "depends_on": [
+        "T02",
+        "T03",
+        "T06"
+      ],
+      "provides": "make dev/test/build/package/smoke/release + scripts/{dev,package}.sh",
+      "path": "docs/planning/tickets/mvp/T09-dev-and-package-scripts.md",
+      "status": "todo"
+    },
+    {
+      "id": "T10",
+      "title": "FileAdapter Protocol + FakeFileAdapter (in-memory)",
+      "track": "file-adapter",
+      "milestone": "MVP",
+      "depends_on": [
+        "T07"
+      ],
+      "provides": "FileAdapter port + FakeFileAdapter (unblocks backend early)",
+      "path": "docs/planning/tickets/mvp/T10-file-adapter-protocol-and-fake.md",
+      "status": "todo"
+    },
+    {
+      "id": "T11",
+      "title": "Upward-walk project discovery (discovery.py + ProjectNotFound)",
+      "track": "file-adapter",
+      "milestone": "MVP",
+      "depends_on": [
+        "T07"
+      ],
+      "provides": "discover_project(explicit, cwd); ProjectNotFound exception",
+      "path": "docs/planning/tickets/mvp/T11-project-discovery.md",
+      "status": "todo"
+    },
+    {
+      "id": "T12",
+      "title": "tickets.json manifest parser (manifest.py + MalformedManifest)",
+      "track": "file-adapter",
+      "milestone": "MVP",
+      "depends_on": [
+        "T07",
+        "T08"
+      ],
+      "provides": "Schema-tolerant manifest parser + MalformedManifest exception",
+      "path": "docs/planning/tickets/mvp/T12-manifest-parser.md",
+      "status": "todo"
+    },
+    {
+      "id": "T13",
+      "title": "Ticket .md + front-matter parser (ticket_md.py + PathTraversal + TicketFileMissing)",
+      "track": "file-adapter",
+      "milestone": "MVP",
+      "depends_on": [
+        "T07",
+        "T08"
+      ],
+      "provides": "read_ticket_md + enrich_ticket + PathTraversal + TicketFileMissing",
+      "path": "docs/planning/tickets/mvp/T13-ticket-md-parser.md",
+      "status": "todo"
+    },
+    {
+      "id": "T14",
+      "title": "Server-side markdown renderer (markdown_render.py + sanitization)",
+      "track": "file-adapter",
+      "milestone": "MVP",
+      "depends_on": [
+        "T07"
+      ],
+      "provides": "render_markdown + render_ticket_html (sanitized HTML the SPA can inject)",
+      "path": "docs/planning/tickets/mvp/T14-markdown-renderer.md",
+      "status": "todo"
+    },
+    {
+      "id": "T15",
+      "title": "Run-state directory prober (run_state.py, read-only)",
+      "track": "file-adapter",
+      "milestone": "MVP",
+      "depends_on": [
+        "T07",
+        "T08"
+      ],
+      "provides": "find_run_state_dir + probe_ticket_state",
+      "path": "docs/planning/tickets/mvp/T15-run-state-prober.md",
+      "status": "todo"
+    },
+    {
+      "id": "T16",
+      "title": "Multi-stage Dockerfile for reproducible builds",
+      "track": "foundation",
+      "milestone": "MVP",
+      "depends_on": [
+        "T02",
+        "T03",
+        "T09"
+      ],
+      "provides": "Multi-stage Dockerfile (node → python builder → python runtime)",
+      "path": "docs/planning/tickets/mvp/T16-dockerfile.md",
+      "status": "todo"
+    },
+    {
+      "id": "T17",
+      "title": "RealFileAdapter composing discovery + manifest + ticket_md + markdown + run_state",
+      "track": "file-adapter",
+      "milestone": "MVP",
+      "depends_on": [
+        "T10",
+        "T11",
+        "T12",
+        "T13",
+        "T14",
+        "T15"
+      ],
+      "provides": "RealFileAdapter implementing all six FileAdapter methods",
+      "path": "docs/planning/tickets/mvp/T17-real-file-adapter.md",
+      "status": "todo"
+    },
+    {
+      "id": "T18",
+      "title": "CI workflow (matrix lint + pytest + pnpm test + build + smoke; conditional e2e)",
+      "track": "foundation",
+      "milestone": "MVP",
+      "depends_on": [
+        "T02",
+        "T03",
+        "T05",
+        "T06",
+        "T09"
+      ],
+      "provides": "GitHub Actions ci.yml matrix",
+      "path": "docs/planning/tickets/mvp/T18-ci-workflow.md",
+      "status": "todo"
+    },
+    {
+      "id": "T19",
+      "title": "Docs skeleton (architecture.md + usage.md + contributing.md) + README quickstart",
+      "track": "foundation",
+      "milestone": "MVP",
+      "depends_on": [
+        "T01",
+        "T09"
+      ],
+      "provides": "docs/{architecture,usage,contributing}.md + README refresh",
+      "path": "docs/planning/tickets/mvp/T19-docs-skeleton.md",
+      "status": "todo"
+    },
+    {
+      "id": "T20",
+      "title": "Rewrite app factory: create_app(file_adapter, *, version, project_root) + DI seam + error handler + create_dev_app for scripts/dev.sh",
+      "track": "backend",
+      "milestone": "MVP",
+      "depends_on": [
+        "T04",
+        "T06",
+        "T09",
+        "T10",
+        "T11",
+        "T12",
+        "T13",
+        "T14",
+        "T15",
+        "T17"
+      ],
+      "provides": "create_app + create_dev_app + DI seam + error handlers + access-log middleware",
+      "path": "docs/planning/tickets/mvp/T20-app-factory-rewrite.md",
+      "status": "todo"
+    },
+    {
+      "id": "T21",
+      "title": "Project endpoint (GET /api/v1/project) + OpenAPI publish",
+      "track": "backend",
+      "milestone": "MVP",
+      "depends_on": [
+        "T20"
+      ],
+      "provides": "GET /api/v1/project + non-trivial OpenAPI schema at /api/v1/openapi.json",
+      "path": "docs/planning/tickets/mvp/T21-project-endpoint.md",
+      "status": "todo"
+    },
+    {
+      "id": "T22",
+      "title": "Tickets list + detail endpoints + TicketService",
+      "track": "backend",
+      "milestone": "MVP",
+      "depends_on": [
+        "T20",
+        "T21"
+      ],
+      "provides": "GET /api/v1/tickets + GET /api/v1/tickets/{id}",
+      "path": "docs/planning/tickets/mvp/T22-tickets-endpoints.md",
+      "status": "todo"
+    },
+    {
+      "id": "T23",
+      "title": "Deps endpoint (GET /api/v1/tickets/{id}/deps) + DepsService",
+      "track": "backend",
+      "milestone": "MVP",
+      "depends_on": [
+        "T22"
+      ],
+      "provides": "GET /api/v1/tickets/{id}/deps",
+      "path": "docs/planning/tickets/mvp/T23-deps-endpoint.md",
+      "status": "todo"
+    },
+    {
+      "id": "T24",
+      "title": "Roadmap endpoint + relocated + enriched health handler",
+      "track": "backend",
+      "milestone": "MVP",
+      "depends_on": [
+        "T20",
+        "T21"
+      ],
+      "provides": "GET /api/v1/roadmap (presence-only) + GET /api/v1/health with projectRoot",
+      "path": "docs/planning/tickets/mvp/T24-roadmap-and-health-endpoints.md",
+      "status": "todo"
+    },
+    {
+      "id": "T25",
+      "title": "CLI extension: discovery + port + browser + signals + exit codes",
+      "track": "backend",
+      "milestone": "MVP",
+      "depends_on": [
+        "T20",
+        "T21",
+        "T22",
+        "T23",
+        "T24",
+        "T11",
+        "T17"
+      ],
+      "provides": "factory-console CLI per ARCHITECTURE.md CLI contract",
+      "path": "docs/planning/tickets/mvp/T25-cli-extension.md",
+      "status": "todo"
+    },
+    {
+      "id": "T26",
+      "title": "Release workflow (tag vX.Y.Z → PyPI via OIDC + GitHub Release)",
+      "track": "foundation",
+      "milestone": "MVP",
+      "depends_on": [
+        "T18"
+      ],
+      "provides": "GitHub Actions release.yml",
+      "path": "docs/planning/tickets/mvp/T26-release-workflow.md",
+      "status": "todo"
+    },
+    {
+      "id": "T27",
+      "title": "SPA shell + routing + Tailwind base + global error page",
+      "track": "frontend",
+      "milestone": "MVP",
+      "depends_on": [
+        "T03",
+        "T21"
+      ],
+      "provides": "SPA shell + top bar + Reload + Tailwind base + global +error.svelte",
+      "path": "docs/planning/tickets/mvp/T27-spa-shell.md",
+      "status": "todo"
+    },
+    {
+      "id": "T28",
+      "title": "API client + generated TS types (openapi-typescript codegen)",
+      "track": "frontend",
+      "milestone": "MVP",
+      "depends_on": [
+        "T27",
+        "T21"
+      ],
+      "provides": "Typed same-origin API client + generated src/lib/api/types.ts",
+      "path": "docs/planning/tickets/mvp/T28-api-client-and-types.md",
+      "status": "todo"
+    },
+    {
+      "id": "T29",
+      "title": "Shared components: StatusBadge, RunStateBadge, MarkdownBody",
+      "track": "frontend",
+      "milestone": "MVP",
+      "depends_on": [
+        "T28"
+      ],
+      "provides": "StatusBadge + RunStateBadge + MarkdownBody (the ONE place using {@html})",
+      "path": "docs/planning/tickets/mvp/T29-shared-components.md",
+      "status": "todo"
+    },
+    {
+      "id": "T30",
+      "title": "Ticket list route `/` with server-side filter + search",
+      "track": "frontend",
+      "milestone": "MVP",
+      "depends_on": [
+        "T28",
+        "T29",
+        "T22"
+      ],
+      "provides": "Root route with FiltersBar + TicketRow list",
+      "path": "docs/planning/tickets/mvp/T30-ticket-list-route.md",
+      "status": "todo"
+    },
+    {
+      "id": "T31",
+      "title": "Ticket detail route `/tickets/[id]`",
+      "track": "frontend",
+      "milestone": "MVP",
+      "depends_on": [
+        "T30",
+        "T29",
+        "T22"
+      ],
+      "provides": "Detail route with badges, chips, deps/provides, files, MarkdownBody",
+      "path": "docs/planning/tickets/mvp/T31-ticket-detail-route.md",
+      "status": "todo"
+    },
+    {
+      "id": "T32",
+      "title": "Dep neighborhood route `/tickets/[id]/deps`",
+      "track": "frontend",
+      "milestone": "MVP",
+      "depends_on": [
+        "T31",
+        "T29",
+        "T23"
+      ],
+      "provides": "Deps route with direct deps + dependents + unresolved lists",
+      "path": "docs/planning/tickets/mvp/T32-dep-neighborhood-route.md",
+      "status": "todo"
+    },
+    {
+      "id": "T33",
+      "title": "Playwright e2e harness (config + global setup/teardown + happy-path spec)",
+      "track": "frontend",
+      "milestone": "MVP",
+      "depends_on": [
+        "T27",
+        "T28",
+        "T29",
+        "T30",
+        "T31",
+        "T32",
+        "T25",
+        "T08"
+      ],
+      "provides": "Playwright config + global-setup/teardown + happy-path.spec.ts (MVP acceptance harness)",
+      "path": "docs/planning/tickets/mvp/T33-playwright-harness.md",
+      "status": "todo"
+    },
+    {
+      "id": "T34",
+      "title": "README screenshots pipeline (Playwright captures + copy script + docs/screenshots + README refresh)",
+      "track": "frontend",
+      "milestone": "MVP",
+      "depends_on": [
+        "T33",
+        "T19"
+      ],
+      "provides": "screenshots.spec.ts + copy-screenshots.mjs + docs/screenshots/ + README embed",
+      "path": "docs/planning/tickets/mvp/T34-screenshots-pipeline.md",
+      "status": "todo"
+    },
+    {
+      "id": "T35",
+      "title": "Tighten CI: unconditional Playwright + coverage gate at 85%",
+      "track": "foundation",
+      "milestone": "MVP",
+      "depends_on": [
+        "T33",
+        "T18"
+      ],
+      "provides": "pyproject.toml coverage gate at 85 + ci.yml unconditional Playwright step",
+      "path": "docs/planning/tickets/mvp/T35-ci-tightening.md",
+      "status": "todo"
+    },
+    {
+      "id": "T36",
+      "title": "Full-text search capability behind the FileAdapter port",
+      "track": "file-adapter",
+      "milestone": "v1",
+      "depends_on": [
+        "T07",
+        "T10",
+        "T12",
+        "T13",
+        "T17"
+      ],
+      "provides": "FileAdapter.search_tickets + SearchHit model + pure file_adapter/search.py ranking over ticket id/title/provides/body",
+      "path": "docs/planning/tickets/v1/T36-full-text-search-capability.md",
+      "status": "todo"
+    },
+    {
+      "id": "T37",
+      "title": "Dependency graph (DAG) projection behind the FileAdapter port",
+      "track": "file-adapter",
+      "milestone": "v1",
+      "depends_on": [
+        "T07",
+        "T10",
+        "T17",
+        "T23"
+      ],
+      "provides": "FileAdapter.get_graph -> TicketGraph (run-state nodes + dependsOn edges) reusing the shared TicketProjection",
+      "path": "docs/planning/tickets/v1/T37-dependency-graph-projection.md",
+      "status": "todo"
+    },
+    {
+      "id": "T38",
+      "title": "Structured roadmap parse (milestones + checkbox state) in get_roadmap",
+      "track": "file-adapter",
+      "milestone": "v1",
+      "depends_on": [
+        "T07",
+        "T14",
+        "T17"
+      ],
+      "provides": "Roadmap model widened with milestones[] + pure parse_milestones; RealFileAdapter.get_roadmap returns full body + structured milestones",
+      "path": "docs/planning/tickets/v1/T38-structured-roadmap-parse.md",
+      "status": "todo"
+    },
+    {
+      "id": "T39",
+      "title": "FileWatcher port + ChangeEvent model + deterministic FakeFileWatcher",
+      "track": "file-adapter",
+      "milestone": "v1",
+      "depends_on": [
+        "T07",
+        "T10"
+      ],
+      "provides": "FileWatcher port (start/stop/subscribe -> AsyncIterator[ChangeEvent]) + ChangeEvent model + deterministic FakeFileWatcher",
+      "path": "docs/planning/tickets/v1/T39-file-watcher-port.md",
+      "status": "todo"
+    },
+    {
+      "id": "T40",
+      "title": "watchdog-backed RealFileWatcher over docs/planning/** and .factory/run-state/**",
+      "track": "file-adapter",
+      "milestone": "v1",
+      "depends_on": [
+        "T39",
+        "T17"
+      ],
+      "provides": "RealFileWatcher (watchdog Observer, debounced, thread->async fan-out, project-relative ChangeEvent paths) + watchdog dependency",
+      "path": "docs/planning/tickets/v1/T40-watchdog-real-file-watcher.md",
+      "status": "todo"
+    },
+    {
+      "id": "T41",
+      "title": "GET /api/v1/search endpoint + SearchService",
+      "track": "backend",
+      "milestone": "v1",
+      "depends_on": [
+        "T36",
+        "T22",
+        "T17",
+        "T10"
+      ],
+      "provides": "GET /api/v1/search?q= returning full-text SearchHit results in a SearchResponse envelope",
+      "path": "docs/planning/tickets/v1/T41-search-endpoint.md",
+      "status": "todo"
+    },
+    {
+      "id": "T42",
+      "title": "GET /api/v1/graph endpoint + GraphService",
+      "track": "backend",
+      "milestone": "v1",
+      "depends_on": [
+        "T37",
+        "T23",
+        "T17",
+        "T10"
+      ],
+      "provides": "GET /api/v1/graph returning a TicketGraph (run-state nodes + dependsOn edges) for the frontend Cytoscape render",
+      "path": "docs/planning/tickets/v1/T42-graph-endpoint.md",
+      "status": "todo"
+    },
+    {
+      "id": "T43",
+      "title": "Widen GET /api/v1/roadmap to full body + structured milestones",
+      "track": "backend",
+      "milestone": "v1",
+      "depends_on": [
+        "T38",
+        "T24"
+      ],
+      "provides": "GET /api/v1/roadmap returning the full Roadmap (bodyMarkdown + bodyHtml + structured milestones) or { present:false }",
+      "path": "docs/planning/tickets/v1/T43-roadmap-endpoint-widen.md",
+      "status": "todo"
+    },
+    {
+      "id": "T44",
+      "title": "Wire the FileWatcher lifecycle into create_app (inject + lifespan + DI)",
+      "track": "backend",
+      "milestone": "v1",
+      "depends_on": [
+        "T39",
+        "T40",
+        "T20",
+        "T25"
+      ],
+      "provides": "an injected FileWatcher started/stopped by the app lifespan + get_file_watcher DI - the watcher backbone for the SSE endpoint",
+      "path": "docs/planning/tickets/v1/T44-file-watcher-lifecycle.md",
+      "status": "todo"
+    },
+    {
+      "id": "T45",
+      "title": "GET /api/v1/events SSE endpoint + EventsService",
+      "track": "backend",
+      "milestone": "v1",
+      "depends_on": [
+        "T44",
+        "T39"
+      ],
+      "provides": "GET /api/v1/events streaming file-change notifications as text/event-stream for live SPA updates",
+      "path": "docs/planning/tickets/v1/T45-events-sse-endpoint.md",
+      "status": "todo"
+    },
+    {
+      "id": "T46",
+      "title": "Extend the typed api client for the v1 read endpoints (regenerate types + graph/search/roadmap wrappers)",
+      "track": "frontend",
+      "milestone": "v1",
+      "depends_on": [
+        "T41",
+        "T42",
+        "T43",
+        "T28"
+      ],
+      "provides": "regenerated src/lib/api/types.ts + getGraph()/searchTickets()/expanded getRoadmap() wrappers + model aliases",
+      "path": "docs/planning/tickets/v1/T46-typed-api-client.md",
+      "status": "todo"
+    },
+    {
+      "id": "T47",
+      "title": "/graph route - Cytoscape dependency DAG colored by run-state, bundled (no CDN)",
+      "track": "frontend",
+      "milestone": "v1",
+      "depends_on": [
+        "T46",
+        "T42",
+        "T29"
+      ],
+      "provides": "/graph route + DepGraph.svelte (Cytoscape bundled) + accessible DOM node-hook, nodes colored by run-state, click-through to /tickets/[id]",
+      "path": "docs/planning/tickets/v1/T47-graph-route.md",
+      "status": "todo"
+    },
+    {
+      "id": "T48",
+      "title": "/roadmap route - full ROADMAP body + structured milestones with checkbox state",
+      "track": "frontend",
+      "milestone": "v1",
+      "depends_on": [
+        "T46",
+        "T43",
+        "T29",
+        "T32"
+      ],
+      "provides": "/roadmap route + MilestoneSection.svelte rendering the sanitized body via MarkdownBody + structured milestones",
+      "path": "docs/planning/tickets/v1/T48-roadmap-route.md",
+      "status": "todo"
+    },
+    {
+      "id": "T49",
+      "title": "Global TopBar nav (/graph, /roadmap, /search) + search box + /search results route",
+      "track": "frontend",
+      "milestone": "v1",
+      "depends_on": [
+        "T46",
+        "T41",
+        "T47",
+        "T48",
+        "T27",
+        "T32"
+      ],
+      "provides": "NavSearch.svelte = the TopBar nav surface (links to /graph + /roadmap + search box) + /search route; owns discoverability of all three new views",
+      "path": "docs/planning/tickets/v1/T49-topbar-nav-and-search.md",
+      "status": "todo"
+    },
+    {
+      "id": "T50",
+      "title": "SSE live updates - subscribe to /api/v1/events and refresh the current view",
+      "track": "frontend",
+      "milestone": "v1",
+      "depends_on": [
+        "T45",
+        "T27"
+      ],
+      "provides": "layout-level SSE subscription refreshing the current route on file changes + a subtle updated/disconnected indicator, graceful fallback",
+      "path": "docs/planning/tickets/v1/T50-sse-live-updates.md",
+      "status": "todo"
+    },
+    {
+      "id": "T51",
+      "title": "Graph-render e2e spec: /graph DAG renders, nodes colored by run-state, click-to-ticket",
+      "track": "testing",
+      "milestone": "v1",
+      "depends_on": [
+        "T47",
+        "T42",
+        "T33",
+        "T08"
+      ],
+      "provides": "e2e coverage that /graph renders every fixture node with correct run-state and node activation navigates to the ticket",
+      "path": "docs/planning/tickets/v1/T51-graph-e2e.md",
+      "status": "todo"
+    },
+    {
+      "id": "T52",
+      "title": "Search e2e spec: global search box returns cross-ticket full-text results, links, and empty state",
+      "track": "testing",
+      "milestone": "v1",
+      "depends_on": [
+        "T49",
+        "T41",
+        "T33",
+        "T08"
+      ],
+      "provides": "e2e coverage that the global search box surfaces cross-ticket full-text matches that link to tickets, plus the empty state",
+      "path": "docs/planning/tickets/v1/T52-search-e2e.md",
+      "status": "todo"
+    },
+    {
+      "id": "T53",
+      "title": "Live-update e2e spec + dedicated mutable-console harness helper",
+      "track": "testing",
+      "milestone": "v1",
+      "depends_on": [
+        "T50",
+        "T45",
+        "T44",
+        "T33",
+        "T08"
+      ],
+      "provides": "deterministic e2e that a watcher-detected mutation refreshes the open view via SSE + a reusable copy-to-temp dedicated-console helper",
+      "path": "docs/planning/tickets/v1/T53-live-update-e2e.md",
+      "status": "todo"
+    },
+    {
+      "id": "T54",
+      "title": "v1 docs + README screenshots refresh (graph, roadmap, search, live-update)",
+      "track": "frontend",
+      "milestone": "v1",
+      "depends_on": [
+        "T47",
+        "T48",
+        "T49",
+        "T50",
+        "T34",
+        "T19"
+      ],
+      "provides": "docs/usage.md updated for the new views + the screenshots pipeline extended to capture /graph, /roadmap, /search for the README gallery",
+      "path": "docs/planning/tickets/v1/T54-docs-screenshots-refresh.md",
+      "status": "todo"
+    }
   ]
 }
