@@ -350,3 +350,26 @@ def test_search_tickets_matches_manifest_only_ticket_via_id_when_body_missing(
     project = adapter.load_project(project_root)
     hits = adapter.search_tickets(project, "CAD-100")
     assert any(hit.ticket.id == "CAD-100" for hit in hits)
+
+
+def test_search_tickets_tolerates_an_unreadable_md_and_logs_a_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # An *unreadable* .md (non-UTF-8 bytes -> TicketFileUnreadable) is a genuine
+    # data problem, not the routine missing-file case: the scan still degrades it
+    # to an empty body and returns hits for the rest, but — unlike a legitimately
+    # absent .md — it leaves a WARNING trace so the corruption is observable.
+    project_root = tmp_path / "project"
+    shutil.copytree(WITH_RUN_STATE, project_root)
+    (project_root / "docs" / "planning" / "tickets" / "CAD-100.md").write_bytes(
+        b"\xff\xfe not valid utf-8"
+    )
+    adapter = RealFileAdapter()
+    project = adapter.load_project(project_root)
+    with caplog.at_level("WARNING", logger="factory_console.file_adapter.real"):
+        hits = adapter.search_tickets(project, "streak")
+    assert "CAD-118" in {hit.ticket.id for hit in hits}  # the intact tickets still match
+    assert any(
+        "CAD-100" in record.getMessage() and record.levelname == "WARNING"
+        for record in caplog.records
+    )

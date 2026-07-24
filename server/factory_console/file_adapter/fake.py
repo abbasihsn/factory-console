@@ -35,7 +35,7 @@ from factory_console.domain import (
     Ticket,
     TicketSummary,
 )
-from factory_console.domain.search import SearchHit
+from factory_console.domain.search import SearchHit, to_search_hits
 from factory_console.file_adapter.projection import TicketProjection
 from factory_console.file_adapter.search import rank_tickets
 
@@ -133,12 +133,4 @@ class FakeFileAdapter:
         ``limit`` hits when not ``None``.
         """
         summary_by_id = {summary.id: summary for summary in self._projection.summaries()}
-        hits = [
-            SearchHit(
-                ticket=summary_by_id[scored.id],
-                score=scored.score,
-                matchedFields=scored.matched_fields,
-            )
-            for scored in rank_tickets(self._tickets, query)
-        ]
-        return hits if limit is None else hits[:limit]
+        return to_search_hits(rank_tickets(self._tickets, query), summary_by_id, limit)

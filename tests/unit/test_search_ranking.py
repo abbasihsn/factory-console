@@ -87,6 +87,18 @@ def test_multiple_tokens_accumulate_score_across_fields() -> None:
     assert ranked[0].matched_fields == ["id", "title", "bodyMarkdown"]
 
 
+def test_partial_match_is_or_not_and_and_ranks_full_match_first() -> None:
+    # OR semantics: a ticket matching only ONE of two tokens is still returned
+    # (only zero-score tickets drop). The ticket hitting BOTH tokens outscores it
+    # and ranks first. Pins the partial-match contract against a regression to AND.
+    both = _make_ticket("streak-heatmap", title="unrelated")  # id hits both tokens
+    one = _make_ticket("streak-only", title="unrelated")  # id hits only 'streak'
+    ranked = rank_tickets([one, both], "streak heatmap")
+    assert [hit.id for hit in ranked] == ["streak-heatmap", "streak-only"]
+    assert ranked[0].score == _WEIGHT_ID * 2
+    assert ranked[1].score == _WEIGHT_ID
+
+
 def test_query_is_lowercased_so_matching_is_case_insensitive() -> None:
     ticket = _make_ticket("CAD-100", title="Streak Service")
     ranked = rank_tickets([ticket], "STREAK")
