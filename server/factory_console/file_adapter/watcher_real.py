@@ -36,6 +36,7 @@ from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 from factory_console.domain.watch import ChangeEvent
+from factory_console.file_adapter.run_state import RUN_STATE_RELATIVE_LOCATIONS
 
 # Coalesce window: repeated raw events for the same relative path within this many
 # seconds collapse into a single ChangeEvent, so one editor save (which watchdog
@@ -49,13 +50,14 @@ _DEBOUNCE_SECONDS = 0.15
 _ALLOWED_KINDS = frozenset(get_args(ChangeEvent.model_fields["kind"].annotation))
 
 # Relative-path prefixes that mark the factory run-state subtree; everything else
-# under the watched roots is planning scope. BOTH documented run-state locations
-# from ``run_state.find_run_state_dir`` are recognized: the primary
+# under the watched roots is planning scope. Derived from the SAME source of
+# truth the prober uses (``run_state.RUN_STATE_RELATIVE_LOCATIONS``) so the two
+# modules cannot drift. BOTH documented locations are recognized: the primary
 # ``.factory/run-state`` and the ``docs/planning/.run-state`` fallback — the
 # latter IS observed (``docs/planning`` is scheduled ``recursive=True``), so
 # without it a run-state marker in the fallback layout would be mis-tagged
 # ``planning`` and refresh the wrong pane.
-_RUN_STATE_PREFIXES = (".factory/run-state", "docs/planning/.run-state")
+_RUN_STATE_PREFIXES = tuple(loc.as_posix() for loc in RUN_STATE_RELATIVE_LOCATIONS)
 
 
 class _ChangeEventHandler(FileSystemEventHandler):
@@ -70,11 +72,6 @@ class _ChangeEventHandler(FileSystemEventHandler):
         self._watcher = watcher
 
     def on_any_event(self, event: FileSystemEvent) -> None:
-        # Ignore directory events: a file create/modify already yields its own
-        # event, and folding the parent-directory notification in would double up
-        # a single save.
-        if event.is_directory:
-            return
         kind = event.event_type
         if kind not in _ALLOWED_KINDS:
             return
@@ -100,12 +97,40 @@ class _ChangeEventHandler(FileSystemEventHandler):
             # Outside the project root (should not happen for scheduled roots) —
             # skip rather than leak an out-of-tree or absolute path.
             return
-        scope = (
-            "run-state"
-            if any(rel_path == p or rel_path.startswith(p + "/") for p in _RUN_STATE_PREFIXES)
-            else "planning"
+        matched_prefix = next(
+            (p for p in _RUN_STATE_PREFIXES if rel_path == p or rel_path.startswith(p + "/")),
+            None,
         )
+        scope = "run-state" if matched_prefix is not None else "planning"
+        if event.is_directory and not self._is_run_state_marker_dir(kind, rel_path, matched_prefix):
+            # Directory events carry signal ONLY as a run-state marker directory.
+            # A run-state marker CAN itself be a directory
+            # (``run_state.probe_ticket_state`` resolves a ``<state>/<ticket_id>``
+            # marker as a file OR a directory), so its create/delete/move is a
+            # real transition. Every other directory event is noise: the
+            # parent-folder echo of a planning file save, a ``modified``
+            # notification, and the watched-root / state-dir events macOS FSEvents
+            # replays. Dropping them keeps one save (or one transition) to one
+            # event.
+            return
         self._watcher._dispatch_from_thread(kind, scope, rel_path)
+
+    @staticmethod
+    def _is_run_state_marker_dir(kind: str, rel_path: str, matched_prefix: str | None) -> bool:
+        """True if a directory event is a run-state ``<state>/<ticket_id>`` marker.
+
+        A marker lives exactly two segments below a run-state root, so its path
+        has a ``<state>/<ticket_id>`` remainder (contains a ``/``). This excludes
+        the run-state root itself and a bare ``<state>`` directory — the levels
+        macOS FSEvents emits spurious create/modify events on — and the
+        ``modified`` verb, which is only ever a parent-folder echo.
+        """
+        if matched_prefix is None or kind == "modified":
+            return False
+        if not rel_path.startswith(matched_prefix + "/"):
+            return False
+        remainder = rel_path[len(matched_prefix) + 1 :]
+        return "/" in remainder
 
 
 class RealFileWatcher:

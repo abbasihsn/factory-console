@@ -110,6 +110,30 @@ async def test_run_state_fallback_location_is_scoped_run_state(tmp_path: Path) -
         watcher.stop()
 
 
+async def test_run_state_directory_marker_emits_run_state_event(tmp_path: Path) -> None:
+    # A run-state marker can itself be a DIRECTORY (run_state resolves a
+    # <state>/<ticket_id> marker as a file OR a directory), and states like
+    # in-flight/ready commonly use directory markers. Watchdog reports creating
+    # one as a directory event; it must still emit a run-state ChangeEvent, or
+    # those transitions never reach the SSE client and the badge never updates.
+    _make_project(tmp_path)
+    # Pre-create the state dir so only the marker's own creation fires post-subscribe.
+    (tmp_path / ".factory" / "run-state" / "in-flight").mkdir()
+    watcher = RealFileWatcher(tmp_path)
+    watcher.start()
+    stream, first = await _primed_stream(watcher)
+    try:
+        marker = tmp_path / ".factory" / "run-state" / "in-flight" / "T55"
+        marker.mkdir()  # a directory marker, not a file
+        event = await _next_event(stream, first)
+        assert event.scope == "run-state"
+        assert event.path == ".factory/run-state/in-flight/T55"
+    finally:
+        first.cancel()
+        await stream.aclose()
+        watcher.stop()
+
+
 async def test_rapid_burst_to_same_path_debounces_to_one_event(tmp_path: Path) -> None:
     _make_project(tmp_path)
     watcher = RealFileWatcher(tmp_path)
