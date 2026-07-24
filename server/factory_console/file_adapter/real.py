@@ -218,7 +218,16 @@ class RealFileAdapter:
         Consistent with ``ARCHITECTURE.md`` "every request re-reads": this
         re-reads every ticket ``.md`` per call with no cache or index (an
         in-memory index is deferred to a later milestone alongside the watcher).
+
+        A blank or whitespace-only ``query`` short-circuits to ``[]`` BEFORE any
+        filesystem work — ``rank_tickets`` would return ``[]`` for it anyway, so
+        probing run-state and reading every ``.md`` first (the path a cleared or
+        momentarily-empty search box hits) would be a full scan thrown away. The
+        "every request re-reads" tradeoff is about lacking a cache for real
+        queries, not about scanning for a guaranteed-empty result.
         """
+        if not query.split():
+            return []
         stubs = list(iter_ticket_stubs(project))
         projection = self._projection_for(project, stubs)
         summary_by_id = {summary.id: summary for summary in projection.summaries()}
