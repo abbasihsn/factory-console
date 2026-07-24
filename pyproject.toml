@@ -17,6 +17,7 @@ dependencies = [
     "mdit-py-plugins>=0.4",
     "bleach>=6",
     "PyYAML>=6",
+    "watchdog>=4",
 ]
 
 [project.optional-dependencies]
