@@ -30,11 +30,42 @@ class DepNeighborhood(BaseModel):
     unresolvedDeps: list[str] = Field(default_factory=list)
 
 
+class RoadmapItem(BaseModel):
+    """A single milestone list-item parsed from ``ROADMAP.md``.
+
+    ``text`` is the cleaned item label (marker and checkbox stripped); ``done``
+    reflects the checkbox state (``True``/``False`` for ``[x]``/``[ ]``, ``None``
+    when the item carries no checkbox); ``ticketId`` is the item's linked ticket
+    id when one is present, else ``None``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    text: str
+    ticketId: str | None = None
+    done: bool | None = None
+
+
+class RoadmapMilestone(BaseModel):
+    """A ``## `` heading from ``ROADMAP.md`` with its list of items."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str
+    items: list[RoadmapItem] = Field(default_factory=list)
+
+
 class Roadmap(BaseModel):
-    """The project roadmap document (``ROADMAP.md``)."""
+    """The project roadmap document (``ROADMAP.md``).
+
+    ``milestones`` is the structured breakdown parsed from the body — empty for a
+    body with no ``## `` headings — leaving ``bodyMarkdown``/``bodyHtml`` as the
+    full document for verbatim rendering.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     path: Path
     bodyMarkdown: str
     bodyHtml: str
+    milestones: list[RoadmapMilestone] = Field(default_factory=list)
