@@ -19,6 +19,7 @@ from factory_console.domain import (
     Ticket,
     TicketSummary,
 )
+from factory_console.domain.search import SearchHit
 from factory_console.file_adapter import FakeFileAdapter, FileAdapter
 
 
@@ -314,6 +315,72 @@ def test_get_roadmap_returns_none_when_seeded_without_one() -> None:
 # --------------------------------------------------------------------------- #
 # read-only / side-effect-free guarantee
 # --------------------------------------------------------------------------- #
+
+
+# --------------------------------------------------------------------------- #
+# search_tickets — ranked hits with run-state-resolved summaries
+# --------------------------------------------------------------------------- #
+
+
+def _searchable_tickets() -> list[Ticket]:
+    # T-A title matches 'streak'; T-B body matches 'streak'; T-C matches nothing.
+    return [
+        Ticket(
+            id="T-A",
+            title="Streak service",
+            status="open",
+            filePath=Path("/proj/docs/planning/tickets/T-A.md"),
+            bodyMarkdown="# T-A",
+            bodyHtml="",
+            raw={"id": "T-A"},
+        ),
+        Ticket(
+            id="T-B",
+            title="Weekly digest",
+            status="open",
+            filePath=Path("/proj/docs/planning/tickets/T-B.md"),
+            bodyMarkdown="a body mentioning the streak fold",
+            bodyHtml="",
+            raw={"id": "T-B"},
+        ),
+        Ticket(
+            id="T-C",
+            title="Unrelated",
+            status="open",
+            filePath=Path("/proj/docs/planning/tickets/T-C.md"),
+            bodyMarkdown="nothing here",
+            bodyHtml="",
+            raw={"id": "T-C"},
+        ),
+    ]
+
+
+def test_search_tickets_returns_ranked_hits_with_resolved_summaries() -> None:
+    fake = FakeFileAdapter(
+        project=_make_project(),
+        tickets=_searchable_tickets(),
+        run_states={"T-A": RunState.merged, "T-B": RunState.in_flight},
+    )
+    hits = fake.search_tickets(_make_project(), "streak")
+    assert all(isinstance(hit, SearchHit) for hit in hits)
+    # Title hit (T-A) outranks the body hit (T-B); T-C scores zero and is dropped.
+    assert [hit.ticket.id for hit in hits] == ["T-A", "T-B"]
+    assert hits[0].matchedFields == ["title"]
+    assert hits[1].matchedFields == ["bodyMarkdown"]
+    # The summary carries run-state resolved from the seeded map.
+    assert hits[0].ticket.runState is RunState.merged
+    assert hits[1].ticket.runState is RunState.in_flight
+
+
+def test_search_tickets_blank_query_returns_empty() -> None:
+    fake = FakeFileAdapter(project=_make_project(), tickets=_searchable_tickets())
+    assert fake.search_tickets(_make_project(), "   ") == []
+
+
+def test_search_tickets_limit_truncates_to_first_n_hits() -> None:
+    fake = FakeFileAdapter(project=_make_project(), tickets=_searchable_tickets())
+    hits = fake.search_tickets(_make_project(), "streak", limit=1)
+    assert [hit.ticket.id for hit in hits] == ["T-A"]
 
 
 def test_methods_do_not_mutate_seeded_state() -> None:
