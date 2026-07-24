@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel
 from starlette.routing import Mount
 
-from factory_console.api.deps import get_file_adapter
+from factory_console.api.deps import get_file_adapter, get_file_watcher
 from factory_console.app import _SpaStaticFiles, create_app
 from factory_console.domain import TICKET_ID_PATTERN, Project
 from factory_console.file_adapter import FakeFileAdapter
@@ -151,6 +151,35 @@ def test_access_log_line_emitted_for_unhandled_500(caplog: pytest.LogCaptureFixt
     assert "GET" in message
     assert "/probe-boom" in message
     assert "500" in message
+
+
+def test_get_file_watcher_returns_the_watcher_bound_by_create_app() -> None:
+    # create_app stashes the optional watcher on app.state; the DI provider reads
+    # it back so the SSE endpoint gets the exact instance the composition root wired.
+    watcher = object()
+    app = create_app(
+        _make_fake(),
+        version="0.0.0",
+        project_root=Path("/tmp/fake-root"),
+        file_watcher=watcher,  # type: ignore[arg-type]
+    )
+    request = SimpleNamespace(app=app)
+    assert get_file_watcher(request) is watcher  # type: ignore[arg-type]
+
+
+def test_get_file_watcher_returns_none_when_no_watcher_wired() -> None:
+    # The watcher is opt-in: an app built without one is a valid configuration, so
+    # the provider returns None (degrade gracefully) rather than raising.
+    app = _make_app()
+    request = SimpleNamespace(app=app)
+    assert get_file_watcher(request) is None  # type: ignore[arg-type]
+
+
+def test_get_file_watcher_returns_none_when_state_unset() -> None:
+    # Even on an app.state with no file_watcher attribute at all, the provider
+    # returns None rather than raising (unlike get_file_adapter's wiring guard).
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
+    assert get_file_watcher(request) is None  # type: ignore[arg-type]
 
 
 def test_get_file_adapter_raises_when_unbound() -> None:

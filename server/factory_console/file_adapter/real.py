@@ -5,7 +5,7 @@ file-adapter modules — :mod:`~factory_console.file_adapter.discovery`,
 :mod:`~factory_console.file_adapter.manifest`,
 :mod:`~factory_console.file_adapter.ticket_md`,
 :mod:`~factory_console.file_adapter.markdown_render`, and
-:mod:`~factory_console.file_adapter.run_state` — into the seven-method read-only
+:mod:`~factory_console.file_adapter.run_state` — into the eight-method read-only
 :class:`~factory_console.file_adapter.protocol.FileAdapter` port, rather than
 re-implementing manifest parsing, ``.md`` reading, rendering, or run-state
 probing here.
