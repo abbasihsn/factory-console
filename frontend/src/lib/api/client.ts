@@ -10,6 +10,7 @@
 import { ApiError } from './errors';
 import type {
 	DepNeighborhood,
+	Health,
 	Project,
 	Roadmap,
 	SearchHit,
@@ -30,20 +31,6 @@ const REQUEST_TIMEOUT_MS = 10_000;
 // An absolute reference: a URL scheme (`http:`, `file:`, …) or a
 // protocol-relative `//host` prefix. Same-origin paths never match.
 const ABSOLUTE_REFERENCE = /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i;
-
-/**
- * Liveness-probe shape for `GET /api/v1/health`.
- *
- * The handler now returns a typed `HealthResponse` (`ok`, `version`,
- * `projectRoot`), but the committed `types.ts` was generated while `/health` still
- * returned an untyped dict, so its response body is not typed there yet; this local
- * shape mirrors `HealthResponse` until `types.ts` is regenerated.
- */
-export interface Health {
-	readonly ok: boolean;
-	readonly version: string;
-	readonly projectRoot: string | null;
-}
 
 /** Optional filters for {@link listTickets}, forwarded as query params. */
 export interface ListTicketsParams {

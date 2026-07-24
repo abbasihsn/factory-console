@@ -14,6 +14,9 @@ export type TicketSummary = components['schemas']['TicketSummary'];
 export type TicketListResponse = components['schemas']['TicketListResponse'];
 export type RunState = components['schemas']['RunState'];
 
+/** Liveness-probe body from `GET /api/v1/health` (`ok`, `version`, `projectRoot`). */
+export type Health = components['schemas']['HealthResponse'];
+
 export type TicketGraph = components['schemas']['TicketGraph'];
 export type GraphNode = components['schemas']['GraphNode'];
 export type GraphEdge = components['schemas']['GraphEdge'];

@@ -16,7 +16,6 @@ export {
 	searchTickets,
 	getRoadmap,
 	getHealth,
-	type Health,
 	type ListTicketsParams,
 	type SearchParams,
 	type Filters
@@ -29,6 +28,7 @@ export type {
 	TicketSummary,
 	TicketListResponse,
 	RunState,
+	Health,
 	TicketGraph,
 	GraphNode,
 	GraphEdge,

@@ -60,6 +60,14 @@ const emptyNeighborhood: DepNeighborhood = {
 	unresolvedDeps: []
 };
 
+// The three dep arrays are OPTIONAL in the generated schema, so the backend may
+// omit them entirely (not just send `[]`). This fixture leaves them out to
+// exercise the `?? []` guards in `+page.svelte` — without them, `.length` on an
+// absent field would throw at render.
+const sparseNeighborhood: DepNeighborhood = {
+	ticket: summary({ id: 'T98', title: 'Fieldless ticket' })
+};
+
 function foundData(deps: DepNeighborhood): PageData {
 	return { project, notFound: false, deps };
 }
@@ -155,6 +163,12 @@ describe('dep neighborhood page (found)', () => {
 
 	it('renders a muted "None" for each of the three empty sections', () => {
 		render(Page, { props: { data: foundData(emptyNeighborhood) } });
+
+		expect(screen.getAllByText('None')).toHaveLength(3);
+	});
+
+	it('renders three "None" placeholders when the optional dep arrays are absent', () => {
+		render(Page, { props: { data: foundData(sparseNeighborhood) } });
 
 		expect(screen.getAllByText('None')).toHaveLength(3);
 	});
