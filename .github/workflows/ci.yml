@@ -1,9 +1,10 @@
 name: CI
 
 on:
+  # CI runs only on merges to main. The App Factory already runs build + tests on
+  # every PR (its QA) before cutting it, so we don't pay GitHub for a second copy.
   push:
     branches: [main]
-  pull_request: {}
 
 # One in-flight run per ref; a new push cancels the stale run.
 concurrency:
@@ -20,7 +21,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # Linux-only: macOS runners bill at 10x and blow the free-tier minute
+        # budget; the dev machine is macOS, so Mac-specific issues surface there.
+        os: [ubuntu-latest]
         # Quoted so YAML keeps them as strings ('3.11', not the float 3.1).
         python: ['3.11', '3.12']
     runs-on: ${{ matrix.os }}
