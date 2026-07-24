@@ -20,6 +20,7 @@ from factory_console.file_adapter import run_state as run_state_module
 from factory_console.file_adapter.run_state import (
     PathTraversal,
     find_run_state_dir,
+    is_run_state_marker,
     probe_ticket_state,
 )
 
@@ -185,6 +186,33 @@ def test_find_run_state_dir_ignores_a_non_directory_at_primary(tmp_path: Path) -
     assert find_run_state_dir(tmp_path) == fallback, (
         "a non-directory at the primary path must be skipped in favor of the fallback"
     )
+
+
+# --------------------------------------------------------------------------- #
+# is_run_state_marker — the marker-layout rule (shared with the T40 watcher)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "rel_path, expected",
+    [
+        # A marker lives exactly <location>/<state>/<ticket_id> — two segments
+        # below either documented run-state location.
+        (".factory/run-state/ready/T99", True),
+        (".factory/run-state/in-flight/T42", True),
+        ("docs/planning/.run-state/ready/T88", True),  # the fallback location
+        # Not markers: the bare location (depth 0), a bare <state> dir (depth 1),
+        # and something deeper than a marker (depth 3+).
+        (".factory/run-state", False),
+        (".factory/run-state/ready", False),
+        (".factory/run-state/ready/T99/extra", False),
+        # Outside any run-state location entirely (planning docs).
+        ("docs/planning/tickets/T99.md", False),
+        ("README.md", False),
+    ],
+)
+def test_is_run_state_marker_only_true_at_marker_depth(rel_path: str, expected: bool) -> None:
+    assert is_run_state_marker(rel_path) is expected
 
 
 # --------------------------------------------------------------------------- #
