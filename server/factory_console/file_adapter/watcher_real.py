@@ -30,6 +30,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import get_args
 
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
@@ -41,14 +42,20 @@ from factory_console.domain.watch import ChangeEvent
 # reports as a created + one-or-more modified burst) yields exactly one event.
 _DEBOUNCE_SECONDS = 0.15
 
-# The four verbs watchdog emits; also the ChangeEvent.kind literal set. Anything
-# outside this set is skipped defensively rather than fed to the model.
-_ALLOWED_KINDS = frozenset({"created", "modified", "deleted", "moved"})
+# The change verbs we surface, derived from the single source of truth —
+# ``ChangeEvent.kind``'s Literal — so the guard here and the model can never
+# drift (add a verb to the Literal and it is honored here automatically). Any
+# raw watchdog event type outside this set is skipped defensively.
+_ALLOWED_KINDS = frozenset(get_args(ChangeEvent.model_fields["kind"].annotation))
 
-# Relative-path prefix that marks the factory run-state subtree; everything else
-# under the watched roots is planning scope. Matches the ticket's scope rule and
-# the primary run-state location in ``run_state.find_run_state_dir``.
-_RUN_STATE_PREFIX = ".factory/run-state"
+# Relative-path prefixes that mark the factory run-state subtree; everything else
+# under the watched roots is planning scope. BOTH documented run-state locations
+# from ``run_state.find_run_state_dir`` are recognized: the primary
+# ``.factory/run-state`` and the ``docs/planning/.run-state`` fallback — the
+# latter IS observed (``docs/planning`` is scheduled ``recursive=True``), so
+# without it a run-state marker in the fallback layout would be mis-tagged
+# ``planning`` and refresh the wrong pane.
+_RUN_STATE_PREFIXES = (".factory/run-state", "docs/planning/.run-state")
 
 
 class _ChangeEventHandler(FileSystemEventHandler):
@@ -82,20 +89,20 @@ class _ChangeEventHandler(FileSystemEventHandler):
             dest_path = getattr(event, "dest_path", "") or ""
             if dest_path:
                 try:
-                    Path(dest_path).relative_to(self._watcher.project_root)
+                    Path(dest_path).relative_to(self._watcher._project_root)
                 except ValueError:
                     pass
                 else:
                     raw_path = dest_path
         try:
-            rel_path = Path(raw_path).relative_to(self._watcher.project_root).as_posix()
+            rel_path = Path(raw_path).relative_to(self._watcher._project_root).as_posix()
         except ValueError:
             # Outside the project root (should not happen for scheduled roots) —
             # skip rather than leak an out-of-tree or absolute path.
             return
         scope = (
             "run-state"
-            if rel_path == _RUN_STATE_PREFIX or rel_path.startswith(_RUN_STATE_PREFIX + "/")
+            if any(rel_path == p or rel_path.startswith(p + "/") for p in _RUN_STATE_PREFIXES)
             else "planning"
         )
         self._watcher._dispatch_from_thread(kind, scope, rel_path)
@@ -114,8 +121,11 @@ class RealFileWatcher:
 
     def __init__(self, project_root: Path) -> None:
         # Resolve once so relativization is stable and symlinked roots (e.g. the
-        # macOS ``/tmp`` → ``/private/tmp`` link) match the paths watchdog reports.
-        self.project_root = Path(project_root).resolve()
+        # macOS ``/tmp`` → ``/private/tmp`` link) match the paths watchdog
+        # reports. Non-public (only the same-module handler reads it) so the
+        # instance's public surface stays exactly the FileWatcher port, like
+        # FakeFileWatcher.
+        self._project_root = Path(project_root).resolve()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._observer: Observer | None = None
         # Subscribers is a set (not a list) so unregistration uses ``discard`` —
@@ -148,8 +158,8 @@ class RealFileWatcher:
         observer = Observer()
         handler = _ChangeEventHandler(self)
         for root in (
-            self.project_root / "docs" / "planning",
-            self.project_root / ".factory" / "run-state",
+            self._project_root / "docs" / "planning",
+            self._project_root / ".factory" / "run-state",
         ):
             if root.is_dir():
                 observer.schedule(handler, str(root), recursive=True)

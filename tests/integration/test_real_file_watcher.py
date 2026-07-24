@@ -13,13 +13,15 @@ absent. The repo runs ``asyncio_mode=auto`` so ``async def test_...`` needs no
 decorator.
 """
 
-import ast
 import asyncio
-import inspect
 import threading
 from pathlib import Path
 
 import pytest
+from _read_only_guard import (
+    assert_module_carries_read_only_header,
+    assert_module_is_read_only,
+)
 
 pytest.importorskip("watchdog")
 
@@ -83,6 +85,27 @@ async def test_write_under_each_root_emits_scoped_relative_event(tmp_path: Path)
         assert run_state_event.path == ".factory/run-state/ready/T99"
         assert run_state_event.kind in {"created", "modified"}
     finally:
+        await stream.aclose()
+        watcher.stop()
+
+
+async def test_run_state_fallback_location_is_scoped_run_state(tmp_path: Path) -> None:
+    # run_state.find_run_state_dir documents TWO run-state locations; the fallback
+    # docs/planning/.run-state lives UNDER docs/planning, so it is observed by the
+    # recursive planning watch. A marker there must still be scoped "run-state"
+    # (not "planning"), or the SSE client would refresh the wrong pane.
+    (tmp_path / "docs" / "planning" / ".run-state" / "ready").mkdir(parents=True)
+    watcher = RealFileWatcher(tmp_path)
+    watcher.start()
+    stream, first = await _primed_stream(watcher)
+    try:
+        marker = tmp_path / "docs" / "planning" / ".run-state" / "ready" / "T88"
+        marker.write_text("")
+        event = await _next_event(stream, first)
+        assert event.scope == "run-state"
+        assert event.path == "docs/planning/.run-state/ready/T88"
+    finally:
+        first.cancel()
         await stream.aclose()
         watcher.stop()
 
@@ -235,68 +258,13 @@ def test_real_watcher_satisfies_runtime_checkable_file_watcher(tmp_path: Path) -
 
 # --------------------------------------------------------------------------- #
 # GUARD: the read-only invariant — the module has no FS-mutating call
-# (mirrors tests/unit/test_run_state.py)
+# (shared with tests/unit/test_run_state.py via tests/_read_only_guard.py)
 # --------------------------------------------------------------------------- #
-
-_FORBIDDEN_ATTR_CALLS = frozenset(
-    {
-        "write_text",
-        "write_bytes",
-        "touch",
-        "mkdir",
-        "rmdir",
-        "unlink",
-        "rename",
-        "replace",
-        "makedirs",
-        "remove",
-    }
-)
-_FORBIDDEN_OPEN_MODE_CHARS = frozenset("wax+")
-
-_READ_ONLY_HEADER = "# READ-ONLY: this module MUST NOT write, create, or delete. Enforced by tests."
-
-
-def _module_source() -> str:
-    """Return the on-disk source text of the watcher_real module under test."""
-    source_file = inspect.getsourcefile(watcher_real)
-    assert source_file is not None, "could not locate watcher_real.py source on disk"
-    return Path(source_file).read_text()
-
-
-def _open_mode_arg(call: ast.Call) -> ast.expr | None:
-    """Return the ``mode`` argument node of an ``open(...)`` call, if given."""
-    if len(call.args) >= 2:
-        return call.args[1]
-    for keyword in call.keywords:
-        if keyword.arg == "mode":
-            return keyword.value
-    return None
 
 
 def test_module_source_has_no_filesystem_mutation() -> None:
-    tree = ast.parse(_module_source())
-    violations: list[str] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        if isinstance(func, ast.Attribute) and func.attr in _FORBIDDEN_ATTR_CALLS:
-            violations.append(f"{func.attr}() at line {node.lineno}")
-        elif isinstance(func, ast.Name) and func.id == "open":
-            mode = _open_mode_arg(node)
-            if (
-                isinstance(mode, ast.Constant)
-                and isinstance(mode.value, str)
-                and set(mode.value) & _FORBIDDEN_OPEN_MODE_CHARS
-            ):
-                violations.append(f"open(mode={mode.value!r}) at line {node.lineno}")
-    assert not violations, (
-        "watcher_real.py must be read-only but contains mutation calls: " + ", ".join(violations)
-    )
+    assert_module_is_read_only(watcher_real)
 
 
 def test_module_source_carries_the_read_only_header() -> None:
-    assert _READ_ONLY_HEADER in _module_source(), (
-        "watcher_real.py must carry the literal READ-ONLY header comment"
-    )
+    assert_module_carries_read_only_header(watcher_real)
