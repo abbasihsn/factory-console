@@ -71,8 +71,24 @@ class _ChangeEventHandler(FileSystemEventHandler):
         kind = event.event_type
         if kind not in _ALLOWED_KINDS:
             return
+        # For a ``moved`` event the file now lives at ``dest_path`` — an atomic
+        # editor save arrives as a temp-file -> real-name rename, so ``src_path``
+        # is the temp origin and only ``dest_path`` names the ticket that
+        # actually changed. Prefer the in-root destination; fall back to
+        # ``src_path`` when there is no destination or it lands outside the
+        # watched tree (a move OUT of the project).
+        raw_path = event.src_path
+        if kind == "moved":
+            dest_path = getattr(event, "dest_path", "") or ""
+            if dest_path:
+                try:
+                    Path(dest_path).relative_to(self._watcher.project_root)
+                except ValueError:
+                    pass
+                else:
+                    raw_path = dest_path
         try:
-            rel_path = Path(event.src_path).relative_to(self._watcher.project_root).as_posix()
+            rel_path = Path(raw_path).relative_to(self._watcher.project_root).as_posix()
         except ValueError:
             # Outside the project root (should not happen for scheduled roots) —
             # skip rather than leak an out-of-tree or absolute path.

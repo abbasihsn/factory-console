@@ -110,6 +110,41 @@ async def test_rapid_burst_to_same_path_debounces_to_one_event(tmp_path: Path) -
         watcher.stop()
 
 
+async def test_atomic_rename_within_root_reports_destination_path(tmp_path: Path) -> None:
+    # An atomic editor save (write temp, then rename onto the real name) reaches
+    # watchdog as a ``moved`` event whose ``src_path`` is the temp file and whose
+    # ``dest_path`` is the ticket. The emitted ChangeEvent must name the
+    # destination (the file that actually changed), never the vanished temp file.
+    _make_project(tmp_path)
+    watcher = RealFileWatcher(tmp_path)
+    watcher.start()
+    stream, first = await _primed_stream(watcher)
+    try:
+        tickets = tmp_path / "docs" / "planning" / "tickets"
+        temp = tickets / ".T50.md.tmp"
+        temp.write_text("# T50\n")
+        temp.rename(tickets / "T50.md")
+
+        async def _drain_until_dest() -> ChangeEvent:
+            pending: asyncio.Task | None = first
+            while True:
+                event = await (pending if pending is not None else stream.__anext__())
+                pending = None
+                # Skip the temp file's own create event; the destination path is
+                # the assertion. (A backend that reports the rename as a plain
+                # create of the destination also satisfies this.)
+                if event.path == "docs/planning/tickets/T50.md":
+                    return event
+
+        event = await asyncio.wait_for(_drain_until_dest(), _EVENT_TIMEOUT)
+        assert event.path == "docs/planning/tickets/T50.md"
+        assert event.scope == "planning"
+    finally:
+        first.cancel()
+        await stream.aclose()
+        watcher.stop()
+
+
 async def test_change_outside_watched_roots_yields_nothing(tmp_path: Path) -> None:
     _make_project(tmp_path)
     watcher = RealFileWatcher(tmp_path)
