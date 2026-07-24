@@ -97,13 +97,14 @@ Base: `http://127.0.0.1:<port>/api/v1`. JSON camelCase, ISO-8601, errors as `{ e
 Versioning: URL-prefixed `/api/v1/`. Breaking changes → `/api/v2/` with a deprecation window.
 
 ### FileAdapter port
-Python `Protocol`, read-only, six methods, each takes a `Project`:
+Python `Protocol`, read-only, seven methods, each takes a `Project`:
 - `load_project(root: Path) → Project`
 - `list_tickets(project) → list[TicketSummary]`
 - `get_ticket(project, ticket_id) → Ticket | None`
 - `get_deps(project, ticket_id) → DepNeighborhood | None`
 - `read_run_state(project, ticket_id) → RunState`
 - `get_roadmap(project) → Roadmap | None`
+- `search_tickets(project, query, *, limit=None) → list[SearchHit]` (best-first; blank query → `[]`)
 
 Two implementations: `RealFileAdapter` (hits real FS) and `FakeFileAdapter` (in-memory for tests). Handlers depend on the Protocol, wired via `FastAPI.Depends()`. This is the seam the file-adapter track owns; backend never touches `open()` directly.
 

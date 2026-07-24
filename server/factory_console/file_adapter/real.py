@@ -5,7 +5,7 @@ file-adapter modules — :mod:`~factory_console.file_adapter.discovery`,
 :mod:`~factory_console.file_adapter.manifest`,
 :mod:`~factory_console.file_adapter.ticket_md`,
 :mod:`~factory_console.file_adapter.markdown_render`, and
-:mod:`~factory_console.file_adapter.run_state` — into the six-method read-only
+:mod:`~factory_console.file_adapter.run_state` — into the seven-method read-only
 :class:`~factory_console.file_adapter.protocol.FileAdapter` port, rather than
 re-implementing manifest parsing, ``.md`` reading, rendering, or run-state
 probing here.
@@ -27,6 +27,7 @@ counts can never disagree between the two views or drift from the fake.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -38,6 +39,7 @@ from factory_console.domain import (
     Ticket,
     TicketSummary,
 )
+from factory_console.domain.search import SearchHit
 from factory_console.errors import FactoryConsoleError
 from factory_console.file_adapter.discovery import find_project_root
 from factory_console.file_adapter.manifest import iter_ticket_stubs
@@ -45,7 +47,15 @@ from factory_console.file_adapter.markdown_render import render_markdown, render
 from factory_console.file_adapter.path_safety import PathTraversal
 from factory_console.file_adapter.projection import TicketProjection
 from factory_console.file_adapter.run_state import find_run_state_dir, probe_ticket_state
-from factory_console.file_adapter.ticket_md import enrich_ticket
+from factory_console.file_adapter.search import rank_tickets, to_search_hits
+from factory_console.file_adapter.ticket_md import (
+    TicketFileMissing,
+    TicketFileUnreadable,
+    enrich_ticket,
+    read_ticket_md,
+)
+
+_LOGGER = logging.getLogger(__name__)
 
 _ROADMAP_RELPATHS = (Path("ROADMAP.md"), Path("docs") / "ROADMAP.md")
 """Documented roadmap locations, probed in order: project root, then ``docs/``."""
@@ -187,6 +197,77 @@ class RealFileAdapter:
             bodyHtml=render_markdown(body),
         )
 
+    def search_tickets(
+        self, project: Project, query: str, *, limit: int | None = None
+    ) -> list[SearchHit]:
+        """Rank every manifest ticket by ``query`` over id/title/``provides``/body.
+
+        Materializes the manifest stubs, builds the SAME shared
+        :class:`~factory_console.file_adapter.projection.TicketProjection` the
+        list view uses (so each hit's summary carries the identical run-state and
+        edge counts), then enriches EACH stub with its on-disk body TOLERANTLY:
+        :func:`~factory_console.file_adapter.ticket_md.read_ticket_md`'s
+        ``TicketFileMissing`` / ``TicketFileUnreadable`` / ``PathTraversal`` fall
+        back to an empty body so one bad ``.md`` degrades to an id/title/provides
+        match rather than failing the whole scan. Ranking is delegated to the pure
+        :func:`~factory_console.file_adapter.search.rank_tickets`; each
+        :class:`~factory_console.file_adapter.search.ScoredTicket` is re-keyed to a
+        :class:`~factory_console.domain.search.SearchHit` via the projection's
+        summaries, then ``limit`` truncates to the first ``limit`` hits.
+
+        Consistent with ``ARCHITECTURE.md`` "every request re-reads": this
+        re-reads every ticket ``.md`` per call with no cache or index (an
+        in-memory index is deferred to a later milestone alongside the watcher).
+
+        A blank or whitespace-only ``query`` short-circuits to ``[]`` BEFORE any
+        filesystem work — ``rank_tickets`` would return ``[]`` for it anyway, so
+        probing run-state and reading every ``.md`` first (the path a cleared or
+        momentarily-empty search box hits) would be a full scan thrown away. The
+        "every request re-reads" tradeoff is about lacking a cache for real
+        queries, not about scanning for a guaranteed-empty result.
+        """
+        if not query.split():
+            return []
+        stubs = list(iter_ticket_stubs(project))
+        projection = self._projection_for(project, stubs)
+        summary_by_id = {summary.id: summary for summary in projection.summaries()}
+        enriched = [
+            stub.model_copy(update={"bodyMarkdown": self._safe_body(project, stub.id)})
+            for stub in stubs
+        ]
+        return to_search_hits(rank_tickets(enriched, query), summary_by_id, limit)
+
+    @staticmethod
+    def _safe_body(project: Project, ticket_id: str) -> str:
+        """Read ``ticket_id``'s ``.md`` body, degrading a bad ``.md`` to ``""``.
+
+        A missing file, an unreadable file, or an unsafe id
+        (``TicketFileMissing`` / ``TicketFileUnreadable`` / ``PathTraversal``)
+        yields an empty body so a single broken ticket ``.md`` never fails the
+        whole search scan — the ticket can still match on id/title/``provides``.
+
+        The tolerance is observable, not silent: a legitimately absent ``.md``
+        (``TicketFileMissing``) is the routine case and logs at ``debug``, while
+        an *unreadable* file (a data/permission problem) or a tripped
+        ``PathTraversal`` guard (a manifest id resolving outside the project root)
+        logs at ``warning`` — so a corrupt file or a security-relevant bad id
+        leaves a trace instead of a silently dropped body match.
+        """
+        try:
+            _front_matter, body = read_ticket_md(project, ticket_id)
+        except TicketFileMissing:
+            _LOGGER.debug("search: ticket %s has no .md; scanning with empty body", ticket_id)
+            return ""
+        except (TicketFileUnreadable, PathTraversal) as exc:
+            _LOGGER.warning(
+                "search: could not read body for ticket %s (%s); scanning with empty body",
+                ticket_id,
+                type(exc).__name__,
+                extra={"ticket_id": ticket_id},
+            )
+            return ""
+        return body
+
     @staticmethod
     def _find_roadmap(root: Path) -> Path | None:
         """Return the first existing ``ROADMAP.md`` (root then ``docs/``), else ``None``."""
@@ -224,8 +305,21 @@ class RealFileAdapter:
         :class:`~factory_console.file_adapter.manifest.MalformedManifest` from the
         manifest read propagates to the caller.
         """
+        return RealFileAdapter._projection_for(project, list(iter_ticket_stubs(project)))
+
+    @staticmethod
+    def _projection_for(project: Project, stubs: list[Ticket]) -> TicketProjection:
+        """Wrap already-materialized ``stubs`` in the per-request projection.
+
+        The SINGLE run-state-wiring point the list/deps view
+        (:meth:`_project_manifest`) and the search scan (:meth:`search_tickets`)
+        both call, so the run-state resolution that makes summaries agree across
+        the views can never drift between them. ``search_tickets`` passes the
+        stubs it already read (one manifest read per request); ``_project_manifest``
+        materializes them itself.
+        """
         return TicketProjection(
-            list(iter_ticket_stubs(project)),
+            stubs,
             run_state_for=lambda ticket_id: RealFileAdapter._safe_run_state(
                 project.runStateDir, ticket_id
             ),

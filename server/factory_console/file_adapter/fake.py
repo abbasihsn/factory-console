@@ -35,7 +35,9 @@ from factory_console.domain import (
     Ticket,
     TicketSummary,
 )
+from factory_console.domain.search import SearchHit
 from factory_console.file_adapter.projection import TicketProjection
+from factory_console.file_adapter.search import rank_tickets, to_search_hits
 
 
 class FakeFileAdapter:
@@ -64,6 +66,7 @@ class FakeFileAdapter:
         seeded map.
         """
         self._project = project
+        self._tickets = tickets
         self._run_states = {} if run_states is None else run_states
         self._roadmap = roadmap
         self._projection = TicketProjection(
@@ -113,3 +116,21 @@ class FakeFileAdapter:
     def get_roadmap(self, project: Project) -> Roadmap | None:
         """Return the seeded :class:`Roadmap`, or ``None`` when seeded without one."""
         return self._roadmap
+
+    def search_tickets(
+        self, project: Project, query: str, *, limit: int | None = None
+    ) -> list[SearchHit]:
+        """Rank the seeded tickets by ``query`` over id/title/``provides``/body.
+
+        Ranks the in-memory seeded tickets (whose ``bodyMarkdown`` is already
+        populated) via the SAME pure
+        :func:`~factory_console.file_adapter.search.rank_tickets` the real adapter
+        uses, then re-keys each
+        :class:`~factory_console.file_adapter.search.ScoredTicket` to a
+        :class:`~factory_console.domain.search.SearchHit` via the shared
+        projection's summaries, so each hit carries run-state resolved from the
+        seeded map. A blank query yields ``[]``; ``limit`` truncates to the first
+        ``limit`` hits when not ``None``.
+        """
+        summary_by_id = {summary.id: summary for summary in self._projection.summaries()}
+        return to_search_hits(rank_tickets(self._tickets, query), summary_by_id, limit)

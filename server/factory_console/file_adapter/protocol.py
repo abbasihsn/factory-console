@@ -22,6 +22,7 @@ from factory_console.domain import (
     Ticket,
     TicketSummary,
 )
+from factory_console.domain.search import SearchHit
 
 
 @runtime_checkable
@@ -58,4 +59,16 @@ class FileAdapter(Protocol):
 
     def get_roadmap(self, project: Project) -> Roadmap | None:
         """Return the project :class:`Roadmap`, or ``None`` when the project has none."""
+        ...
+
+    def search_tickets(
+        self, project: Project, query: str, *, limit: int | None = None
+    ) -> list[SearchHit]:
+        """Rank tickets by ``query`` over id/title/``provides``/body, best first.
+
+        Returns a :class:`~factory_console.domain.search.SearchHit` per matching
+        ticket, ordered by descending relevance score; a blank or whitespace-only
+        query returns ``[]``. ``limit`` truncates to the first ``limit`` hits when
+        not ``None``.
+        """
         ...
