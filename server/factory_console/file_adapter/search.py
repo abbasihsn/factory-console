@@ -1,14 +1,22 @@
-"""Pure, dependency-free relevance ranking over a materialized ticket list.
+"""Relevance ranking, plus the ranked-ticket → :class:`SearchHit` re-key.
 
 :func:`rank_tickets` is the whole scoring algorithm for
 ``FileAdapter.search_tickets``: it takes an already-materialized list of
 :class:`~factory_console.domain.ticket.Ticket` (bodies enriched by the caller)
 and a raw query string and returns the matching tickets, most-relevant first, as
-lightweight :class:`ScoredTicket` records. It touches no filesystem and imports
-nothing beyond the stdlib and the :class:`Ticket` model — the adapters own the
-I/O (reading ``.md`` bodies, resolving run-state) and the mapping to
-:class:`~factory_console.domain.search.SearchHit`; this module is a pure fold so
-it can be unit-tested against hand-built ticket lists.
+lightweight :class:`ScoredTicket` records. It touches no filesystem and depends
+only on the stdlib and the :class:`Ticket` model — the adapters own the I/O
+(reading ``.md`` bodies, resolving run-state); this scoring half is a pure fold
+so it can be unit-tested against hand-built ticket lists.
+
+:func:`to_search_hits` is the single re-key step both adapters share: it maps
+each :class:`ScoredTicket` back to a domain
+:class:`~factory_console.domain.search.SearchHit` (looking the summary up by id)
+and applies ``limit``. It lives here — beside its ``ScoredTicket`` input and
+``rank_tickets`` producer — rather than in ``domain/search.py`` because that
+would force ``domain`` to depend on this ``file_adapter`` type; the
+``file_adapter → domain`` import of :class:`SearchHit` is the allowed direction,
+so ``ScoredTicket`` is referenced directly (no shadow Protocol to drift).
 
 Scoring: the query is lowercased and split on whitespace into tokens (a blank or
 whitespace-only query yields no tokens and therefore ``[]``). For each token,
@@ -23,9 +31,11 @@ tickets keep their input order (never re-ordered by id).
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
-from factory_console.domain.ticket import Ticket
+from factory_console.domain.search import SearchHit
+from factory_console.domain.ticket import Ticket, TicketSummary
 
 # Field weights. The strict ordering the ticket mandates is id == title >
 # provides > bodyMarkdown: a hit in a ticket's id or title is the strongest
@@ -109,3 +119,26 @@ def rank_tickets(tickets: list[Ticket], query: str) -> list[ScoredTicket]:
     # incoming (manifest) order.
     scored.sort(key=lambda hit: hit.score, reverse=True)
     return scored
+
+
+def to_search_hits(
+    scored: Iterable[ScoredTicket],
+    summary_by_id: Mapping[str, TicketSummary],
+    limit: int | None = None,
+) -> list[SearchHit]:
+    """Re-key ranked tickets to :class:`SearchHit`\\ s, then apply ``limit``.
+
+    The single construction point both ``FileAdapter`` implementations share:
+    each :class:`ScoredTicket` becomes a ``SearchHit`` whose ``ticket`` is the
+    projected summary looked up by id, bridging the internal ``matched_fields``
+    (snake) to the wire ``matchedFields`` (camel) in one place. ``limit``
+    truncates to the first ``limit`` hits when not ``None``, so the "first N"
+    policy can never disagree between the two adapters.
+    """
+    hits = [
+        SearchHit(
+            ticket=summary_by_id[item.id], score=item.score, matchedFields=item.matched_fields
+        )
+        for item in scored
+    ]
+    return hits if limit is None else hits[:limit]

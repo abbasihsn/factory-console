@@ -35,9 +35,9 @@ from factory_console.domain import (
     Ticket,
     TicketSummary,
 )
-from factory_console.domain.search import SearchHit, to_search_hits
+from factory_console.domain.search import SearchHit
 from factory_console.file_adapter.projection import TicketProjection
-from factory_console.file_adapter.search import rank_tickets
+from factory_console.file_adapter.search import rank_tickets, to_search_hits
 
 
 class FakeFileAdapter:

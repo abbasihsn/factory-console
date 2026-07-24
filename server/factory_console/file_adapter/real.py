@@ -39,7 +39,7 @@ from factory_console.domain import (
     Ticket,
     TicketSummary,
 )
-from factory_console.domain.search import SearchHit, to_search_hits
+from factory_console.domain.search import SearchHit
 from factory_console.errors import FactoryConsoleError
 from factory_console.file_adapter.discovery import find_project_root
 from factory_console.file_adapter.manifest import iter_ticket_stubs
@@ -47,7 +47,7 @@ from factory_console.file_adapter.markdown_render import render_markdown, render
 from factory_console.file_adapter.path_safety import PathTraversal
 from factory_console.file_adapter.projection import TicketProjection
 from factory_console.file_adapter.run_state import find_run_state_dir, probe_ticket_state
-from factory_console.file_adapter.search import rank_tickets
+from factory_console.file_adapter.search import rank_tickets, to_search_hits
 from factory_console.file_adapter.ticket_md import (
     TicketFileMissing,
     TicketFileUnreadable,
