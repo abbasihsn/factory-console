@@ -151,3 +151,49 @@ factory-console [PATH] [--port N] [--host 127.0.0.1] [--no-browser] [--log-level
 - **Frontend unit (Vitest)** — components render given fixture props; store logic covered.
 - **E2E (Playwright)** — boots the packaged CLI on `tests/fixtures/projects/with_run_state/`, drives a real browser through list → filter → click ticket → see body + deps + run-state → click a dep. This IS the MVP acceptance harness.
 - **Fixtures as contract** — `tests/fixtures/projects/` doubles as executable docs of supported project shapes.
+
+## v3 — Hosted multi-project control plane (additive on the hexagonal core)
+
+Planned expansion, elaborated into tickets just-in-time via `/factory-plan-milestone v3` once v2 is
+built. The change is **additive**: new adapters + a hosting/auth shell around the existing
+domain/ports — no domain rewrite. Every read still flows through the source-agnostic domain
+(`Project` / `Ticket` / `RunState` / `DepNeighborhood`).
+
+- **Console-owned store (NEW):** SQLite at `~/.factory-console/console.db`, holding **only** the
+  console's own state — `projects(id, name, path, added_at)` + `credentials(username, password_hash)`.
+  Tickets / run-state / roadmap are **never** copied into it; they stay read-through from each
+  project's files. (A flat file would suffice; SQLite is chosen so a later audit log / multi-user need
+  no migration.)
+- **Project resolution (CHANGED):** today one `Project` is fixed at boot from cwd and served for the
+  process's life. v3 resolves the *selected* project per request from the registry (single-user = a
+  server-side "current selection"). The domain/services already accept a `Project` argument, so this is
+  a resolution change, not a rewrite. The future all-projects dashboard is the same per-project reads
+  looped over the registry.
+- **Serve mode + bind (CHANGED):** new `factory-console serve` long-running mode. The loopback-pinned
+  `host` validator relaxes to allow a configured bind (a tailnet address), gated so a casual
+  `factory-console PATH` still stays loopback-only.
+- **Auth (NEW):** single username/password; password hashed (argon2/bcrypt); session cookie
+  (HttpOnly, Secure, SameSite). Required for `serve` mode; the local viewer mode stays auth-free
+  (loopback trust).
+- **Access / deploy:** **Tailscale-first** — the console binds to a private tailnet, reachable from the
+  user's phone + laptop with no public exposure, no TLS/proxy, and no login-hardening burden.
+  **Public-with-TLS** (reverse proxy + Let's Encrypt + hardened login) is a later *deploy-time* option
+  — **no app code change**; the bind host is configuration.
+- **GitHubAdapter (NEW, read-only):** per-project PR status + links via **guard-scoped `gh`** (respects
+  the dual-account pin). A new port alongside `FileAdapter`; read-only, never mutates GitHub.
+- **Open-Claude launcher (LATER / optional — pending mechanism confirmation):** a per-project action
+  that spawns `claude` in the project directory (tmux-wrapped for persistence). Interactive control
+  happens through Claude Code's **own** remote control from the user's device — **not** a web PTY, so
+  the console never exposes a shell. This is the console's only privileged write. Requires confirming
+  Claude Code can attach to a server-started session; skippable if viewing-only suffices.
+
+### Data-model additions (v3)
+- **RegisteredProject** — `{ id, name, path, addedAt }` (a console-DB row) — distinct from the
+  read-through `Project` entity.
+- **Credentials / Session** — auth state (console DB / in-memory).
+
+### Cross-cutting deltas (v3)
+- **Auth:** v0 = loopback trust · v2 = loopback write token · **v3 = username/password + session for
+  serve mode.**
+- **Concurrency:** serve mode is long-running + multi-client; reads stay read-through per request; the
+  console DB is the only writable state (SQLite handles its own locking).
