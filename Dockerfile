@@ -57,12 +57,21 @@ COPY --from=wheel-builder --chown=fc:fc /build/dist/*.whl /tmp/
 RUN pip install --user --no-cache-dir /tmp/*.whl && rm /tmp/*.whl
 ENV PATH=/home/fc/.local/bin:$PATH
 
+# The console serves the project in its working directory, so the target project
+# must be bind-mounted at this WORKDIR — nothing is baked into the image
+# (docs/planning is .dockerignore'd). Without the mount, discover_project finds no
+# tickets.json and exits 1, so a bare `docker run <image>` cannot serve by design.
+WORKDIR /project
+
 # No EXPOSE: the console binds 127.0.0.1 by design — the loopback trust boundary
 # enforced by the host validator (config.require_loopback_host, which refuses
 # 0.0.0.0) — so a bridge-network `-p 8000:8000` publish can never reach it. To use
-# the served UI, run on the host loopback with `docker run --network host` (Linux)
-# or reach it via `docker exec`; `--version` and other CLI use need no networking.
-# The image is a convenience/CLI artifact, not the primary distribution (see
-# ARCHITECTURE.md).
+# the served UI, run on the host loopback with the project mounted at /project:
+#
+#   docker run --rm --network host -v "$PWD:/project" factory-console   # from a project dir
+#
+# (Linux; on other hosts reach it via `docker exec`.) `--version` and other CLI use
+# override CMD and need neither a mount nor networking. The image is a
+# convenience/CLI artifact, not the primary distribution (see ARCHITECTURE.md).
 ENTRYPOINT ["factory-console"]
 CMD ["--host", "127.0.0.1", "--port", "8000", "--no-browser"]

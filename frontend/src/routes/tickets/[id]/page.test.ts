@@ -142,6 +142,21 @@ describe('ticket detail page (found)', () => {
 		}
 	});
 
+	it('de-duplicates repeated file paths instead of crashing the each key', () => {
+		const dup = 'server/factory_console/app.py';
+		const ticketWithDupFiles: Ticket = {
+			...fullTicket,
+			files: [dup, 'frontend/src/lib/api/client.ts', dup]
+		};
+
+		render(Page, { props: { data: foundData(ticketWithDupFiles) } });
+
+		// A duplicate in the tolerant manifest must render once, not throw
+		// `each_key_duplicate` on a non-unique keyed `{#each}`.
+		expect(screen.getAllByText(dup)).toHaveLength(1);
+		expect(screen.getByText('frontend/src/lib/api/client.ts')).toBeTruthy();
+	});
+
 	it('links to the dependency neighborhood route', () => {
 		render(Page, { props: { data: foundData(fullTicket) } });
 

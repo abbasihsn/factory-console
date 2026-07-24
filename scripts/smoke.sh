@@ -29,13 +29,20 @@ cleanup() {
 	fi
 	rm -rf "$VENV" "$LOG"
 }
-trap cleanup EXIT
+# INT/TERM as well as EXIT: on an untrapped Ctrl-C or a CI cancel/timeout, bash
+# exits via the default signal disposition and the EXIT trap is not guaranteed to
+# run, leaking the temp venv/log and orphaning the background server. Matches
+# dev.sh.
+trap cleanup EXIT INT TERM
 
 "$PYTHON" -m venv "$VENV"
 "$VENV/bin/pip" install --quiet "$WHEEL"
 
-# --port 0 binds a random free port; the chosen port is only discoverable from
-# the "Uvicorn running on ..." line Uvicorn logs to the captured output.
+# --port 0 binds a random free port; the chosen port is read back from the CLI's
+# own "serving ... at http://127.0.0.1:<port>" contract line, printed on stdout
+# unconditionally and owned by this repo — NOT Uvicorn's "Uvicorn running on ..."
+# INFO line, whose wording is an unpinned dependency's and which is silent under
+# FACTORY_CONSOLE_LOG_LEVEL=WARNING/ERROR.
 "$VENV/bin/factory-console" --no-browser --host 127.0.0.1 --port 0 >"$LOG" 2>&1 &
 SERVER_PID=$!
 
@@ -47,7 +54,7 @@ for _ in $(seq 1 50); do
 		cat "$LOG" >&2
 		exit 1
 	fi
-	PORT="$(grep -oE 'Uvicorn running on https?://127\.0\.0\.1:[0-9]+' "$LOG" | grep -oE '[0-9]+$' | tail -n1 || true)"
+	PORT="$(grep -oE 'serving .* at http://127\.0\.0\.1:[0-9]+' "$LOG" | grep -oE '[0-9]+$' | tail -n1 || true)"
 	if [[ -n "$PORT" ]]; then
 		break
 	fi
@@ -55,11 +62,22 @@ for _ in $(seq 1 50); do
 done
 
 if [[ -z "$PORT" ]]; then
-	echo "smoke: timed out waiting for the Uvicorn port" >&2
+	echo "smoke: timed out waiting for the CLI's serving-at port line" >&2
 	cat "$LOG" >&2
 	exit 1
 fi
 
 curl -fsS "http://127.0.0.1:$PORT/api/v1/health"
 echo
+
+# Also assert the SPA itself is served, not just the API. _mount_static is a silent
+# no-op when the package-time _static/ bundle is missing or empty, so a SPA-less
+# wheel still answers /api/v1/health with 200 and would pass an API-only smoke.
+# Require index.html's doctype from / so a wheel that boots but serves no UI fails
+# HERE (before the release job publishes it) rather than in a user's browser.
+if ! curl -fsS "http://127.0.0.1:$PORT/" | grep -qi '<!doctype html'; then
+	echo "smoke: / did not serve the SPA index.html (SPA-less or broken wheel?)" >&2
+	exit 1
+fi
+
 echo "smoke: OK"

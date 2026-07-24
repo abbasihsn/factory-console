@@ -10,6 +10,13 @@
 	// Plain chip styling for the track/milestone row — mirrors TicketRow's
 	// CHIP_CLASS (one complete literal so the Tailwind JIT keeps the classes).
 	const CHIP_CLASS = 'rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600';
+
+	// `files` flows straight from the tolerant App-Factory manifest and is never
+	// promised to be distinct; a repeated path would be a duplicate `{#each}` key and
+	// crash the route with `each_key_duplicate`. De-dup here, first occurrence winning
+	// — the same footgun already guarded for chips (ChipList.distinctByLabel) and deps
+	// (projection.py's dict.fromkeys) — so the view is safe for ANY manifest.
+	const files = $derived([...new Set(data.notFound ? [] : (data.ticket.files ?? []))]);
 </script>
 
 {#if data.notFound}
@@ -55,13 +62,14 @@
 			</section>
 		{/if}
 
-		{#if ticket.files?.length}
+		{#if files.length}
 			<section class="space-y-2">
 				<h2 class="text-sm font-semibold text-muted">Files</h2>
 				<!-- Plain-text paths only: the SPA has no filesystem access, so these are
-				     NEVER rendered as `file://` or any other links (REST v1 contract). -->
+				     NEVER rendered as `file://` or any other links (REST v1 contract).
+				     `files` is de-duplicated in the script (see above). -->
 				<ul class="space-y-1 font-mono text-sm text-text">
-					{#each ticket.files as file (file)}
+					{#each files as file (file)}
 						<li>{file}</li>
 					{/each}
 				</ul>

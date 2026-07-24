@@ -26,6 +26,7 @@ from factory_console.domain import (
 )
 from factory_console.file_adapter import FileAdapter
 from factory_console.file_adapter.manifest import MalformedManifest
+from factory_console.file_adapter.path_safety import PathTraversal
 from factory_console.file_adapter.real import RealFileAdapter, RoadmapUnreadable
 
 PROJECTS_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "projects"
@@ -196,6 +197,26 @@ def test_read_run_state_probes_markers_and_defaults_to_todo() -> None:
     assert adapter.read_run_state(project, "CAD-100") is RunState.merged
     # Present run-state dir but no marker for CAD-152 -> todo, not unknown.
     assert adapter.read_run_state(project, "CAD-152") is RunState.todo
+
+
+def test_read_run_state_raises_path_traversal_for_dot_ids() -> None:
+    # The single-ticket read keeps the hard traversal guard: a bare '.'/'..' id
+    # (admitted by TICKET_ID_PATTERN, yet a single-segment traversal) raises.
+    adapter, project = _load_with_run_state()
+    for bad_id in (".", ".."):
+        with pytest.raises(PathTraversal):
+            adapter.read_run_state(project, bad_id)
+
+
+def test_safe_run_state_degrades_dot_ids_to_unknown(tmp_path: Path) -> None:
+    # The LIST/DEPS projection probes run-state for EVERY ticket, so a single '.'/'..'
+    # id must degrade to unknown rather than raise PathTraversal and 400 the whole
+    # request. A valid id still resolves normally (present dir, no marker -> todo).
+    run_state_dir = tmp_path / "run-state"
+    (run_state_dir / "todo").mkdir(parents=True)
+    assert RealFileAdapter._safe_run_state(run_state_dir, "CAD-1") is RunState.todo
+    for bad_id in (".", ".."):
+        assert RealFileAdapter._safe_run_state(run_state_dir, bad_id) is RunState.unknown
 
 
 # --------------------------------------------------------------------------- #
