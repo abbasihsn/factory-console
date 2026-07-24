@@ -82,6 +82,10 @@ class TicketProjection:
         """Return the ticket with ``id == ticket_id``, or ``None`` if absent."""
         return self._by_id.get(ticket_id)
 
+    def all_tickets(self) -> list[Ticket]:
+        """Return a copy of the projected tickets, in list order (never the internal list)."""
+        return list(self._tickets)
+
     def neighborhood(self, ticket: Ticket) -> DepNeighborhood:
         """Build the :class:`DepNeighborhood` for ``ticket``.
 

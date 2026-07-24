@@ -25,6 +25,7 @@ from factory_console.domain import (
     Ticket,
     TicketSummary,
 )
+from factory_console.domain.graph import TicketGraph
 from factory_console.domain.search import SearchHit
 from factory_console.file_adapter import FileAdapter
 from factory_console.file_adapter.manifest import MalformedManifest
@@ -186,6 +187,38 @@ def test_list_and_deps_views_share_one_projection() -> None:
     deps = adapter.get_deps(project, "CAD-125")
     assert deps is not None
     assert deps.ticket == list_summary
+
+
+# --------------------------------------------------------------------------- #
+# get_graph — whole-project DAG over the with_run_state fixture
+# --------------------------------------------------------------------------- #
+
+
+def test_get_graph_returns_all_nodes_in_manifest_order() -> None:
+    adapter, project = _load_with_run_state()
+    graph = adapter.get_graph(project)
+    assert isinstance(graph, TicketGraph)
+    assert [node.id for node in graph.nodes] == MANIFEST_ORDER
+
+
+def test_get_graph_node_run_state_matches_list_tickets_summaries() -> None:
+    # No drift: each node's run-state equals the matching list_tickets summary's.
+    adapter, project = _load_with_run_state()
+    summaries = {s.id: s.runState for s in adapter.list_tickets(project)}
+    graph = adapter.get_graph(project)
+    assert {node.id: node.runState for node in graph.nodes} == summaries
+
+
+def test_get_graph_edges_target_only_known_nodes_and_drop_the_dangling_edge() -> None:
+    # CAD-131 declares CAD-125 (resolved) and CAD-207-nonexistent (dangling): the
+    # dangling edge is omitted and every edge target is a known node id.
+    adapter, project = _load_with_run_state()
+    graph = adapter.get_graph(project)
+    node_ids = {node.id for node in graph.nodes}
+    assert all(edge.target in node_ids for edge in graph.edges)
+    assert all(edge.source in node_ids for edge in graph.edges)
+    assert all(edge.target != "CAD-207-nonexistent" for edge in graph.edges)
+    assert ("CAD-131", "CAD-125") in {(edge.source, edge.target) for edge in graph.edges}
 
 
 # --------------------------------------------------------------------------- #

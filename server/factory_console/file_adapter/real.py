@@ -39,9 +39,11 @@ from factory_console.domain import (
     Ticket,
     TicketSummary,
 )
+from factory_console.domain.graph import TicketGraph
 from factory_console.domain.search import SearchHit
 from factory_console.errors import FactoryConsoleError
 from factory_console.file_adapter.discovery import find_project_root
+from factory_console.file_adapter.graph import build_graph
 from factory_console.file_adapter.manifest import iter_ticket_stubs
 from factory_console.file_adapter.markdown_render import render_markdown, render_ticket_html
 from factory_console.file_adapter.path_safety import PathTraversal
@@ -236,6 +238,18 @@ class RealFileAdapter:
             for stub in stubs
         ]
         return to_search_hits(rank_tickets(enriched, query), summary_by_id, limit)
+
+    def get_graph(self, project: Project) -> TicketGraph:
+        """Build the whole-project dependency DAG from the shared per-request projection.
+
+        Reuses the SAME projection as :meth:`list_tickets` / :meth:`get_deps` via
+        :meth:`_project_manifest`, so a node's ``runState`` can never drift from
+        those views, then delegates to the pure
+        :func:`~factory_console.file_adapter.graph.build_graph`. Consistent with
+        ``ARCHITECTURE.md`` "every request re-reads": this re-reads the manifest
+        per call with no cache.
+        """
+        return build_graph(self._project_manifest(project))
 
     @staticmethod
     def _safe_body(project: Project, ticket_id: str) -> str:
