@@ -181,3 +181,19 @@ def test_change_event_rejects_absolute_path_scope_and_kind_literals() -> None:
             scope="secrets",  # not in the allowed set
             at=datetime(2026, 7, 24, 12, 0, 0),
         )
+
+
+@pytest.mark.parametrize(
+    "abs_path", ["/etc/passwd", "/home/u/project/docs/ROADMAP.md", r"C:\project\x"]
+)
+def test_change_event_rejects_absolute_path(abs_path: str) -> None:
+    # The project-relative security invariant is enforced on the schema itself:
+    # any absolute path (POSIX or Windows) is rejected so the host's filesystem
+    # layout can never leak onto the SSE wire.
+    with pytest.raises(ValidationError):
+        ChangeEvent(
+            kind="modified",
+            path=abs_path,
+            scope="planning",
+            at=datetime(2026, 7, 24, 12, 0, 0),
+        )

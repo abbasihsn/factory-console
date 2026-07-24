@@ -18,9 +18,10 @@ across the parallel v1 tickets.
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class ChangeEvent(BaseModel):
@@ -40,3 +41,19 @@ class ChangeEvent(BaseModel):
     path: str
     scope: Literal["planning", "run-state"]
     at: datetime
+
+    @field_validator("path")
+    @classmethod
+    def _reject_absolute_path(cls, value: str) -> str:
+        """Enforce the project-relative invariant at the wire boundary.
+
+        The module security note promises ``path`` is never absolute; this pins
+        that promise on the schema itself (defense-in-depth, mirroring how
+        ``TICKET_ID_PATTERN`` is enforced at the model boundary) so no
+        constructor — including the T40 watcher — can leak the host's absolute
+        filesystem layout onto the SSE wire. POSIX and Windows absolute forms
+        are both rejected.
+        """
+        if PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute():
+            raise ValueError("path must be project-relative, never absolute")
+        return value
