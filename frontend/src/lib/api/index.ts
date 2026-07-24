@@ -12,10 +12,12 @@ export {
 	listTickets,
 	getTicket,
 	getTicketDeps,
+	getGraph,
+	searchTickets,
 	getRoadmap,
 	getHealth,
-	type Health,
 	type ListTicketsParams,
+	type SearchParams,
 	type Filters
 } from './client';
 export { ApiError } from './errors';
@@ -26,6 +28,14 @@ export type {
 	TicketSummary,
 	TicketListResponse,
 	RunState,
+	Health,
+	TicketGraph,
+	GraphNode,
+	GraphEdge,
+	SearchResponse,
+	SearchHit,
 	Roadmap,
+	RoadmapMilestone,
+	RoadmapItem,
 	DepNeighborhood
 } from './models';

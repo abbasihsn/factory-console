@@ -60,6 +60,14 @@ const emptyNeighborhood: DepNeighborhood = {
 	unresolvedDeps: []
 };
 
+// The three dep arrays are OPTIONAL in the generated schema, so the backend may
+// omit them entirely (not just send `[]`). This fixture leaves them out to
+// exercise the `?? []` guards in `+page.svelte` — without them, `.length` on an
+// absent field would throw at render.
+const sparseNeighborhood: DepNeighborhood = {
+	ticket: summary({ id: 'T98', title: 'Fieldless ticket' })
+};
+
 function foundData(deps: DepNeighborhood): PageData {
 	return { project, notFound: false, deps };
 }
@@ -129,7 +137,7 @@ describe('dep neighborhood page (found)', () => {
 	it('renders a mini-row anchor pointing at each direct dependency', () => {
 		render(Page, { props: { data: foundData(neighborhood) } });
 
-		for (const dep of neighborhood.directDeps) {
+		for (const dep of neighborhood.directDeps ?? []) {
 			const link = screen.getByRole('link', { name: dep.id });
 			expect(link.getAttribute('href')).toBe(`/tickets/${dep.id}`);
 		}
@@ -138,7 +146,7 @@ describe('dep neighborhood page (found)', () => {
 	it('renders a mini-row anchor pointing at each direct dependent', () => {
 		render(Page, { props: { data: foundData(neighborhood) } });
 
-		for (const dependent of neighborhood.directDependents) {
+		for (const dependent of neighborhood.directDependents ?? []) {
 			const link = screen.getByRole('link', { name: dependent.id });
 			expect(link.getAttribute('href')).toBe(`/tickets/${dependent.id}`);
 		}
@@ -147,7 +155,7 @@ describe('dep neighborhood page (found)', () => {
 	it('renders unresolved deps as plain text, never as links', () => {
 		render(Page, { props: { data: foundData(neighborhood) } });
 
-		for (const depId of neighborhood.unresolvedDeps) {
+		for (const depId of neighborhood.unresolvedDeps ?? []) {
 			expect(screen.getByText(depId)).toBeTruthy();
 			expect(screen.queryByRole('link', { name: depId })).toBeNull();
 		}
@@ -155,6 +163,12 @@ describe('dep neighborhood page (found)', () => {
 
 	it('renders a muted "None" for each of the three empty sections', () => {
 		render(Page, { props: { data: foundData(emptyNeighborhood) } });
+
+		expect(screen.getAllByText('None')).toHaveLength(3);
+	});
+
+	it('renders three "None" placeholders when the optional dep arrays are absent', () => {
+		render(Page, { props: { data: foundData(sparseNeighborhood) } });
 
 		expect(screen.getAllByText('None')).toHaveLength(3);
 	});
