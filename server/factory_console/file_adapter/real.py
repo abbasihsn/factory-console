@@ -38,6 +38,7 @@ from factory_console.domain import (
     Ticket,
     TicketSummary,
 )
+from factory_console.domain.search import SearchHit
 from factory_console.errors import FactoryConsoleError
 from factory_console.file_adapter.discovery import find_project_root
 from factory_console.file_adapter.manifest import iter_ticket_stubs
@@ -45,7 +46,13 @@ from factory_console.file_adapter.markdown_render import render_markdown, render
 from factory_console.file_adapter.path_safety import PathTraversal
 from factory_console.file_adapter.projection import TicketProjection
 from factory_console.file_adapter.run_state import find_run_state_dir, probe_ticket_state
-from factory_console.file_adapter.ticket_md import enrich_ticket
+from factory_console.file_adapter.search import rank_tickets
+from factory_console.file_adapter.ticket_md import (
+    TicketFileMissing,
+    TicketFileUnreadable,
+    enrich_ticket,
+    read_ticket_md,
+)
 
 _ROADMAP_RELPATHS = (Path("ROADMAP.md"), Path("docs") / "ROADMAP.md")
 """Documented roadmap locations, probed in order: project root, then ``docs/``."""
@@ -186,6 +193,63 @@ class RealFileAdapter:
             bodyMarkdown=body,
             bodyHtml=render_markdown(body),
         )
+
+    def search_tickets(
+        self, project: Project, query: str, *, limit: int | None = None
+    ) -> list[SearchHit]:
+        """Rank every manifest ticket by ``query`` over id/title/``provides``/body.
+
+        Materializes the manifest stubs, builds the SAME shared
+        :class:`~factory_console.file_adapter.projection.TicketProjection` the
+        list view uses (so each hit's summary carries the identical run-state and
+        edge counts), then enriches EACH stub with its on-disk body TOLERANTLY:
+        :func:`~factory_console.file_adapter.ticket_md.read_ticket_md`'s
+        ``TicketFileMissing`` / ``TicketFileUnreadable`` / ``PathTraversal`` fall
+        back to an empty body so one bad ``.md`` degrades to an id/title/provides
+        match rather than failing the whole scan. Ranking is delegated to the pure
+        :func:`~factory_console.file_adapter.search.rank_tickets`; each
+        :class:`~factory_console.file_adapter.search.ScoredTicket` is re-keyed to a
+        :class:`~factory_console.domain.search.SearchHit` via the projection's
+        summaries, then ``limit`` truncates to the first ``limit`` hits.
+
+        Consistent with ``ARCHITECTURE.md`` "every request re-reads": this
+        re-reads every ticket ``.md`` per call with no cache or index (an
+        in-memory index is deferred to a later milestone alongside the watcher).
+        """
+        stubs = list(iter_ticket_stubs(project))
+        projection = TicketProjection(
+            stubs,
+            run_state_for=lambda ticket_id: self._safe_run_state(project.runStateDir, ticket_id),
+        )
+        summary_by_id = {summary.id: summary for summary in projection.summaries()}
+        enriched = [
+            stub.model_copy(update={"bodyMarkdown": self._safe_body(project, stub.id)})
+            for stub in stubs
+        ]
+        hits = [
+            SearchHit(
+                ticket=summary_by_id[scored.id],
+                score=scored.score,
+                matchedFields=scored.matched_fields,
+            )
+            for scored in rank_tickets(enriched, query)
+        ]
+        return hits if limit is None else hits[:limit]
+
+    @staticmethod
+    def _safe_body(project: Project, ticket_id: str) -> str:
+        """Read ``ticket_id``'s ``.md`` body, degrading a bad ``.md`` to ``""``.
+
+        A missing file, an unreadable file, or an unsafe id
+        (``TicketFileMissing`` / ``TicketFileUnreadable`` / ``PathTraversal``)
+        yields an empty body so a single broken ticket ``.md`` never fails the
+        whole search scan — the ticket can still match on id/title/``provides``.
+        """
+        try:
+            _front_matter, body = read_ticket_md(project, ticket_id)
+        except (TicketFileMissing, TicketFileUnreadable, PathTraversal):
+            return ""
+        return body
 
     @staticmethod
     def _find_roadmap(root: Path) -> Path | None:

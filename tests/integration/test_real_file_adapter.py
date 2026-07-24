@@ -12,6 +12,7 @@ module runs identically under ``pytest`` from any cwd — matching
 ``tests/unit/test_fixtures_shape.py``.
 """
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,7 @@ from factory_console.domain import (
     Ticket,
     TicketSummary,
 )
+from factory_console.domain.search import SearchHit
 from factory_console.file_adapter import FileAdapter
 from factory_console.file_adapter.manifest import MalformedManifest
 from factory_console.file_adapter.path_safety import PathTraversal
@@ -277,3 +279,74 @@ def test_list_tickets_raises_on_malformed_manifest() -> None:
     project = adapter.load_project(MALFORMED)
     with pytest.raises(MalformedManifest):
         adapter.list_tickets(project)
+
+
+# --------------------------------------------------------------------------- #
+# search_tickets — body scan, tolerant enrichment, run-state-resolved summaries
+# --------------------------------------------------------------------------- #
+
+
+def test_search_tickets_finds_a_term_appearing_only_in_a_ticket_body() -> None:
+    # 'compensating' appears only in CAD-100's rendered body ("undo = compensating
+    # event"), not in any ticket's id/title/provides — so a hit proves the adapter
+    # actually reads and scans the on-disk .md bodies.
+    adapter, project = _load_with_run_state()
+    hits = adapter.search_tickets(project, "compensating")
+    assert [hit.ticket.id for hit in hits] == ["CAD-100"]
+    assert isinstance(hits[0], SearchHit)
+    assert hits[0].matchedFields == ["bodyMarkdown"]
+    # The summary carries the real run-state resolved from the run-state dir.
+    assert hits[0].ticket.runState is RunState.merged
+
+
+def test_search_tickets_ranks_id_title_matches_above_body_matches() -> None:
+    # 'digest' is in CAD-131's title/body; a title hit must outweigh any body-only hit.
+    adapter, project = _load_with_run_state()
+    hits = adapter.search_tickets(project, "digest")
+    assert hits[0].ticket.id == "CAD-131"
+    assert "title" in hits[0].matchedFields
+
+
+def test_search_tickets_blank_query_returns_empty() -> None:
+    adapter, project = _load_with_run_state()
+    assert adapter.search_tickets(project, "   ") == []
+
+
+def test_search_tickets_limit_truncates_results() -> None:
+    # 'streak' appears across several tickets; limit=1 keeps only the top hit.
+    adapter, project = _load_with_run_state()
+    all_hits = adapter.search_tickets(project, "streak")
+    assert len(all_hits) > 1
+    limited = adapter.search_tickets(project, "streak", limit=1)
+    assert len(limited) == 1
+    assert limited[0].ticket.id == all_hits[0].ticket.id
+
+
+def test_search_tickets_tolerates_a_missing_ticket_md(tmp_path: Path) -> None:
+    # Copy the fixture to a tmp dir and delete ONE ticket's .md; search must still
+    # return hits for the rest rather than failing the whole scan. 'streak' matches
+    # tickets beyond the deleted CAD-100, so results survive.
+    project_root = tmp_path / "project"
+    shutil.copytree(WITH_RUN_STATE, project_root)
+    (project_root / "docs" / "planning" / "tickets" / "CAD-100.md").unlink()
+    adapter = RealFileAdapter()
+    project = adapter.load_project(project_root)
+    hits = adapter.search_tickets(project, "streak")
+    ids = {hit.ticket.id for hit in hits}
+    assert ids  # non-empty: the scan degraded the missing .md to an empty body
+    # CAD-118's title/provides mention streaks and its .md is intact.
+    assert "CAD-118" in ids
+
+
+def test_search_tickets_matches_manifest_only_ticket_via_id_when_body_missing(
+    tmp_path: Path,
+) -> None:
+    # With CAD-100's .md deleted, a query for its id still matches (id comes from
+    # the manifest stub, independent of the tolerantly-emptied body).
+    project_root = tmp_path / "project"
+    shutil.copytree(WITH_RUN_STATE, project_root)
+    (project_root / "docs" / "planning" / "tickets" / "CAD-100.md").unlink()
+    adapter = RealFileAdapter()
+    project = adapter.load_project(project_root)
+    hits = adapter.search_tickets(project, "CAD-100")
+    assert any(hit.ticket.id == "CAD-100" for hit in hits)
