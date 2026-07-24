@@ -48,6 +48,7 @@ from factory_console.file_adapter.manifest import iter_ticket_stubs
 from factory_console.file_adapter.markdown_render import render_markdown, render_ticket_html
 from factory_console.file_adapter.path_safety import PathTraversal
 from factory_console.file_adapter.projection import TicketProjection
+from factory_console.file_adapter.roadmap_parse import parse_milestones
 from factory_console.file_adapter.run_state import find_run_state_dir, probe_ticket_state
 from factory_console.file_adapter.search import rank_tickets, to_search_hits
 from factory_console.file_adapter.ticket_md import (
@@ -178,8 +179,10 @@ class RealFileAdapter:
         """Return the project :class:`Roadmap`, or ``None`` when it has no roadmap.
 
         ``None`` when ``project.roadmapPath`` is ``None`` (no roadmap discovered);
-        otherwise reads the file with :meth:`Path.read_text` and renders the body
-        via :func:`~factory_console.file_adapter.markdown_render.render_markdown`.
+        otherwise reads the file with :meth:`Path.read_text`, renders the body via
+        :func:`~factory_console.file_adapter.markdown_render.render_markdown`, and
+        parses its ``## `` milestones via
+        :func:`~factory_console.file_adapter.roadmap_parse.parse_milestones`.
 
         Raises :class:`RoadmapUnreadable` when the discovered file cannot be read
         as UTF-8 (non-UTF-8 bytes, a permission-denied read, or a file that
@@ -197,6 +200,7 @@ class RealFileAdapter:
             path=project.roadmapPath,
             bodyMarkdown=body,
             bodyHtml=render_markdown(body),
+            milestones=parse_milestones(body),
         )
 
     def search_tickets(
