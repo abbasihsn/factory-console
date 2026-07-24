@@ -268,6 +268,25 @@ def test_get_roadmap_returns_rendered_roadmap() -> None:
     assert "<h1>" in roadmap.bodyHtml
 
 
+def test_get_roadmap_populates_structured_milestones() -> None:
+    # get_roadmap now parses the body into milestones[]: the with_run_state
+    # ROADMAP.md carries four ## headings, and the MVP milestone's first item is a
+    # done, ticket-linked entry — proving the adapter threads parse_milestones in.
+    adapter, project = _load_with_run_state()
+    roadmap = adapter.get_roadmap(project)
+    assert roadmap is not None
+    assert [milestone.name for milestone in roadmap.milestones] == [
+        "MVP — check in and see your streak",
+        "v1 — momentum (epics)",
+        "v2 — together (epics)",
+        "Run-state note",
+    ]
+    first_item = roadmap.milestones[0].items[0]
+    assert first_item.text == "Habit schema and append-only event store (CAD-100)"
+    assert first_item.ticketId == "CAD-100"
+    assert first_item.done is True
+
+
 def test_get_roadmap_returns_none_when_project_has_no_roadmap() -> None:
     # The malformed fixture has no ROADMAP.md at the root or under docs/, so
     # load_project resolves roadmapPath to None and get_roadmap short-circuits to

@@ -321,13 +321,15 @@ def test_frozen_models_with_hashable_fields_are_hashable() -> None:
     # frozen=True makes a model hashable when every field value is hashable.
     assert isinstance(hash(_make_project()), int)
     assert isinstance(hash(_make_summary()), int)
-    assert isinstance(hash(_make_roadmap()), int)
 
 
 def test_frozen_models_with_collection_fields_are_unhashable() -> None:
-    # Ticket / DepNeighborhood carry list/dict fields, so hashing raises even
-    # though the models are frozen — attribute assignment is still blocked.
+    # Ticket / DepNeighborhood / Roadmap carry list/dict fields (Roadmap now
+    # holds milestones[]), so hashing raises even though the models are frozen —
+    # attribute assignment is still blocked.
     with pytest.raises(TypeError):
         hash(_make_ticket())
     with pytest.raises(TypeError):
         hash(_make_neighborhood())
+    with pytest.raises(TypeError):
+        hash(_make_roadmap())
