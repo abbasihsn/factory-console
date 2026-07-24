@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from fastapi import Path as PathParam
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
+from starlette.routing import Mount
 
 from factory_console.api.deps import get_file_adapter
 from factory_console.app import _SpaStaticFiles, create_app
@@ -68,6 +69,18 @@ def _make_app(fake: FakeFileAdapter | None = None) -> FastAPI:
         # A genuinely unhandled exception (not a FactoryConsoleError) so it escapes
         # the registered handlers and becomes a 500 via ServerErrorMiddleware.
         raise RuntimeError("boom")
+
+    # create_app mounts the SPA catch-all at "/" LAST — in production every real
+    # route is registered before it, so it only ever serves paths nothing else
+    # matched. These probe routes stand in for those real routes but are added after
+    # create_app returns, so when a packaged _static/ is present on disk the catch-all
+    # would shadow them (200/405 instead of the handler). Move the mount back to last
+    # (a no-op when no _static/ is bundled) so the probes match first, as production's
+    # real routes do.
+    static_mounts = [r for r in app.router.routes if isinstance(r, Mount) and r.name == "static"]
+    for mount in static_mounts:
+        app.router.routes.remove(mount)
+        app.router.routes.append(mount)
 
     return app
 
