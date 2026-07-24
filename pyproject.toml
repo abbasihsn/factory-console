@@ -17,6 +17,7 @@ dependencies = [
     "mdit-py-plugins>=0.4",
     "bleach>=6",
     "PyYAML>=6",
+    "watchdog>=4",
 ]
 
 [project.optional-dependencies]
@@ -61,7 +62,9 @@ extend-immutable-calls = ["typer.Argument", "typer.Option", "fastapi.Depends"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["server"]
+# ``server`` for the package under test; ``tests`` so shared test-only helpers
+# (e.g. ``_read_only_guard``) import as top-level modules from any test file.
+pythonpath = ["server", "tests"]
 asyncio_mode = "auto"
 
 [tool.coverage.report]

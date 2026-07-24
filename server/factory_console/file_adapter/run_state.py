@@ -24,12 +24,23 @@ from factory_console.file_adapter.path_safety import PathTraversal
 # string guessing. See ARCHITECTURE.md "Factory run-state directory (read-only)".
 _MARKER_PRECEDENCE = ("merged", "ready", "in-flight", "todo")
 
+# The documented run-state directory locations, project-relative, in fallback
+# order (highest precedence first). Single source of truth for WHERE the
+# run-state dir can live: :func:`find_run_state_dir` probes these under a project
+# root, and the T40 ``RealFileWatcher`` derives its run-state scope prefixes from
+# the same tuple so the prober and the watcher cannot drift. See ARCHITECTURE.md
+# "Factory run-state directory (read-only)".
+RUN_STATE_RELATIVE_LOCATIONS: tuple[Path, ...] = (
+    Path(".factory") / "run-state",
+    Path("docs") / "planning" / ".run-state",
+)
+
 
 def find_run_state_dir(project_root: Path) -> Path | None:
     """Return the project's run-state directory, or ``None`` if none is present.
 
-    Probes the two documented locations in fallback order and returns the FIRST
-    that is a directory:
+    Probes the documented locations (:data:`RUN_STATE_RELATIVE_LOCATIONS`) in
+    fallback order and returns the FIRST that is a directory:
 
     1. ``<project_root>/.factory/run-state``
     2. ``<project_root>/docs/planning/.run-state``
@@ -38,13 +49,30 @@ def find_run_state_dir(project_root: Path) -> Path | None:
     that path is not a usable run-state directory — only a real directory can
     hold the per-state marker subdirectories.
     """
-    for candidate in (
-        project_root / ".factory" / "run-state",
-        project_root / "docs" / "planning" / ".run-state",
-    ):
+    for relative in RUN_STATE_RELATIVE_LOCATIONS:
+        candidate = project_root / relative
         if candidate.is_dir():
             return candidate
     return None
+
+
+def is_run_state_marker(rel_path: str) -> bool:
+    """True if ``rel_path`` (project-relative, POSIX) names a run-state marker.
+
+    A marker lives exactly two segments below a run-state location —
+    ``<location>/<state>/<ticket_id>`` — which is the layout
+    :func:`probe_ticket_state` reads (``run_state_dir / state / ticket_id``).
+    Owning that structural rule here, next to the locations it belongs to, keeps
+    the T40 watcher's marker detection from drifting from the prober's marker
+    layout — the same single-source guarantee both already share via
+    :data:`RUN_STATE_RELATIVE_LOCATIONS`.
+    """
+    for location in RUN_STATE_RELATIVE_LOCATIONS:
+        prefix = location.as_posix()
+        if rel_path.startswith(prefix + "/"):
+            remainder = rel_path[len(prefix) + 1 :]
+            return remainder.count("/") == 1
+    return False
 
 
 def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:

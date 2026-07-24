@@ -83,14 +83,14 @@ async def test_subscribe_receives_event_emitted_after_subscription() -> None:
     # Registering the queue happens on first await; prime it so emit fans out.
     task = asyncio.ensure_future(stream.__anext__())
     await asyncio.sleep(0)  # let the generator register its queue
-    assert len(watcher._subscribers) == 1
+    assert len(watcher._hub._subscribers) == 1
 
     event = _make_event()
     watcher.emit(event)
     received = await asyncio.wait_for(task, _TIMEOUT)
     assert received == event
     await stream.aclose()
-    assert watcher._subscribers == []
+    assert watcher._hub._subscribers == []
 
 
 async def test_single_emit_fans_out_to_two_concurrent_subscribers() -> None:
@@ -100,7 +100,7 @@ async def test_single_emit_fans_out_to_two_concurrent_subscribers() -> None:
     task_a = asyncio.ensure_future(stream_a.__anext__())
     task_b = asyncio.ensure_future(stream_b.__anext__())
     await asyncio.sleep(0)  # let both generators register
-    assert len(watcher._subscribers) == 2
+    assert len(watcher._hub._subscribers) == 2
 
     event = _make_event(kind="created", path="ROADMAP.md")
     watcher.emit(event)
@@ -119,14 +119,14 @@ async def test_cancelled_subscriber_is_unregistered_and_does_not_block_others() 
     open_task = asyncio.ensure_future(open_stream.__anext__())
     doomed_task = asyncio.ensure_future(doomed_stream.__anext__())
     await asyncio.sleep(0)
-    assert len(watcher._subscribers) == 2
+    assert len(watcher._hub._subscribers) == 2
 
     # Cancel the doomed subscriber's pending await: the generator's finally-block
     # must run and unregister its queue (simulating a client disconnect).
     doomed_task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await doomed_task
-    assert len(watcher._subscribers) == 1  # shrank back — no leak
+    assert len(watcher._hub._subscribers) == 1  # shrank back — no leak
 
     # The still-open subscriber keeps working.
     event = _make_event()
@@ -134,7 +134,7 @@ async def test_cancelled_subscriber_is_unregistered_and_does_not_block_others() 
     received = await asyncio.wait_for(open_task, _TIMEOUT)
     assert received == event
     await open_stream.aclose()
-    assert watcher._subscribers == []
+    assert watcher._hub._subscribers == []
 
 
 # --------------------------------------------------------------------------- #

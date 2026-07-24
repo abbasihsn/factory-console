@@ -7,17 +7,20 @@ fly under ``tmp_path``. A final GUARD test parses this module's target source an
 asserts the read-only invariant: it contains no filesystem-mutating call.
 """
 
-import ast
-import inspect
 from pathlib import Path
 
 import pytest
+from _read_only_guard import (
+    assert_module_carries_read_only_header,
+    assert_module_is_read_only,
+)
 
 from factory_console.domain import RunState
 from factory_console.file_adapter import run_state as run_state_module
 from factory_console.file_adapter.run_state import (
     PathTraversal,
     find_run_state_dir,
+    is_run_state_marker,
     probe_ticket_state,
 )
 
@@ -186,70 +189,42 @@ def test_find_run_state_dir_ignores_a_non_directory_at_primary(tmp_path: Path) -
 
 
 # --------------------------------------------------------------------------- #
-# GUARD: the read-only invariant — the module has no FS-mutating call
+# is_run_state_marker — the marker-layout rule (shared with the T40 watcher)
 # --------------------------------------------------------------------------- #
 
-# Attribute-call names that mutate the filesystem (Path or os/shutil methods).
-_FORBIDDEN_ATTR_CALLS = frozenset(
-    {
-        "write_text",
-        "write_bytes",
-        "touch",
-        "mkdir",
-        "rmdir",
-        "unlink",
-        "rename",
-        "replace",
-        "makedirs",
-        "remove",
-    }
+
+@pytest.mark.parametrize(
+    "rel_path, expected",
+    [
+        # A marker lives exactly <location>/<state>/<ticket_id> — two segments
+        # below either documented run-state location.
+        (".factory/run-state/ready/T99", True),
+        (".factory/run-state/in-flight/T42", True),
+        ("docs/planning/.run-state/ready/T88", True),  # the fallback location
+        # Not markers: the bare location (depth 0), a bare <state> dir (depth 1),
+        # and something deeper than a marker (depth 3+).
+        (".factory/run-state", False),
+        (".factory/run-state/ready", False),
+        (".factory/run-state/ready/T99/extra", False),
+        # Outside any run-state location entirely (planning docs).
+        ("docs/planning/tickets/T99.md", False),
+        ("README.md", False),
+    ],
 )
-# open() mode characters that request writing/creation/truncation.
-_FORBIDDEN_OPEN_MODE_CHARS = frozenset("wax+")
-
-_READ_ONLY_HEADER = "# READ-ONLY: this module MUST NOT write, create, or delete. Enforced by tests."
+def test_is_run_state_marker_only_true_at_marker_depth(rel_path: str, expected: bool) -> None:
+    assert is_run_state_marker(rel_path) is expected
 
 
-def _module_source() -> str:
-    """Return the on-disk source text of the run_state module under test."""
-    source_file = inspect.getsourcefile(run_state_module)
-    assert source_file is not None, "could not locate run_state.py source on disk"
-    return Path(source_file).read_text()
-
-
-def _open_mode_arg(call: ast.Call) -> ast.expr | None:
-    """Return the ``mode`` argument node of an ``open(...)`` call, if given."""
-    if len(call.args) >= 2:
-        return call.args[1]
-    for keyword in call.keywords:
-        if keyword.arg == "mode":
-            return keyword.value
-    return None
+# --------------------------------------------------------------------------- #
+# GUARD: the read-only invariant — the module has no FS-mutating call
+# (shared with tests/integration/test_real_file_watcher.py via
+# tests/_read_only_guard.py)
+# --------------------------------------------------------------------------- #
 
 
 def test_module_source_has_no_filesystem_mutation() -> None:
-    tree = ast.parse(_module_source())
-    violations: list[str] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        if isinstance(func, ast.Attribute) and func.attr in _FORBIDDEN_ATTR_CALLS:
-            violations.append(f"{func.attr}() at line {node.lineno}")
-        elif isinstance(func, ast.Name) and func.id == "open":
-            mode = _open_mode_arg(node)
-            if (
-                isinstance(mode, ast.Constant)
-                and isinstance(mode.value, str)
-                and set(mode.value) & _FORBIDDEN_OPEN_MODE_CHARS
-            ):
-                violations.append(f"open(mode={mode.value!r}) at line {node.lineno}")
-    assert not violations, (
-        "run_state.py must be read-only but contains mutation calls: " + ", ".join(violations)
-    )
+    assert_module_is_read_only(run_state_module)
 
 
 def test_module_source_carries_the_read_only_header() -> None:
-    assert _READ_ONLY_HEADER in _module_source(), (
-        "run_state.py must carry the literal READ-ONLY header comment"
-    )
+    assert_module_carries_read_only_header(run_state_module)
