@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from factory_console.api.v1.graph import router as graph_router
 from factory_console.api.v1.health import router as health_router
 from factory_console.api.v1.project import router as project_router
 from factory_console.api.v1.roadmap import router as roadmap_router
@@ -29,5 +30,6 @@ router.include_router(tickets_router)
 router.include_router(health_router)
 router.include_router(roadmap_router)
 router.include_router(search_router)
+router.include_router(graph_router)
 
 __all__ = ["API_V1_PREFIX", "router"]
