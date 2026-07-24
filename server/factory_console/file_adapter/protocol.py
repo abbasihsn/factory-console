@@ -22,6 +22,7 @@ from factory_console.domain import (
     Ticket,
     TicketSummary,
 )
+from factory_console.domain.graph import TicketGraph
 from factory_console.domain.search import SearchHit
 
 
@@ -70,5 +71,15 @@ class FileAdapter(Protocol):
         ticket, ordered by descending relevance score; a blank or whitespace-only
         query returns ``[]``. ``limit`` truncates to the first ``limit`` hits when
         not ``None``.
+        """
+        ...
+
+    def get_graph(self, project: Project) -> TicketGraph:
+        """Project the whole ticket set to the run-state-coloured dependency DAG.
+
+        Returns a :class:`~factory_console.domain.graph.TicketGraph`: one node per
+        ticket (carrying the same run-state as :meth:`list_tickets`) and one edge
+        per RESOLVED ``dependsOn`` relation — self-loops dropped, dangling ids
+        omitted, duplicates collapsed.
         """
         ...

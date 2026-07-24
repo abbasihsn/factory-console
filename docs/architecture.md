@@ -26,9 +26,11 @@ fleshed out here as each track lands.
 - **REST v1** — the versioned JSON API under `http://127.0.0.1:<port>/api/v1`
   (camelCase, ISO-8601, errors as `{ error: { code, message, details? } }`). The
   SPA regenerates its TypeScript types from the published OpenAPI schema.
-- **FileAdapter port** — a read-only Python `Protocol` (seven methods, including
-  `search_tickets` (best-first; blank query → `[]`); all but `load_project` take a
-  resolved `Project`) that the backend depends on via `Depends()`. Two
+- **FileAdapter port** — a read-only Python `Protocol` (eight methods, including
+  `search_tickets` (best-first; blank query → `[]`) and `get_graph` (whole-project
+  run-state-coloured dependency DAG; resolved-only edges, self-loops and dangling
+  ids omitted); all but `load_project` take a resolved `Project`) that the backend
+  depends on via `Depends()`. Two
   implementations: `RealFileAdapter` (real filesystem) and `FakeFileAdapter`
   (in-memory, for tests).
 - **Factory run-state directory** (read-only) — the factory-owned directory the
