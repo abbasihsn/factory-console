@@ -1,6 +1,21 @@
 # Roadmap — Factory Console
 
-Rolling wave: MVP fully ticketed; v1 + v2 are epic-level until elaborated just-in-time.
+Rolling wave: MVP fully ticketed; v1–v3 are epic-level until elaborated just-in-time.
+
+## At a glance — features by version
+
+```mermaid
+timeline
+    title Factory Console — features by version
+    MVP : Ticket list & detail : Dependency neighborhood : Local read-only viewer (127.0.0.1)
+    v1 : Rendered dependency graph : Full-text search : File-watcher live updates : Roadmap/milestone view
+    v2 : Safe editing of todo tickets : Manifest + roadmap co-writer : Loopback write token
+    v3.0 : Multi-project registry : Switchable project view : GitHub PR status & links
+    v3.1 : serve mode + username/password : Tailscale remote access (phone + laptop)
+    v3.2 : Live log streaming : All-projects dashboard
+    v3.3 : Open-Claude launcher (optional)
+    v3.4+ : Public-with-TLS : Audit log : Multi-user
+```
 
 ## MVP — read-only browsing
 
@@ -70,3 +85,23 @@ Still read-only, single-process, 127.0.0.1.
 - Property-based tests ensuring no write mutates a non-todo ticket; e2e for create/edit/save.
 
 → Elaborate later with `/factory-plan-milestone v2`.
+
+## v3 — Mission control: hosted multi-project console (epic-level)
+
+Graduates from a local single-project viewer into a long-running, **Tailscale-reachable** service
+managing many imported projects. Files stay the source of truth; a tiny SQLite store holds only the
+console's own registry + credentials. Staged so each slice is usable on its own:
+
+- **v3.0 — Multi-project read plane (local):** SQLite project registry; add/select project; switchable
+  single-project view (today's console + a project dropdown); `GitHubAdapter` for PR status + links.
+  Still `127.0.0.1`.
+- **v3.1 — Hosting + auth:** `factory-console serve` mode; configurable bind; single username/password
+  login (hashed + session cookie); Tailscale deploy doc → reachable from phone + laptop.
+- **v3.2 — Live + dashboard:** factory loop/QA **log streaming** (reuses the v1 `FileWatcher` port);
+  all-projects **dashboard** homepage (progress %, current milestone, open PRs across projects).
+- **v3.3 — (optional) Open-Claude launcher:** per-project button spawning `claude` (tmux) for
+  phone-driven work; pending confirmation that Claude Code can attach to a server-started session.
+- **v3.4+ — Hardening options:** public-with-TLS deploy path; audit log; multi-user; PR caching.
+
+→ Elaborate later with `/factory-plan-milestone v3` (after v2 is built), continuing the global ticket
+IDs — never renumbering existing ones.

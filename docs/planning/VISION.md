@@ -58,6 +58,28 @@ files.
   run-state immutability (in-flight/ready/merged tickets are read-only, matching how
   `/factory-reconcile-plan` treats them); manifest + roadmap kept in sync; single-commit
   writes behind a confirm.
+- **v3 — hosted multi-project control plane ("mission control"):** the console graduates from a
+  local single-project viewer into a long-running, Tailscale-reachable service that manages *many*
+  imported projects — a switchable single-project view first, an all-projects dashboard later — with
+  live GitHub PR status and an optional per-project launcher for phone-driven work. Files stay the
+  source of truth; the console gains a tiny store for its *own* state only (project registry +
+  credentials — never ticket data).
+
+## v3 charter shift (deliberate expansion of the v0 non-goals)
+
+v0 was scoped local / single / read-only **on purpose**. v3 revisits several of the v0 non-goals
+below **deliberately** — this table is the record that they were reversed by design, not by accident:
+
+| v0 non-goal | v3 |
+|---|---|
+| no remote access | **Tailscale-first** (public-with-TLS a later deploy-time option) |
+| single project | **multi-project registry** + switchable selection |
+| no authentication | **single username/password** (single user for now) |
+| not a long-running daemon | long-running **`serve`** mode |
+| no GitHub integration | **read-only** PR status + links |
+
+Tickets / run-state / roadmap remain read live from each project's files; the console never becomes
+their source of truth.
 
 ## Success criteria
 
