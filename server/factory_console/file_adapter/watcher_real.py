@@ -124,6 +124,12 @@ class RealFileWatcher:
         # Debounce state — only ever touched on the loop thread.
         self._pending: dict[str, tuple[str, str]] = {}
         self._timers: dict[str, asyncio.TimerHandle] = {}
+        # Latched on stop(): a dispatch the watchdog thread queued via
+        # call_soon_threadsafe just before the observer stopped can still be
+        # sitting in the loop's callback queue and run after stop() has cleared
+        # the debounce state. Both the cross-thread hand-off and the loop-thread
+        # coalesce check this so no ChangeEvent fires after shutdown.
+        self._stopped = False
 
     # -- lifecycle ---------------------------------------------------------- #
 
@@ -137,6 +143,7 @@ class RealFileWatcher:
         """
         if self._observer is not None:
             return
+        self._stopped = False
         self._loop = asyncio.get_running_loop()
         observer = Observer()
         handler = _ChangeEventHandler(self)
@@ -154,10 +161,12 @@ class RealFileWatcher:
     def stop(self) -> None:
         """Halt observing and join the observer thread (idempotent, never raises).
 
-        Safe if never started or already stopped. Cancels any pending debounce
-        timers so no coalesced event fires after shutdown, then joins so no
-        watchdog thread lingers.
+        Safe if never started or already stopped. Latches the ``_stopped`` guard
+        first so any dispatch already queued on the loop no-ops, cancels any
+        pending debounce timers so no coalesced event fires after shutdown, then
+        joins so no watchdog thread lingers.
         """
+        self._stopped = True
         observer = self._observer
         if observer is not None:
             observer.stop()
@@ -195,12 +204,16 @@ class RealFileWatcher:
         directly. Everything downstream runs on the loop thread.
         """
         loop = self._loop
-        if loop is None:
+        if loop is None or self._stopped:
             return
         loop.call_soon_threadsafe(self._coalesce, kind, scope, rel_path)
 
     def _coalesce(self, kind: str, scope: str, rel_path: str) -> None:
         """Debounce per relative path (loop thread): (re)arm the flush timer."""
+        # A dispatch queued just before stop() can still be delivered here after
+        # stop() cleared the debounce state; drop it so no timer re-arms.
+        if self._stopped:
+            return
         existing = self._timers.get(rel_path)
         if existing is not None:
             existing.cancel()

@@ -179,6 +179,28 @@ async def test_stop_joins_the_observer_thread_cleanly(tmp_path: Path) -> None:
     assert observer not in threading.enumerate()
 
 
+async def test_dispatch_queued_before_stop_fires_nothing_after_stop(tmp_path: Path) -> None:
+    # A dispatch the watchdog thread hands to the loop via call_soon_threadsafe
+    # just before the observer stops can still be sitting in the loop's callback
+    # queue when stop() returns. Once stopped, that late _coalesce must no-op —
+    # not re-arm a timer that flushes a ChangeEvent after shutdown.
+    _make_project(tmp_path)
+    watcher = RealFileWatcher(tmp_path)
+    watcher.start()
+    stream, first = await _primed_stream(watcher)
+    try:
+        watcher.stop()
+        # Simulate the already-queued cross-thread callback landing post-stop.
+        watcher._coalesce("modified", "planning", "docs/planning/tickets/T77.md")
+        assert watcher._timers == {}
+        assert watcher._pending == {}
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(first, _QUIET_WINDOW)
+    finally:
+        first.cancel()
+        await stream.aclose()
+
+
 def test_stop_is_safe_when_never_started(tmp_path: Path) -> None:
     watcher = RealFileWatcher(tmp_path)
     watcher.stop()  # must not raise
