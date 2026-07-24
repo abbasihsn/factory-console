@@ -2,10 +2,13 @@
 
 Extends the T06 walking skeleton into the production launcher and is the ONLY
 place in the codebase that constructs the concrete
-:class:`~factory_console.file_adapter.real.RealFileAdapter` for a production boot
-(the dev loop's :func:`~factory_console.app.create_dev_app` is the other, sole
-runtime user of the real adapter). It wires, in a deliberate cheap-input-first
-order, the full CLI contract from ``ARCHITECTURE.md``:
+:class:`~factory_console.file_adapter.real.RealFileAdapter` and
+:class:`~factory_console.file_adapter.watcher_real.RealFileWatcher` for a
+production boot (the dev loop's :func:`~factory_console.app.create_dev_app` is the
+other, sole runtime user of both). The watcher is handed to ``create_app`` and
+started/stopped entirely by the app lifespan — this module never touches it
+directly. It wires, in a deliberate cheap-input-first order, the full CLI contract
+from ``ARCHITECTURE.md``:
 
 * ``--version`` prints ``factory-console v{__version__}`` and exits 0;
 * ``--host`` is validated against the 127.0.0.1 loopback trust boundary via the
@@ -29,8 +32,10 @@ order, the full CLI contract from ``ARCHITECTURE.md``:
 Signals: this module installs NO hand-rolled signal handlers. ``uvicorn.Server``
 captures SIGINT/SIGTERM itself, sets ``should_exit = True``, and drains — so Ctrl-C
 (or ``kill``) shuts the console down cleanly and the process exits 0, the ticket's
-SIGINT/SIGTERM contract. On SIGTERM ``server.run()`` then returns normally; on
-Python 3.11+ SIGINT the asyncio runner re-raises ``KeyboardInterrupt`` out of
+SIGINT/SIGTERM contract. That drain runs the app lifespan's shutdown, which
+``stop()``s the ``RealFileWatcher`` (joining its observer thread), so the watcher
+needs no signal handling here. On SIGTERM ``server.run()`` then returns normally;
+on Python 3.11+ SIGINT the asyncio runner re-raises ``KeyboardInterrupt`` out of
 ``server.run()`` *after* that clean shutdown, which :func:`main` catches and
 swallows so Ctrl-C still exits 0 rather than 130.
 
@@ -61,6 +66,7 @@ from factory_console.config import require_loopback_host
 from factory_console.file_adapter.discovery import ProjectNotFound, discover_project
 from factory_console.file_adapter.manifest import MalformedManifest
 from factory_console.file_adapter.real import RealFileAdapter
+from factory_console.file_adapter.watcher_real import RealFileWatcher
 from factory_console.logging import LOG_LEVELS, configure_logging, normalize_log_level
 
 _LOGGER = logging.getLogger(__name__)
@@ -140,15 +146,18 @@ def main(
     ``--log-level`` exits 2. Logging is then configured and the project root is
     discovered from ``path`` (an explicit path wins, else an upward walk from the
     cwd) — a missing project exits 1. The concrete
-    :class:`~factory_console.file_adapter.real.RealFileAdapter` is wired into
-    :func:`~factory_console.app.create_app`, and the manifest is force-parsed once
-    so a malformed ``tickets.json`` exits 3 before a port is bound. The port is then
+    :class:`~factory_console.file_adapter.real.RealFileAdapter` and a
+    :class:`~factory_console.file_adapter.watcher_real.RealFileWatcher` rooted at
+    that project are wired into :func:`~factory_console.app.create_app` (the app
+    lifespan starts/stops the watcher), and the manifest is force-parsed once so a
+    malformed ``tickets.json`` exits 3 before a port is bound. The port is then
     resolved via a probe socket (an in-use explicit ``--port`` exits 2), the exact
     contract line is printed to stdout, and Uvicorn serves the app.
 
     Shutdown is delegated to Uvicorn: it captures SIGINT/SIGTERM, sets
-    ``should_exit = True``, and drains. A post-shutdown ``KeyboardInterrupt`` (the
-    Python 3.11+ asyncio runner re-raises it on SIGINT) is caught so Ctrl-C exits 0.
+    ``should_exit = True``, and drains (the lifespan shutdown ``stop()``s the
+    watcher). A post-shutdown ``KeyboardInterrupt`` (the Python 3.11+ asyncio runner
+    re-raises it on SIGINT) is caught so Ctrl-C exits 0.
     Unless ``--no-browser`` is given, a daemon thread opens the served URL once the
     server is ready; a headless environment can never crash the process.
     """
@@ -189,7 +198,12 @@ def main(
     root = root.resolve()
 
     file_adapter = RealFileAdapter()
-    fastapi_app = create_app(file_adapter, version=factory_console.__version__, project_root=root)
+    fastapi_app = create_app(
+        file_adapter,
+        version=factory_console.__version__,
+        project_root=root,
+        file_watcher=RealFileWatcher(root),
+    )
 
     # Discovery only checks the manifest FILE exists; force a real parse now so a
     # malformed manifest fails fast (exit 3) at boot rather than on the first request.
