@@ -35,7 +35,9 @@ from factory_console.domain import (
     Ticket,
     TicketSummary,
 )
+from factory_console.domain.graph import TicketGraph
 from factory_console.domain.search import SearchHit
+from factory_console.file_adapter.graph import build_graph
 from factory_console.file_adapter.projection import TicketProjection
 from factory_console.file_adapter.search import rank_tickets, to_search_hits
 
@@ -134,3 +136,12 @@ class FakeFileAdapter:
         """
         summary_by_id = {summary.id: summary for summary in self._projection.summaries()}
         return to_search_hits(rank_tickets(self._tickets, query), summary_by_id, limit)
+
+    def get_graph(self, project: Project) -> TicketGraph:
+        """Build the whole-project dependency DAG from the shared seeded projection.
+
+        Reuses the SAME projection as :meth:`list_tickets` / :meth:`get_deps`, so a
+        node's ``runState`` matches those views, then delegates to the pure
+        :func:`~factory_console.file_adapter.graph.build_graph`.
+        """
+        return build_graph(self._projection)
