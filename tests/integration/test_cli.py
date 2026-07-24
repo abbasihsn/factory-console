@@ -167,6 +167,11 @@ def _get_health(url: str, timeout: float) -> httpx.Response:
 
 
 def test_subprocess_boot_serves_health_and_exits_zero_on_sigint() -> None:
+    # Since T44 the CLI also constructs a RealFileWatcher and hands it to
+    # create_app, so this boot exercises the watcher lifecycle end-to-end: the app
+    # lifespan start()s it (the ``minimal`` fixture has docs/planning, so the
+    # observer schedules a real recursive watch) and stop()s it on the SIGINT
+    # drain. A clean exit 0 with no hang proves the observer thread is joined.
     proc = _launch(
         str(_MINIMAL),
         "--no-browser",

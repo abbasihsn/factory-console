@@ -10,6 +10,6 @@ churny merge.
 
 from __future__ import annotations
 
-from factory_console.api.deps import get_file_adapter
+from factory_console.api.deps import get_file_adapter, get_file_watcher
 
-__all__ = ["get_file_adapter"]
+__all__ = ["get_file_adapter", "get_file_watcher"]
