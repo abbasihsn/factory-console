@@ -182,10 +182,21 @@ class RealFileWatcher:
         self._loop = asyncio.get_running_loop()
         observer = Observer()
         handler = _ChangeEventHandler(self)
-        for root in (
-            self._project_root / "docs" / "planning",
-            self._project_root / ".factory" / "run-state",
-        ):
+        # The planning root is its own concept (planning scope). Each run-state
+        # location comes from the SHARED constant — not a re-typed literal — so
+        # the scheduled roots cannot drift from the scope tags derived from the
+        # same tuple. A run-state location already under the recursive planning
+        # watch (the ``docs/planning/.run-state`` fallback) is skipped to avoid
+        # scheduling it twice.
+        planning_root = self._project_root / "docs" / "planning"
+        roots = [planning_root]
+        for relative in RUN_STATE_RELATIVE_LOCATIONS:
+            candidate = self._project_root / relative
+            try:
+                candidate.relative_to(planning_root)
+            except ValueError:
+                roots.append(candidate)
+        for root in roots:
             if root.is_dir():
                 observer.schedule(handler, str(root), recursive=True)
         # Even with no root present the observer is started so ``stop`` stays

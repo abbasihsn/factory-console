@@ -134,6 +134,27 @@ async def test_run_state_directory_marker_emits_run_state_event(tmp_path: Path) 
         watcher.stop()
 
 
+async def test_bare_state_directory_creation_emits_nothing(tmp_path: Path) -> None:
+    # The marker-depth guard must SUPPRESS run-state directory events that are
+    # NOT <state>/<ticket_id> markers — the run-state root and a bare <state>
+    # dir (one segment below the root) are the levels macOS FSEvents replays
+    # spuriously. Creating a fresh bare <state> dir must yield no ChangeEvent,
+    # or those replays would trigger phantom pane refreshes. (This is the
+    # negative half of test_run_state_directory_marker_emits_run_state_event.)
+    _make_project(tmp_path)
+    watcher = RealFileWatcher(tmp_path)
+    watcher.start()
+    stream, first = await _primed_stream(watcher)
+    try:
+        (tmp_path / ".factory" / "run-state" / "merged").mkdir()
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(first, _QUIET_WINDOW)
+    finally:
+        first.cancel()
+        await stream.aclose()
+        watcher.stop()
+
+
 async def test_rapid_burst_to_same_path_debounces_to_one_event(tmp_path: Path) -> None:
     _make_project(tmp_path)
     watcher = RealFileWatcher(tmp_path)
