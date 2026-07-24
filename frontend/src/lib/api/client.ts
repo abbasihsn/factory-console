@@ -12,7 +12,10 @@ import type {
 	DepNeighborhood,
 	Project,
 	Roadmap,
+	SearchHit,
+	SearchResponse,
 	Ticket,
+	TicketGraph,
 	TicketListResponse,
 	TicketSummary
 } from './models';
@@ -48,6 +51,12 @@ export interface ListTicketsParams {
 	readonly track?: string;
 	readonly milestone?: string;
 	readonly q?: string;
+}
+
+/** Query for {@link searchTickets}: the required full-text `q` and an optional `limit`. */
+export interface SearchParams {
+	readonly q: string;
+	readonly limit?: number;
 }
 
 /**
@@ -148,12 +157,29 @@ export function getTicket(id: string): Promise<Ticket> {
 	return request<Ticket>(`tickets/${encodeURIComponent(id)}`);
 }
 
+/** `GET /api/v1/graph` — the whole-project dependency DAG (nodes + edges). */
+export function getGraph(): Promise<TicketGraph> {
+	return request<TicketGraph>('graph');
+}
+
+/** `GET /api/v1/search` — ranked hits for the full-text query (envelope unwrapped like {@link listTickets}). */
+export async function searchTickets(params: SearchParams): Promise<SearchHit[]> {
+	const query = new URLSearchParams({ q: params.q });
+	if (params.limit !== undefined) {
+		query.set('limit', String(params.limit));
+	}
+	const response = await request<SearchResponse>(`search?${query.toString()}`);
+	// Drop the `{ items, total }` envelope and hand back a mutable copy, exactly
+	// like `listTickets`.
+	return [...response.items];
+}
+
 /** `GET /api/v1/tickets/{id}/deps` — the ticket's dependency neighborhood. */
 export function getTicketDeps(id: string): Promise<DepNeighborhood> {
 	return request<DepNeighborhood>(`tickets/${encodeURIComponent(id)}/deps`);
 }
 
-/** `GET /api/v1/roadmap` — whether the project has a roadmap, and its path when present. */
+/** `GET /api/v1/roadmap` — the roadmap document when present, else the absence marker. */
 export function getRoadmap(): Promise<Roadmap> {
 	return request<Roadmap>('roadmap');
 }

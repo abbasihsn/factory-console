@@ -129,7 +129,7 @@ describe('dep neighborhood page (found)', () => {
 	it('renders a mini-row anchor pointing at each direct dependency', () => {
 		render(Page, { props: { data: foundData(neighborhood) } });
 
-		for (const dep of neighborhood.directDeps) {
+		for (const dep of neighborhood.directDeps ?? []) {
 			const link = screen.getByRole('link', { name: dep.id });
 			expect(link.getAttribute('href')).toBe(`/tickets/${dep.id}`);
 		}
@@ -138,7 +138,7 @@ describe('dep neighborhood page (found)', () => {
 	it('renders a mini-row anchor pointing at each direct dependent', () => {
 		render(Page, { props: { data: foundData(neighborhood) } });
 
-		for (const dependent of neighborhood.directDependents) {
+		for (const dependent of neighborhood.directDependents ?? []) {
 			const link = screen.getByRole('link', { name: dependent.id });
 			expect(link.getAttribute('href')).toBe(`/tickets/${dependent.id}`);
 		}
@@ -147,7 +147,7 @@ describe('dep neighborhood page (found)', () => {
 	it('renders unresolved deps as plain text, never as links', () => {
 		render(Page, { props: { data: foundData(neighborhood) } });
 
-		for (const depId of neighborhood.unresolvedDeps) {
+		for (const depId of neighborhood.unresolvedDeps ?? []) {
 			expect(screen.getByText(depId)).toBeTruthy();
 			expect(screen.queryByRole('link', { name: depId })).toBeNull();
 		}

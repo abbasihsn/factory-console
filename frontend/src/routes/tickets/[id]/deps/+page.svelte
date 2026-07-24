@@ -24,11 +24,11 @@
 
 		<section class="space-y-2">
 			<h2 class="text-sm font-semibold text-muted">Depends on</h2>
-			{#if dep.directDeps.length}
+			{#if (dep.directDeps ?? []).length}
 				<ul
 					class="divide-y divide-slate-200 overflow-hidden rounded-lg border border-slate-200 bg-surface"
 				>
-					{#each dep.directDeps as ticket (ticket.id)}
+					{#each dep.directDeps ?? [] as ticket (ticket.id)}
 						<li>
 							<TicketMiniRow {ticket} />
 						</li>
@@ -41,11 +41,11 @@
 
 		<section class="space-y-2">
 			<h2 class="text-sm font-semibold text-muted">Depended on by</h2>
-			{#if dep.directDependents.length}
+			{#if (dep.directDependents ?? []).length}
 				<ul
 					class="divide-y divide-slate-200 overflow-hidden rounded-lg border border-slate-200 bg-surface"
 				>
-					{#each dep.directDependents as ticket (ticket.id)}
+					{#each dep.directDependents ?? [] as ticket (ticket.id)}
 						<li>
 							<TicketMiniRow {ticket} />
 						</li>
@@ -58,11 +58,11 @@
 
 		<section class="space-y-2">
 			<h2 class="text-sm font-semibold text-muted">Unresolved deps</h2>
-			{#if dep.unresolvedDeps.length}
+			{#if (dep.unresolvedDeps ?? []).length}
 				<!-- Plain-text ids only: the backend could NOT resolve these to tickets,
 				     so they are NEVER rendered as links (they have no detail page). -->
 				<ul class="space-y-1 font-mono text-sm text-text">
-					{#each dep.unresolvedDeps as depId (depId)}
+					{#each dep.unresolvedDeps ?? [] as depId (depId)}
 						<li>{depId}</li>
 					{/each}
 				</ul>
