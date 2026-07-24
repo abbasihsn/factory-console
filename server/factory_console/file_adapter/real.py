@@ -216,11 +216,15 @@ class RealFileAdapter:
         re-reads every ticket ``.md`` per call with no cache or index (an
         in-memory index is deferred to a later milestone alongside the watcher).
         """
-        projection = self._project_manifest(project)
+        stubs = list(iter_ticket_stubs(project))
+        projection = TicketProjection(
+            stubs,
+            run_state_for=lambda ticket_id: self._safe_run_state(project.runStateDir, ticket_id),
+        )
         summary_by_id = {summary.id: summary for summary in projection.summaries()}
         enriched = [
             stub.model_copy(update={"bodyMarkdown": self._safe_body(project, stub.id)})
-            for stub in iter_ticket_stubs(project)
+            for stub in stubs
         ]
         hits = [
             SearchHit(
