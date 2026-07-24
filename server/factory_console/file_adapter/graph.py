@@ -7,14 +7,19 @@ REUSING the projection both adapters already share — so node run-state can nev
 drift from the list or deps views and the reverse index is never re-implemented.
 
 Nodes come straight from :meth:`TicketProjection.summaries` (run-state already
-resolved by the projection), in list order. Edge semantics, pinned here and
-mirrored on :class:`~factory_console.domain.deps.DepNeighborhood`:
+resolved by the projection), in list order. Edge semantics, pinned here (a whole-
+graph forward-edge policy, close to but NOT identical to
+:class:`~factory_console.domain.deps.DepNeighborhood`'s per-ticket view):
 
 * RESOLVED-ONLY — an edge is emitted only when its ``target`` resolves to a known
   node; a dangling ``dependsOn`` id is intentionally NOT an edge (the same choice
   ``unresolvedDeps`` makes), so no edge can point at a non-node.
 * SELF-LOOPS DROPPED — a ticket that lists itself yields no ``source == target``
-  edge (a ticket is never its own dependency edge).
+  edge (a ticket is never its own dependency edge), matching how the projection's
+  reverse index skips self-dependents. NOTE this is stricter than
+  :attr:`DepNeighborhood.directDeps`, which resolves a self-referencing ``dependsOn``
+  id like any other and so keeps the self-loop; the graph drops it so the result is
+  a clean DAG Cytoscape can render.
 * DUPLICATES COLLAPSED — a ticket's repeated ``dependsOn`` id collapses to ONE
   edge (order-preserving), the same ``dict.fromkeys`` de-dupe
   :meth:`TicketProjection.neighborhood` uses; the de-dupe is per ticket
