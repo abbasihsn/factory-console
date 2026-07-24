@@ -19,6 +19,7 @@ from factory_console.domain import (
     Ticket,
     TicketSummary,
 )
+from factory_console.domain.graph import TicketGraph
 from factory_console.domain.search import SearchHit
 from factory_console.file_adapter import FakeFileAdapter, FileAdapter
 
@@ -381,6 +382,38 @@ def test_search_tickets_limit_truncates_to_first_n_hits() -> None:
     fake = FakeFileAdapter(project=_make_project(), tickets=_searchable_tickets())
     hits = fake.search_tickets(_make_project(), "streak", limit=1)
     assert [hit.ticket.id for hit in hits] == ["T-A"]
+
+
+# --------------------------------------------------------------------------- #
+# get_graph — whole-project DAG whose node run-state matches list_tickets
+# --------------------------------------------------------------------------- #
+
+
+def test_get_graph_returns_ticket_graph_with_nodes_and_edges() -> None:
+    fake = FakeFileAdapter(project=_make_project(), tickets=_abc_tickets())
+    graph = fake.get_graph(_make_project())
+    assert isinstance(graph, TicketGraph)
+    assert [node.id for node in graph.nodes] == ["T-A", "T-B", "T-C"]
+    # T-B<-T-A, T-C<-T-A, T-C<-T-B (edge source depends on target).
+    assert {(edge.source, edge.target) for edge in graph.edges} == {
+        ("T-B", "T-A"),
+        ("T-C", "T-A"),
+        ("T-C", "T-B"),
+    }
+
+
+def test_get_graph_node_run_state_matches_list_tickets_summaries() -> None:
+    # No drift: each node's run-state equals the matching list_tickets summary's.
+    run_states = {"T-A": RunState.merged, "T-B": RunState.in_flight}
+    fake = FakeFileAdapter(project=_make_project(), tickets=_abc_tickets(), run_states=run_states)
+    summaries = {s.id: s.runState for s in fake.list_tickets(_make_project())}
+    graph = fake.get_graph(_make_project())
+    assert {node.id: node.runState for node in graph.nodes} == summaries
+
+
+def test_get_graph_keeps_fake_satisfying_the_file_adapter_protocol() -> None:
+    fake = FakeFileAdapter(project=_make_project(), tickets=_abc_tickets())
+    assert isinstance(fake, FileAdapter)
 
 
 def test_methods_do_not_mutate_seeded_state() -> None:
