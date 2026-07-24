@@ -1,5 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getProject, getRoadmap, getTicket, getTicketDeps, listTickets, request } from './client';
+import {
+	getGraph,
+	getProject,
+	getRoadmap,
+	getTicket,
+	getTicketDeps,
+	listTickets,
+	request,
+	searchTickets
+} from './client';
 import { ApiError } from './errors';
 
 // Minimal `Response` stand-in: the client only touches `ok`, `status`, `json()`.
@@ -152,5 +161,80 @@ describe('API client', () => {
 
 		await getTicketDeps('T 01');
 		expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/tickets/T%2001/deps');
+	});
+
+	it('resolves the graph body and hits /api/v1/graph', async () => {
+		const graph = {
+			nodes: [
+				{
+					id: 'T01',
+					title: 'First',
+					status: 'todo',
+					track: null,
+					milestone: null,
+					runState: 'todo'
+				}
+			],
+			edges: [{ source: 'T02', target: 'T01' }]
+		};
+		const fetchMock = stubFetch();
+		fetchMock.mockResolvedValue(jsonResponse(graph));
+
+		await expect(getGraph()).resolves.toEqual(graph);
+		expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/graph');
+	});
+
+	it('unwraps the search envelope and hits /api/v1/search?q=... (space as +)', async () => {
+		const items = [
+			{
+				ticket: {
+					id: 'T01',
+					title: 'First',
+					status: 'todo',
+					track: null,
+					milestone: null,
+					runState: 'todo',
+					depCount: 0,
+					dependentCount: 0
+				},
+				score: 3,
+				matchedFields: ['title']
+			}
+		];
+		const fetchMock = stubFetch();
+		fetchMock.mockResolvedValue(jsonResponse({ items, total: 1 }));
+
+		await expect(searchTickets({ q: 'a b' })).resolves.toEqual(items);
+		expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/search?q=a+b');
+	});
+
+	it('appends the limit param when searchTickets is given one', async () => {
+		const fetchMock = stubFetch();
+		fetchMock.mockResolvedValue(jsonResponse({ items: [], total: 0 }));
+
+		await searchTickets({ q: 'graph', limit: 10 });
+		expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/search?q=graph&limit=10');
+	});
+
+	it('resolves the present roadmap branch and hits /api/v1/roadmap', async () => {
+		const roadmap = {
+			path: '/repo/ROADMAP.md',
+			bodyMarkdown: '# Roadmap',
+			bodyHtml: '<h1>Roadmap</h1>',
+			milestones: []
+		};
+		const fetchMock = stubFetch();
+		fetchMock.mockResolvedValue(jsonResponse(roadmap));
+
+		await expect(getRoadmap()).resolves.toEqual(roadmap);
+		expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/roadmap');
+	});
+
+	it('resolves the absent roadmap branch ({ present: false })', async () => {
+		const fetchMock = stubFetch();
+		fetchMock.mockResolvedValue(jsonResponse({ present: false }));
+
+		await expect(getRoadmap()).resolves.toEqual({ present: false });
+		expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/roadmap');
 	});
 });

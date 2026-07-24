@@ -1,17 +1,12 @@
-"""Integration tests for the presence-only ``GET /api/v1/roadmap`` endpoint.
+"""Integration tests for the widened ``GET /api/v1/roadmap`` endpoint.
 
-Drive apps built with FastAPI's ``TestClient`` over both adapters: the
-filesystem-backed :class:`RealFileAdapter` over the checked-in ``with_run_state``
-fixture (which ships a root ``ROADMAP.md``) pins the ``{present: true, path}``
-branch with a real resolved path, and a seeded :class:`FakeFileAdapter` with no
-roadmap pins the ``{present: false}`` branch cleanly. Also pins the frozen OpenAPI
-shape (the path the frontend codegen freezes against).
-
-Note: the ``minimal`` fixture is NOT used for the absent branch — it ships a
-``ROADMAP.md`` too, so ``RealFileAdapter`` over it would resolve a path and return
-``present: true``. The genuinely roadmap-less real fixture is ``malformed`` (see
-``test_real_file_adapter.py``); the fake adapter gives the same absent result here
-without touching the filesystem.
+Drive apps built with FastAPI's ``TestClient`` over both adapters. A seeded
+:class:`FakeFileAdapter` carrying a full :class:`Roadmap` pins the present branch
+(the rendered body plus structured ``milestones[]``, and NO ``present`` key), and
+a fake seeded WITHOUT a roadmap pins the ``{present: false}`` branch cleanly. A
+:class:`RealFileAdapter` over a ``tmp_path`` project whose ``ROADMAP.md`` is
+non-UTF-8 pins the ``roadmap_unreadable`` 500 envelope, and the OpenAPI test pins
+the frozen widened ``Roadmap`` schema the frontend codegen freezes against.
 """
 
 from datetime import datetime
@@ -21,45 +16,62 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from factory_console.app import create_app
-from factory_console.domain import Project
+from factory_console.domain import Project, Roadmap
+from factory_console.domain.deps import RoadmapItem, RoadmapMilestone
 from factory_console.file_adapter import FakeFileAdapter
 from factory_console.file_adapter.real import RealFileAdapter
-
-# Locate the checked-in fixture project the same way as the sibling integration tests.
-PROJECTS_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "projects"
-WITH_RUN_STATE = PROJECTS_DIR / "with_run_state"
 
 _FAKE_PROJECT = Project(
     rootPath=Path("/factory/demo-project"),
     ticketsManifestPath=Path("/factory/demo-project/docs/planning/tickets.json"),
     ticketsDir=Path("/factory/demo-project/docs/planning/tickets"),
+    roadmapPath=Path("/factory/demo-project/ROADMAP.md"),
     discoveredAt=datetime(2026, 7, 21, 12, 30, 0),
 )
 
+_FAKE_ROADMAP = Roadmap(
+    path=Path("/factory/demo-project/ROADMAP.md"),
+    bodyMarkdown="# Roadmap\n\n## MVP\n\n- [x] T01 Ship it\n",
+    bodyHtml="<h1>Roadmap</h1>\n<h2>MVP</h2>\n<ul>\n<li>T01 Ship it</li>\n</ul>",
+    milestones=[
+        RoadmapMilestone(
+            name="MVP",
+            items=[RoadmapItem(text="Ship it", ticketId="T01", done=True)],
+        ),
+    ],
+)
 
-def _real_app() -> FastAPI:
-    """Build the real app over the filesystem-backed adapter and the with_run_state fixture."""
-    return create_app(RealFileAdapter(), version="0.0.0", project_root=WITH_RUN_STATE)
+
+def _present_app() -> FastAPI:
+    """Build the app over a FakeFileAdapter whose project has a full roadmap."""
+    adapter = FakeFileAdapter(project=_FAKE_PROJECT, tickets=[], roadmap=_FAKE_ROADMAP)
+    return create_app(adapter, version="0.0.0", project_root=_FAKE_PROJECT.rootPath)
 
 
 def _absent_app() -> FastAPI:
-    """Build the real app over a FakeFileAdapter whose project has no roadmap.
+    """Build the app over a FakeFileAdapter whose project has no roadmap.
 
-    The endpoint decides presence from ``project.roadmapPath`` (it never calls
-    ``adapter.get_roadmap``), and ``_FAKE_PROJECT`` leaves ``roadmapPath`` unset, so
-    this pins the ``{present: false}`` branch.
+    ``get_roadmap`` returns the seeded ``roadmap`` verbatim, which defaults to
+    ``None`` here, so this pins the ``{present: false}`` branch.
     """
     adapter = FakeFileAdapter(project=_FAKE_PROJECT, tickets=[])
     return create_app(adapter, version="0.0.0", project_root=_FAKE_PROJECT.rootPath)
 
 
-def test_roadmap_present_returns_true_and_resolved_path() -> None:
-    client = TestClient(_real_app())
+def test_roadmap_present_returns_full_body_and_milestones() -> None:
+    client = TestClient(_present_app())
     resp = client.get("/api/v1/roadmap")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["present"] is True
-    assert body["path"].endswith("ROADMAP.md")
+    # Full rendered body is served, not a presence probe.
+    assert body["bodyHtml"]
+    assert body["bodyMarkdown"]
+    # Structured milestones are present and non-empty.
+    assert body["milestones"]
+    assert body["milestones"][0]["items"]
+    # The present branch carries NO ``present`` key — the frontend discriminates
+    # the Roadmap from RoadmapAbsent on the absence of that field.
+    assert "present" not in body
 
 
 def test_roadmap_absent_returns_present_false() -> None:
@@ -69,8 +81,30 @@ def test_roadmap_absent_returns_present_false() -> None:
     assert resp.json() == {"present": False}
 
 
-def test_openapi_publishes_roadmap_path() -> None:
+def test_roadmap_unreadable_returns_500_envelope(tmp_path: Path) -> None:
+    # A discovered ROADMAP.md that cannot be decoded as UTF-8 surfaces as the
+    # mapped ``roadmap_unreadable`` 500 envelope via the domain-error handler —
+    # the handler catches nothing and lets RoadmapUnreadable propagate.
+    planning = tmp_path / "docs" / "planning"
+    planning.mkdir(parents=True)
+    (planning / "tickets.json").write_text('{"schemaVersion": 1, "tickets": []}', encoding="utf-8")
+    (tmp_path / "ROADMAP.md").write_bytes(b"\xff\xfe not valid utf-8")
+    app = create_app(RealFileAdapter(), version="0.0.0", project_root=tmp_path)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.get("/api/v1/roadmap")
+    assert resp.status_code == 500
+    assert resp.json()["error"]["code"] == "roadmap_unreadable"
+
+
+def test_openapi_publishes_widened_roadmap_schema() -> None:
     client = TestClient(_absent_app())
     resp = client.get("/api/v1/openapi.json")
     assert resp.status_code == 200
-    assert "/api/v1/roadmap" in resp.json()["paths"]
+    schema = resp.json()
+    assert "/api/v1/roadmap" in schema["paths"]
+    # The widened Roadmap component (with its structured milestones) is reachable
+    # in the schema the frontend codegen freezes against.
+    components = schema["components"]["schemas"]
+    assert "Roadmap" in components
+    assert "milestones" in components["Roadmap"]["properties"]

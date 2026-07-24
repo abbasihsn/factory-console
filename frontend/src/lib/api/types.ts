@@ -11,26 +11,6 @@
  */
 
 export interface paths {
-    readonly "/api/v1/health": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        /**
-         * Health
-         * @description Liveness probe: ``{ok, version, projectRoot}`` (projectRoot null until T24).
-         */
-        readonly get: operations["health_api_v1_health_get"];
-        readonly put?: never;
-        readonly post?: never;
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
     readonly "/api/v1/project": {
         readonly parameters: {
             readonly query?: never;
@@ -106,14 +86,218 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/api/v1/tickets/{ticket_id}/deps": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Get Ticket Deps
+         * @description Return the :class:`DepNeighborhood` for ``ticket_id``.
+         *
+         *     ``ticket_id`` is validated at the ``Path`` boundary against the shared
+         *     :data:`TICKET_ID_PATTERN` (an invalid id becomes the ``invalid_ticket_id``
+         *     400 envelope and never reaches the adapter). Loads the discovered project and
+         *     delegates to :class:`DepsService`, whose ``TicketNotFound`` propagates to the
+         *     domain-error handler as a 404 for an id absent from the manifest.
+         */
+        readonly get: operations["get_ticket_deps_api_v1_tickets__ticket_id__deps_get"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/v1/health": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Get Health
+         * @description Return the liveness probe with the resolved ``projectRoot`` from ``app.state``.
+         *
+         *     Reads ``version`` and ``project_root`` that ``create_app`` stashed on
+         *     ``app.state`` at boot and trusts them: ``create_app`` binds a non-optional
+         *     ``project_root`` (the CLI always discovers a root; tests always pass a fixture
+         *     root), so — like its sibling handlers and the ``version`` read beside it — this
+         *     reads the root directly and lets Pydantic serialize the ``Path`` to a string.
+         */
+        readonly get: operations["get_health_api_v1_health_get"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/v1/roadmap": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Get Roadmap
+         * @description Return the project's full :class:`Roadmap`, or :class:`RoadmapAbsent`.
+         *
+         *     Loads the discovered project from ``request.app.state.project_root`` and calls
+         *     ``adapter.get_roadmap(project)``, returning the full :class:`Roadmap` — its
+         *     ``bodyMarkdown``, ``bodyHtml``, and structured ``milestones[]`` — when the
+         *     project has one, else :class:`RoadmapAbsent`. Does no error handling of its
+         *     own: a ``ProjectNotFound`` from ``load_project`` or a ``RoadmapUnreadable``
+         *     (500) from ``adapter.get_roadmap`` propagates to the registered domain-error
+         *     handler, which renders the mapped envelope.
+         */
+        readonly get: operations["get_roadmap_api_v1_roadmap_get"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/v1/search": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Search
+         * @description Return the ranked :class:`SearchHit` s matching the full-text query ``q``.
+         *
+         *     ``q`` is required; a blank or whitespace-only value yields an empty result
+         *     (``{items: [], total: 0}``) rather than a validation error. ``limit`` bounds
+         *     the number of hits to ``ge=1``/``le=200`` (default 50) — an out-of-range value
+         *     is rejected at the ``Query`` boundary as the ``validation_error`` 422 envelope
+         *     and never reaches the service. Loads the discovered project from
+         *     ``request.app.state.project_root`` and delegates ranking to
+         *     :class:`SearchService`; ``total`` is the number of returned items.
+         */
+        readonly get: operations["search_api_v1_search_get"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/v1/graph": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Get Graph
+         * @description Return the whole-project dependency :class:`TicketGraph`.
+         *
+         *     Reads the discovered root from ``request.app.state.project_root`` — a ``Path``
+         *     ``create_app`` requires at boot — loads the target project, and returns the
+         *     graph resolved by :class:`GraphService`. Returns the ``TicketGraph`` domain
+         *     model directly so OpenAPI publishes its nodes+edges shape. Raises nothing
+         *     itself: a ``ProjectNotFound`` from the adapter propagates to the registered
+         *     domain-error handler, which maps it to the 404 envelope.
+         */
+        readonly get: operations["get_graph_api_v1_graph_get"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * DepNeighborhood
+         * @description A ticket with its direct dependency edges and any unresolved dep ids.
+         *
+         *     ``unresolvedDeps`` holds ids listed in the ticket's ``dependsOn`` that have
+         *     no matching ticket in the manifest.
+         */
+        readonly DepNeighborhood: {
+            readonly ticket: components["schemas"]["TicketSummary"];
+            /** Directdeps */
+            readonly directDeps?: readonly components["schemas"]["TicketSummary"][];
+            /** Directdependents */
+            readonly directDependents?: readonly components["schemas"]["TicketSummary"][];
+            /** Unresolveddeps */
+            readonly unresolvedDeps?: readonly string[];
+        };
+        /**
+         * GraphEdge
+         * @description A directed dependency edge: ``source`` depends on ``target``.
+         *
+         *     Only edges whose ``target`` resolves to a known node are emitted (dangling
+         *     ``dependsOn`` ids are intentionally NOT edges, consistent with
+         *     :attr:`~factory_console.domain.deps.DepNeighborhood.unresolvedDeps`); self-loops
+         *     are dropped. Frozen and ``extra='forbid'`` like the other domain models.
+         */
+        readonly GraphEdge: {
+            /** Source */
+            readonly source: string;
+            /** Target */
+            readonly target: string;
+        };
+        /**
+         * GraphNode
+         * @description One ticket as a graph node, coloured by its resolved run-state.
+         *
+         *     Carries the same identity/classification fields as the list-view summary —
+         *     ``id``, ``title``, ``status``, ``track``, ``milestone`` — plus the
+         *     ``runState`` the shared projection already resolved, so a node's colour
+         *     matches the list and deps views. Frozen and ``extra='forbid'`` like the other
+         *     domain models.
+         */
+        readonly GraphNode: {
+            /** Id */
+            readonly id: string;
+            /** Title */
+            readonly title: string;
+            /** Status */
+            readonly status: string;
+            /** Track */
+            readonly track?: string | null;
+            /** Milestone */
+            readonly milestone?: string | null;
+            readonly runState: components["schemas"]["RunState"];
+        };
         /** HTTPValidationError */
         readonly HTTPValidationError: {
             /** Detail */
             readonly detail?: readonly components["schemas"]["ValidationError"][];
+        };
+        /**
+         * HealthResponse
+         * @description Liveness probe body: service ``ok``, its ``version``, and the bound ``projectRoot``.
+         */
+        readonly HealthResponse: {
+            /** Ok */
+            readonly ok: boolean;
+            /** Version */
+            readonly version: string;
+            /**
+             * Projectroot
+             * Format: path
+             */
+            readonly projectRoot: string;
         };
         /**
          * Project
@@ -150,6 +334,70 @@ export interface components {
             readonly discoveredAt: string;
         };
         /**
+         * Roadmap
+         * @description The project roadmap document (``ROADMAP.md``).
+         *
+         *     ``milestones`` is the structured breakdown parsed from the body — empty for a
+         *     body with no ``## `` headings — leaving ``bodyMarkdown``/``bodyHtml`` as the
+         *     full document for verbatim rendering.
+         */
+        readonly Roadmap: {
+            /**
+             * Path
+             * Format: path
+             */
+            readonly path: string;
+            /** Bodymarkdown */
+            readonly bodyMarkdown: string;
+            /** Bodyhtml */
+            readonly bodyHtml: string;
+            /** Milestones */
+            readonly milestones?: readonly components["schemas"]["RoadmapMilestone"][];
+        };
+        /**
+         * RoadmapAbsent
+         * @description Response when the project has no roadmap: ``present: false``.
+         *
+         *     The backend-owned discriminator: :class:`~factory_console.domain.deps.Roadmap`
+         *     carries no ``present`` field, so the frontend discriminates the present branch
+         *     from this absent one on that key's presence.
+         */
+        readonly RoadmapAbsent: {
+            /**
+             * Present
+             * @default false
+             * @constant
+             */
+            readonly present: false;
+        };
+        /**
+         * RoadmapItem
+         * @description A single milestone list-item parsed from ``ROADMAP.md``.
+         *
+         *     ``text`` is the cleaned item label (marker and checkbox stripped); ``done``
+         *     reflects the checkbox state (``True``/``False`` for ``[x]``/``[ ]``, ``None``
+         *     when the item carries no checkbox); ``ticketId`` is the item's linked ticket
+         *     id when one is present, else ``None``.
+         */
+        readonly RoadmapItem: {
+            /** Text */
+            readonly text: string;
+            /** Ticketid */
+            readonly ticketId?: string | null;
+            /** Done */
+            readonly done?: boolean | null;
+        };
+        /**
+         * RoadmapMilestone
+         * @description A ``## `` heading from ``ROADMAP.md`` with its list of items.
+         */
+        readonly RoadmapMilestone: {
+            /** Name */
+            readonly name: string;
+            /** Items */
+            readonly items?: readonly components["schemas"]["RoadmapItem"][];
+        };
+        /**
          * RunState
          * @description A ticket's run-state, derived by probing the factory run-state directory.
          *
@@ -158,6 +406,37 @@ export interface components {
          * @enum {string}
          */
         readonly RunState: "todo" | "in-flight" | "ready" | "merged" | "unknown";
+        /**
+         * SearchHit
+         * @description One ranked full-text search result: a ticket summary, its score, and hits.
+         *
+         *     ``score`` is the summed per-field weight the ranking accrued for this ticket
+         *     (higher is more relevant); ``matchedFields`` names the fields any query token
+         *     hit, in a stable field order (``id``, ``title``, ``provides``,
+         *     ``bodyMarkdown``). Frozen and ``extra='forbid'`` like the other domain models.
+         *
+         *     The ``ScoredTicket`` → ``SearchHit`` re-key both adapters share lives in
+         *     ``file_adapter/search.py``'s ``to_search_hits`` — next to its ``ScoredTicket``
+         *     input, importing this model downward (the allowed ``file_adapter → domain``
+         *     direction) — so ``domain`` never has to depend on a ``file_adapter`` type.
+         */
+        readonly SearchHit: {
+            readonly ticket: components["schemas"]["TicketSummary"];
+            /** Score */
+            readonly score: number;
+            /** Matchedfields */
+            readonly matchedFields?: readonly string[];
+        };
+        /**
+         * SearchResponse
+         * @description Envelope for the search results: the ranked hits and their count.
+         */
+        readonly SearchResponse: {
+            /** Items */
+            readonly items: readonly components["schemas"]["SearchHit"][];
+            /** Total */
+            readonly total: number;
+        };
         /**
          * Ticket
          * @description A manifest entry joined with its rendered ``.md`` body.
@@ -201,6 +480,21 @@ export interface components {
             readonly raw: {
                 readonly [key: string]: unknown;
             };
+        };
+        /**
+         * TicketGraph
+         * @description The whole-project dependency DAG: run-state-coloured nodes and edges.
+         *
+         *     ``nodes`` are the ticket summaries in list order; ``edges`` are the resolved,
+         *     self-loop-free, de-duplicated ``dependsOn`` relations. The frontend maps this
+         *     payload to Cytoscape element format (not this model's concern). Frozen and
+         *     ``extra='forbid'`` like the other domain models.
+         */
+        readonly TicketGraph: {
+            /** Nodes */
+            readonly nodes?: readonly components["schemas"]["GraphNode"][];
+            /** Edges */
+            readonly edges?: readonly components["schemas"]["GraphEdge"][];
         };
         /**
          * TicketListResponse
@@ -259,28 +553,6 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    readonly health_api_v1_health_get: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly requestBody?: never;
-        readonly responses: {
-            /** @description Successful Response */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": {
-                        readonly [key: string]: unknown;
-                    };
-                };
-            };
-        };
-    };
     readonly get_project_api_v1_project_get: {
         readonly parameters: {
             readonly query?: never;
@@ -362,6 +634,129 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly get_ticket_deps_api_v1_tickets__ticket_id__deps_get: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly ticket_id: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["DepNeighborhood"];
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly get_health_api_v1_health_get: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HealthResponse"];
+                };
+            };
+        };
+    };
+    readonly get_roadmap_api_v1_roadmap_get: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["Roadmap"] | components["schemas"]["RoadmapAbsent"];
+                };
+            };
+        };
+    };
+    readonly search_api_v1_search_get: {
+        readonly parameters: {
+            readonly query: {
+                readonly q: string;
+                readonly limit?: number;
+            };
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["SearchResponse"];
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly get_graph_api_v1_graph_get: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["TicketGraph"];
                 };
             };
         };
