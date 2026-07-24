@@ -42,6 +42,7 @@ from factory_console.errors import FactoryConsoleError
 from factory_console.file_adapter.discovery import find_project_root
 from factory_console.file_adapter.manifest import iter_ticket_stubs
 from factory_console.file_adapter.markdown_render import render_markdown, render_ticket_html
+from factory_console.file_adapter.path_safety import PathTraversal
 from factory_console.file_adapter.projection import TicketProjection
 from factory_console.file_adapter.run_state import find_run_state_dir, probe_ticket_state
 from factory_console.file_adapter.ticket_md import enrich_ticket
@@ -196,6 +197,25 @@ class RealFileAdapter:
         return None
 
     @staticmethod
+    def _safe_run_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
+        """Resolve run-state for the LIST/DEPS projection, degrading a path-unsafe id.
+
+        ``list_tickets`` / ``get_deps`` probe run-state for EVERY ticket, so a single
+        malformed id — a bare ``.`` or ``..``, which ``TICKET_ID_PATTERN`` admits as a
+        character class yet is a single-segment traversal — letting
+        :func:`~factory_console.file_adapter.run_state.probe_ticket_state` raise
+        :class:`~factory_console.file_adapter.path_safety.PathTraversal` would fail the
+        WHOLE request with a 400 that names no bad input. Map it to
+        :attr:`RunState.unknown` instead: that ticket shows an ``unknown`` badge rather
+        than crashing its neighbours' listing. The hard traversal guard still protects
+        the single-ticket :meth:`read_run_state` filesystem read.
+        """
+        try:
+            return probe_ticket_state(run_state_dir, ticket_id)
+        except PathTraversal:
+            return RunState.unknown
+
+    @staticmethod
     def _project_manifest(project: Project) -> TicketProjection:
         """Materialize the manifest stubs and wrap them in a per-request projection.
 
@@ -206,5 +226,7 @@ class RealFileAdapter:
         """
         return TicketProjection(
             list(iter_ticket_stubs(project)),
-            run_state_for=lambda ticket_id: probe_ticket_state(project.runStateDir, ticket_id),
+            run_state_for=lambda ticket_id: RealFileAdapter._safe_run_state(
+                project.runStateDir, ticket_id
+            ),
         )
