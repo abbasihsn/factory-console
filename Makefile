@@ -12,13 +12,15 @@ test:
 lint:
 	ruff check . && ruff format --check . && cd frontend && pnpm lint
 
-build:
-	$(PYTHON) -m build --wheel
-
-package:
+# build and package both go through scripts/package.sh — the one reproducible
+# recipe that rebuilds the SPA and bakes it into the (gitignored) _static/ before
+# building the wheel. A bare `python -m build --wheel` would ship whatever stale or
+# empty _static/ happens to be on disk, so `make build`/`make smoke` could silently
+# produce and green-light a SPA-less wheel.
+build package:
 	PYTHON=$(PYTHON) ./scripts/package.sh
 
-smoke: build
+smoke: package
 	PYTHON=$(PYTHON) ./scripts/smoke.sh
 
 release:

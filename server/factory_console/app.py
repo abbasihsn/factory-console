@@ -27,9 +27,11 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import Response
+from starlette.types import Scope
 
 from factory_console.api.error_handlers import register_error_handlers
 from factory_console.api.v1 import API_V1_PREFIX
@@ -76,17 +78,54 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         return response
 
 
+# The ``/api/v1`` prefix as it looks to a ``/``-mounted StaticFiles (leading slash
+# stripped): an unknown API endpoint that no router matched must keep its 404 rather
+# than fall back to the SPA shell (see ``_SpaStaticFiles``).
+_API_STATIC_PREFIX = API_V1_PREFIX.strip("/")
+
+
+class _SpaStaticFiles(StaticFiles):
+    """``StaticFiles`` that falls back to ``index.html`` for SPA client routes.
+
+    The bundled frontend is an ``adapter-static`` SPA in fallback mode
+    (``ssr=false`` / ``prerender=false`` — see ``frontend/svelte.config.js``): only
+    ``index.html`` and hashed assets exist on disk, and client routes like
+    ``/tickets/<id>`` are resolved in the browser, never prerendered. Plain
+    ``StaticFiles(html=True)`` serves ``index.html`` only for a *directory* request,
+    so a hard refresh, bookmark, browser-open, or shared deep link to a client route
+    would 404 with a blank page. Serving ``index.html`` (HTTP 200) on a would-be 404
+    hands the path to the SPA router instead.
+
+    The ``/api/v1`` router is registered BEFORE this mount, so a *known* API route is
+    matched first and never reaches here. An *unknown* ``/api/v1/*`` path DOES fall
+    through (the router adds routes, not a mount), so it is exempted from the
+    fallback and keeps its 404 rather than masquerading as the SPA shell.
+    """
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        """Serve the requested file, or ``index.html`` when a client route would 404."""
+        try:
+            return await super().get_response(path, scope)
+        except HTTPException as exc:
+            is_api_path = path == _API_STATIC_PREFIX or path.startswith(f"{_API_STATIC_PREFIX}/")
+            if exc.status_code == 404 and not is_api_path:
+                return await super().get_response("index.html", scope)
+            raise
+
+
 def _mount_static(app: FastAPI) -> None:
     """Mount the built SPA at ``/`` when ``factory_console/_static/`` exists.
 
     The SPA bundle is copied into ``_static/`` only at package time (gitignored),
     so a dev checkout ships no bundle and this is a silent no-op — an absent
-    ``_static/`` must never break app creation.
+    ``_static/`` must never break app creation. Uses :class:`_SpaStaticFiles` so a
+    deep link / refresh / bookmark to a client route falls back to ``index.html``
+    rather than 404ing.
     """
     static_dir = resources.files("factory_console") / "_static"
     if not static_dir.is_dir():
         return
-    app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
+    app.mount("/", _SpaStaticFiles(directory=str(static_dir), html=True), name="static")
 
 
 def create_app(file_adapter: FileAdapter, *, version: str, project_root: Path) -> FastAPI:

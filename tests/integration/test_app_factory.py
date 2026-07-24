@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
 from factory_console.api.deps import get_file_adapter
-from factory_console.app import create_app
+from factory_console.app import _SpaStaticFiles, create_app
 from factory_console.domain import TICKET_ID_PATTERN, Project
 from factory_console.file_adapter import FakeFileAdapter
 from factory_console.file_adapter.discovery import ProjectNotFound
@@ -146,3 +146,59 @@ def test_get_file_adapter_raises_when_unbound() -> None:
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
     with pytest.raises(RuntimeError, match="file_adapter"):
         get_file_adapter(request)  # type: ignore[arg-type]
+
+
+def _spa_client(tmp_path: Path) -> TestClient:
+    """Build a TestClient over a ``_SpaStaticFiles`` mount seeded with a fake bundle.
+
+    Mirrors the real mount: a probe under the ``/api/v1`` prefix registered BEFORE
+    the ``/`` mount (so a known API route is matched first), the SPA bundle mounted
+    last. ``_static/`` is gitignored and absent in a dev checkout, so the fallback is
+    exercised against a synthesized bundle rather than the packaged one.
+    """
+    (tmp_path / "index.html").write_text("<!doctype html><title>Factory Console SPA</title>")
+    (tmp_path / "app.js").write_text("export const boot = 1;\n")
+    app = FastAPI()
+
+    @app.get("/api/v1/health")
+    def _health() -> dict[str, bool]:
+        return {"ok": True}
+
+    app.mount("/", _SpaStaticFiles(directory=str(tmp_path), html=True), name="static")
+    return TestClient(app)
+
+
+def test_spa_static_serves_real_assets_and_root(tmp_path: Path) -> None:
+    client = _spa_client(tmp_path)
+
+    asset = client.get("/app.js")
+    assert asset.status_code == 200
+    assert "export const boot" in asset.text
+
+    root = client.get("/")
+    assert root.status_code == 200
+    assert "Factory Console SPA" in root.text
+
+
+def test_spa_static_falls_back_to_index_for_deep_links(tmp_path: Path) -> None:
+    # A hard refresh / bookmark / shared link to a client route (never a real file
+    # on disk) must return index.html (200) so the SPA router can resolve it, not a
+    # blank 404.
+    client = _spa_client(tmp_path)
+    for deep_link in ("/tickets/T31", "/tickets/T31/deps"):
+        resp = client.get(deep_link)
+        assert resp.status_code == 200, deep_link
+        assert "Factory Console SPA" in resp.text
+
+
+def test_spa_static_does_not_swallow_unknown_api_paths(tmp_path: Path) -> None:
+    # A known API route is matched before the mount; an UNKNOWN /api/v1 path falls
+    # through to the static mount but must keep its 404 rather than masquerade as the
+    # SPA shell.
+    client = _spa_client(tmp_path)
+
+    assert client.get("/api/v1/health").json() == {"ok": True}
+
+    unknown = client.get("/api/v1/does-not-exist")
+    assert unknown.status_code == 404
+    assert "Factory Console SPA" not in unknown.text

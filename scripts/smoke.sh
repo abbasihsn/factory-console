@@ -29,7 +29,11 @@ cleanup() {
 	fi
 	rm -rf "$VENV" "$LOG"
 }
-trap cleanup EXIT
+# INT/TERM as well as EXIT: on an untrapped Ctrl-C or a CI cancel/timeout, bash
+# exits via the default signal disposition and the EXIT trap is not guaranteed to
+# run, leaking the temp venv/log and orphaning the background server. Matches
+# dev.sh.
+trap cleanup EXIT INT TERM
 
 "$PYTHON" -m venv "$VENV"
 "$VENV/bin/pip" install --quiet "$WHEEL"
