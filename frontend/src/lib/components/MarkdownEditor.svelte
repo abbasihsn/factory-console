@@ -2,7 +2,7 @@
 	import { onDestroy, onMount } from 'svelte';
 	import { basicSetup } from 'codemirror';
 	import { EditorView } from '@codemirror/view';
-	import { Compartment, EditorState } from '@codemirror/state';
+	import { Annotation, Compartment, EditorState } from '@codemirror/state';
 	import { markdown } from '@codemirror/lang-markdown';
 
 	// RAW-TEXT editor, NOT a renderer. CodeMirror only syntax-highlights the
@@ -30,6 +30,13 @@
 	// without tearing down and rebuilding the whole EditorView.
 	const readOnlyCompartment = new Compartment();
 
+	// Tags transactions produced by the external-`value` reconcile below so the
+	// updateListener can tell them apart from genuine user edits. `onChange` is a
+	// USER-INPUT signal, so a programmatic reconcile (form reset, async load,
+	// switching tickets) must NOT fire it — otherwise a parent using `onChange` as
+	// a dirty/"user modified" signal is wrongly tripped by its own value push.
+	const External = Annotation.define<boolean>();
+
 	// readOnly needs BOTH: `EditorState.readOnly` blocks transactions from user
 	// input, and `EditorView.editable.of(false)` makes the contentEditable surface
 	// genuinely non-editable (renders `contenteditable="false"`).
@@ -45,10 +52,11 @@
 		const extensions = [
 			basicSetup,
 			markdown(),
-			// Fires on every doc change (user typing OR a programmatic transaction);
-			// we surface the new source text to the parent.
+			// Surface USER-originated doc changes to the parent. Transactions tagged
+			// `External` come from the value-reconcile $effect below (not a user edit),
+			// so we skip them — `onChange` fires only for edits the user actually made.
 			EditorView.updateListener.of((update) => {
-				if (update.docChanged) {
+				if (update.docChanged && !update.transactions.some((t) => t.annotation(External))) {
 					onChange(update.state.doc.toString());
 				}
 			}),
@@ -76,14 +84,19 @@
 		view?.destroy();
 	});
 
-	// Reconcile EXTERNAL `value` changes (e.g. a form reset). Guard against feedback
-	// loops: when the change originated from user typing, `onChange` already pushed
-	// the same text into `value`, so the doc already matches and we skip the
-	// dispatch — no echo transaction.
+	// Reconcile EXTERNAL `value` changes (e.g. a form reset) into the doc. Two guards:
+	// (1) when the change originated from user typing, `onChange` already pushed the
+	// same text into `value`, so the doc already matches and we skip the dispatch —
+	// no echo transaction; (2) a genuine external change IS dispatched, but tagged
+	// `External` so the updateListener does NOT re-surface it through `onChange` (a
+	// programmatic reconcile is not a user edit).
 	$effect(() => {
 		const next = value;
 		if (view && next !== view.state.doc.toString()) {
-			view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: next } });
+			view.dispatch({
+				changes: { from: 0, to: view.state.doc.length, insert: next },
+				annotations: External.of(true)
+			});
 		}
 	});
 

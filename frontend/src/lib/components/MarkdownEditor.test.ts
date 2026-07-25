@@ -63,4 +63,46 @@ describe('MarkdownEditor', () => {
 		const content = container.querySelector('[contenteditable]');
 		expect(content?.getAttribute('contenteditable')).toBe('true');
 	});
+
+	it('reconciles an external value change into the doc WITHOUT echoing onChange', async () => {
+		const onChange = vi.fn();
+		const { container, rerender } = render(MarkdownEditor, {
+			props: { value: 'first', onChange }
+		});
+
+		const view = await getView(container);
+		expect(view.state.doc.toString()).toBe('first');
+
+		// A programmatic `value` change (e.g. a form reset) reconciles into the doc...
+		await rerender({ value: 'second', onChange });
+		await waitFor(() => expect(view.state.doc.toString()).toBe('second'));
+
+		// ...but is NOT a user edit, so onChange must not fire for it.
+		expect(onChange).not.toHaveBeenCalled();
+	});
+
+	it('reconfigures readOnly through the compartment when the prop toggles after mount', async () => {
+		const { container, rerender } = render(MarkdownEditor, {
+			props: { value: 'x', onChange: vi.fn(), readOnly: false }
+		});
+
+		await getView(container);
+		expect(container.querySelector('[contenteditable]')?.getAttribute('contenteditable')).toBe(
+			'true'
+		);
+
+		await rerender({ value: 'x', onChange: vi.fn(), readOnly: true });
+		await waitFor(() =>
+			expect(container.querySelector('[contenteditable]')?.getAttribute('contenteditable')).toBe(
+				'false'
+			)
+		);
+
+		await rerender({ value: 'x', onChange: vi.fn(), readOnly: false });
+		await waitFor(() =>
+			expect(container.querySelector('[contenteditable]')?.getAttribute('contenteditable')).toBe(
+				'true'
+			)
+		);
+	});
 });
