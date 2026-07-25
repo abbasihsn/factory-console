@@ -1,8 +1,11 @@
 <script lang="ts">
 	import type { Project } from '$lib/api/contracts';
+	import NavSearch from '$lib/components/NavSearch.svelte';
 
 	// Presentational only: no `$app/*` imports, so it renders deterministically
-	// under vitest/jsdom with supplied props. The layout owns `invalidateAll`.
+	// under vitest/jsdom with supplied props. `NavSearch` encapsulates the header's
+	// navigation (it owns the `goto`), keeping this component prop-only. The layout
+	// owns `invalidateAll`.
 	let { project, onReload }: { project: Pick<Project, 'rootPath'>; onReload?: () => void } =
 		$props();
 </script>
@@ -13,6 +16,7 @@
 		<span class="min-w-0 flex-1 truncate font-mono text-sm text-muted" title={project.rootPath}>
 			{project.rootPath}
 		</span>
+		<NavSearch />
 		<button
 			type="button"
 			class="shrink-0 rounded border border-slate-300 px-3 py-1 text-sm text-text hover:bg-bg"
