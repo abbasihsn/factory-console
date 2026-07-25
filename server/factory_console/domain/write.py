@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from factory_console.domain.ticket import TICKET_ID_PATTERN, Ticket, TicketId
 
@@ -113,3 +113,16 @@ class WriteResult(BaseModel):
     changedFiles: list[str] = Field(default_factory=list)
     diff: DiffPreview
     ticket: Ticket | None = None
+
+    @model_validator(mode="after")
+    def _ticket_matches_applied(self) -> WriteResult:
+        """Enforce the two-shape contract: ``ticket`` is set iff ``applied``.
+
+        An apply carries the re-read ticket; a dry-run carries none. Making the
+        invariant a validator (not just a docstring) stops an apply-path handler
+        from emitting ``applied=True`` with ``ticket=None`` (or the reverse), which
+        the SPA — relying on this shape — would mishandle.
+        """
+        if (self.ticket is not None) != self.applied:
+            raise ValueError("ticket must be set iff applied is True")
+        return self
