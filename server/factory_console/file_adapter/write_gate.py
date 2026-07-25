@@ -60,8 +60,16 @@ def ensure_mutable(project: Project, ticket_id: str) -> RunState:
     Raises:
         TicketNotMutable: if the resolved state is not in :data:`MUTABLE_STATES`
             (``in-flight``/``ready``/``merged``) — HTTP 409.
-        PathTraversal: if ``ticket_id`` is not a single path-safe segment. This
-            propagates UNCHANGED from the prober (raised before any lookup).
+        PathTraversal: if ``ticket_id`` is not a single path-safe segment AND the
+            project has a run-state directory. It propagates UNCHANGED from the
+            prober, which validates the id only on the path it actually probes:
+            when ``project.runStateDir is None`` the prober short-circuits to the
+            mutable ``unknown`` BEFORE the id is checked, so no ``PathTraversal``
+            is raised. This gate authorizes by run-state and does no path I/O of
+            its own, so it is NOT a path-safety guarantee: a downstream writer that
+            turns ``ticket_id`` into a filesystem path MUST re-validate it at the
+            point of use (as ``ticket_md``/``run_state`` do), never rely on this
+            gate for path safety.
     """
     run_state = probe_ticket_state(project.runStateDir, ticket_id)
     if run_state not in MUTABLE_STATES:

@@ -150,6 +150,20 @@ def test_ensure_mutable_propagates_path_traversal(bad_id: str) -> None:
         ensure_mutable(project, bad_id)
 
 
+@pytest.mark.parametrize("bad_id", ["../etc", "..", ".", "foo/bar"])
+def test_ensure_mutable_no_run_state_dir_does_not_raise_path_traversal(bad_id: str) -> None:
+    # Contract boundary: with no run-state dir on disk the prober short-circuits to
+    # the mutable RunState.unknown BEFORE it validates the id, so an unsafe id is
+    # NOT rejected here — ensure_mutable returns unknown rather than raising. This
+    # gate authorizes by run-state only and does no path I/O; a downstream writer
+    # must re-validate the id before using it as a filesystem path segment.
+    project = _make_project(run_state_dir=None)
+    assert ensure_mutable(project, bad_id) == RunState.unknown, (
+        "with runStateDir=None the prober resolves unknown before the id is checked, "
+        "so the gate must return unknown, not raise PathTraversal"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # GUARD — the gate mutates nothing on the committed fixture's run-state tree
 # --------------------------------------------------------------------------- #
