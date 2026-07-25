@@ -53,19 +53,32 @@ class FakeFileWriter:
         bodies: dict[str, str] | None = None,
         roadmap: str | None = None,
         run_states: dict[str, RunState] | None = None,
+        front_matter: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         """Seed the writer with pre-resolved, in-memory project state.
 
         ``manifest`` is the list of manifest ENTRIES (the ``tickets`` list);
-        ``bodies`` maps ``{ticket_id: bodyMarkdown}``; ``roadmap`` is the roadmap
-        body text (or ``None`` for a project without one). ``run_states`` is
-        normalized to ``{}`` when ``None`` (an unseeded id then resolves to
-        :attr:`RunState.unknown`), exactly like :class:`FakeFileAdapter`. The
-        seeded collections are copied so a caller's dicts are never mutated in
-        place by an apply.
+        ``bodies`` maps ``{ticket_id: bodyMarkdown}``; ``front_matter`` maps
+        ``{ticket_id: frontMatter}`` for tickets whose ``.md`` carries a YAML
+        fence (an unseeded id defaults to ``{}`` — a fence-less ``.md``);
+        ``roadmap`` is the roadmap body text (or ``None`` for a project without
+        one). ``run_states`` is normalized to ``{}`` when ``None`` (an unseeded id
+        then resolves to :attr:`RunState.unknown`), exactly like
+        :class:`FakeFileAdapter`. The seeded collections are copied so a caller's
+        dicts are never mutated in place by an apply.
+
+        ``front_matter`` is tracked separately from ``bodies`` because the ``.md``
+        diff's ``currentText`` must be the FULL rendered file (fence + body, via
+        :func:`write_render._render_md`), exactly what the real writer reads off
+        disk — while :meth:`_entry_to_ticket` needs the fence-less body. Storing
+        both keeps the fake's ``.md`` diff identical to the real writer's even for
+        a front-matter-bearing ticket.
         """
         self._manifest = [dict(entry) for entry in manifest]
         self._bodies = {} if bodies is None else dict(bodies)
+        self._front_matter = (
+            {} if front_matter is None else {tid: dict(fm) for tid, fm in front_matter.items()}
+        )
         self._roadmap = roadmap
         self._run_states = {} if run_states is None else dict(run_states)
 
@@ -102,6 +115,7 @@ class FakeFileWriter:
         new_entry = write_render._draft_to_entry(draft)
         self._manifest.append(new_entry)
         self._bodies[draft.id] = draft.bodyMarkdown
+        self._front_matter[draft.id] = dict(draft.frontMatter)
         self._apply_roadmap(project, planned)
 
         state = self._run_states.get(draft.id, RunState.unknown)
@@ -127,6 +141,7 @@ class FakeFileWriter:
         merged = write_render._merge_edit(self._manifest[index], edit)
         self._manifest[index] = merged
         self._bodies[ticket_id] = edit.bodyMarkdown
+        self._front_matter[ticket_id] = dict(edit.frontMatter)
         self._apply_roadmap(project, planned)
 
         state = self._run_states.get(ticket_id, RunState.unknown)
@@ -155,6 +170,7 @@ class FakeFileWriter:
 
         del self._manifest[index]
         self._bodies.pop(ticket_id, None)
+        self._front_matter.pop(ticket_id, None)
         self._apply_roadmap(project, planned)
 
         ticket = self._entry_to_ticket(project, snapshot_entry, snapshot_body, state)
@@ -178,7 +194,7 @@ class FakeFileWriter:
             self._md_change(
                 project,
                 draft.id,
-                current=self._bodies.get(draft.id),
+                current=self._current_md(draft.id),
                 new=write_render._render_md(draft.frontMatter, draft.bodyMarkdown),
             ),
         ]
@@ -204,7 +220,7 @@ class FakeFileWriter:
             self._md_change(
                 project,
                 ticket_id,
-                current=self._bodies.get(ticket_id),
+                current=self._current_md(ticket_id),
                 new=write_render._render_md(edit.frontMatter, edit.bodyMarkdown),
             ),
         ]
@@ -225,7 +241,7 @@ class FakeFileWriter:
         new_entries = self._manifest[:index] + self._manifest[index + 1 :]
         changes = [
             self._manifest_change(project, new_entries),
-            self._md_change(project, ticket_id, current=self._bodies.get(ticket_id), new=None),
+            self._md_change(project, ticket_id, current=self._current_md(ticket_id), new=None),
         ]
         self._append_roadmap(
             changes,
@@ -252,6 +268,23 @@ class FakeFileWriter:
             relPath=self._rel_posix(path, project),
             currentText=write_render._serialize_manifest({"tickets": self._manifest}),
             newText=write_render._serialize_manifest({"tickets": new_entries}),
+        )
+
+    def _current_md(self, ticket_id: str) -> str | None:
+        """Render the ticket's CURRENT ``.md`` file text, or ``None`` when absent.
+
+        Mirrors the real writer's ``currentText=_read_text_or_none(md_path)``: an
+        unseeded ticket (no body) has no file yet (``None`` → a create-like diff),
+        while a seeded one renders the FULL file — YAML fence plus body — through the
+        SAME :func:`write_render._render_md` that produces ``newText``, so both sides
+        of the ``.md`` diff are rendered identically even when the ticket carries
+        front-matter. A fence-less ticket (empty/absent front-matter) renders to the
+        body verbatim, so this is a no-op for the common case.
+        """
+        if ticket_id not in self._bodies:
+            return None
+        return write_render._render_md(
+            self._front_matter.get(ticket_id, {}), self._bodies[ticket_id]
         )
 
     def _md_change(

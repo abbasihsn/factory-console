@@ -184,6 +184,79 @@ def test_create_duplicate_id_raises_already_exists() -> None:
     assert exc_info.value.details == {"ticketId": "TM-001"}
 
 
+# --------------------------------------------------------------------------- #
+# front-matter fidelity — the fake's .md diff must match the real writer's
+# --------------------------------------------------------------------------- #
+
+
+def test_edit_of_front_matter_ticket_diffs_only_the_body_not_the_fence() -> None:
+    # Regression: the .md diff's currentText is the FULL rendered file (YAML fence +
+    # body) via the same write_render._render_md the real writer reads off disk — so
+    # editing only the body of a front-matter ticket diffs the body alone and never
+    # shows the fence spuriously re-added (which body-only currentText would).
+    front = {"status": "draft", "owner": "ranger"}
+    writer = FakeFileWriter(
+        manifest=[_entry("TM-001", milestone="MVP")],
+        bodies={"TM-001": "# Old body\n"},
+        front_matter={"TM-001": front},
+        roadmap=None,
+    )
+    project = _make_project(with_roadmap=False)
+
+    preview = writer.preview_edit(
+        project,
+        "TM-001",
+        _edit(
+            title="Ticket TM-001",
+            track="file-adapter",
+            milestone="MVP",
+            dependsOn=[],
+            provides="provides TM-001",
+            files=[],
+            frontMatter=front,
+            bodyMarkdown="# New body\n",
+        ),
+    )
+
+    md = next(f for f in preview.files if f.path == "docs/planning/tickets/TM-001.md")
+    assert md.changeKind == "modify"
+    # The fence + front-matter lines are unchanged context, never additions/removals.
+    assert "+status: draft" not in md.diff
+    assert "+---" not in md.diff
+    # Only the body line changed.
+    assert "-# Old body" in md.diff
+    assert "+# New body" in md.diff
+
+
+def test_create_then_preview_identical_edit_is_a_md_noop_for_front_matter_ticket() -> None:
+    # After a create "writes" front-matter into the fake, re-previewing the identical
+    # edit is a genuine .md no-op (omitted from the preview) — exactly what the real
+    # disk-backed writer computes. Before tracking front-matter, currentText was
+    # body-only and the fence would re-appear as an addition, so the .md would show.
+    writer = _seeded_writer(roadmap=None)
+    project = _make_project(with_roadmap=False)
+    front = {"status": "draft", "owner": "ranger"}
+    writer.create_ticket(project, _draft(frontMatter=front, milestone="MVP"))
+
+    preview = writer.preview_edit(
+        project,
+        "TM-050",
+        _edit(
+            title="Ranger mobile capture",
+            track="mobile",
+            milestone="MVP",
+            dependsOn=["TM-001"],
+            provides="On-trail capture app",
+            files=["server/trailmark/mobile/capture.py"],
+            frontMatter=front,
+            bodyMarkdown="# Capture\n\nBody text.\n",
+        ),
+    )
+
+    md_paths = [f.path for f in preview.files if f.path == "docs/planning/tickets/TM-050.md"]
+    assert md_paths == []  # unchanged .md → omitted, no spurious fence diff
+
+
 def test_create_without_matching_roadmap_section_changes_two_files() -> None:
     writer = _seeded_writer()
     result = writer.create_ticket(_make_project(), _draft(milestone="v99-nonexistent"))
