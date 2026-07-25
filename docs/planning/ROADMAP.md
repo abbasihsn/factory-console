@@ -83,19 +83,33 @@ Still read-only, single-process, 127.0.0.1. Adds a dependency-graph view, a road
 - [ ] **T53** — Live-update e2e + dedicated mutable-console harness → `/ai-gh-orchestrate-plan docs/planning/tickets/v1/T53-live-update-e2e.md`
 - [ ] **T54** — v1 docs + README screenshots refresh → `/ai-gh-orchestrate-plan docs/planning/tickets/v1/T54-docs-screenshots-refresh.md`
 
-## v2 — safe editing of todo tickets (epic-level)
+## v2 — safe editing of todo tickets
 
-`in_flight` / `ready` / `merged` tickets remain read-only (matching how `/factory-reconcile-plan` treats them).
+`in_flight` / `ready` / `merged` tickets remain read-only (matching how `/factory-reconcile-plan` treats them). Build in dependency order — write core → backend → frontend → tests/devops:
 
-- `FileWriter` port symmetric to `FileAdapter` + `RunStateGate` enforcing todo-only mutability.
-- Manifest + markdown + roadmap co-writer (`tmp-write + rename`) with dry-run diff.
-- `POST /api/v1/tickets` (create), `PUT /api/v1/tickets/{id}` (edit), `DELETE /api/v1/tickets/{id}` endpoints.
-- SPA edit form (CodeMirror/monaco) with live validation, disabled state + banner for non-todo tickets, diff-preview modal, save+confirm.
-- Loopback-only write token (per-session, printed to stderr, sent as header).
-- Signed releases + sigstore attestations.
-- Property-based tests ensuring no write mutates a non-todo ticket; e2e for create/edit/save.
-
-→ Elaborate later with `/factory-plan-milestone v2`.
+- [ ] **T55** — Write-path domain models (TicketDraft, TicketEdit, DiffPreview, WriteResult) → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T55-write-domain-models.md`
+- [ ] **T56** — RunStateGate — todo-only mutability → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T56-run-state-gate.md`
+- [ ] **T57** — Write-render — desired manifest+markdown+roadmap contents → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T57-write-render.md`
+- [ ] **T58** — Dry-run diff engine (unified DiffPreview, no writes) → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T58-dry-run-diff-engine.md`
+- [ ] **T59** — Atomic co-writer (tmp-write + os.replace) → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T59-atomic-co-writer.md`
+- [ ] **T60** — FileWriter Protocol + FakeFileWriter → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T60-file-writer-port-and-fake.md`
+- [ ] **T61** — RealFileWriter — disk-backed FileWriter → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T61-real-file-writer.md`
+- [ ] **T62** — Wire the FileWriter port into create_app + CLI (get_file_writer) → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T62-file-writer-di-wiring.md`
+- [ ] **T63** — WriteService + write error types → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T63-write-service.md`
+- [ ] **T64** — Per-session loopback write token (X-Factory-Write-Token) → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T64-write-token.md`
+- [ ] **T65** — POST/PUT/DELETE /api/v1/tickets with ?dryRun → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T65-ticket-write-endpoints.md`
+- [ ] **T66** — Write API client + regenerated types + write-token store & prompt → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T66-write-api-client-and-token-store.md`
+- [ ] **T67** — CodeMirror markdown editor + form validation + editability → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T67-markdown-editor-and-validation.md`
+- [ ] **T68** — Reusable TicketForm with live validation → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T68-ticket-form.md`
+- [ ] **T69** — Diff-preview modal + confirm dialog + unified-diff renderer → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T69-diff-preview-modal.md`
+- [ ] **T70** — Gated edit + delete on the ticket detail route → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T70-detail-edit-delete.md`
+- [ ] **T71** — Create-ticket route + 'New ticket' affordance → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T71-create-ticket-route.md`
+- [ ] **T72** — Property-based write-safety invariant tests (Hypothesis) → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T72-write-safety-property-tests.md`
+- [ ] **T73** — Integration tests for the write endpoints → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T73-write-endpoint-integration-tests.md`
+- [ ] **T74** — Editing e2e (part 1): create/edit/diff-preview/save → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T74-editing-e2e-create-edit.md`
+- [ ] **T75** — Editing e2e (part 2): delete-confirm + non-todo banner → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T75-editing-e2e-delete-guardrails.md`
+- [ ] **T76** — Signed releases + sigstore attestations → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T76-signed-releases-sigstore.md`
+- [ ] **T77** — v2 docs + README refresh → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T77-v2-docs-refresh.md`
 
 ## v3 — Mission control: hosted multi-project console (epic-level)
 

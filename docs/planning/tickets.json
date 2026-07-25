@@ -751,6 +751,348 @@
       "provides": "docs/usage.md updated for the new views + the screenshots pipeline extended to capture /graph, /roadmap, /search for the README gallery",
       "path": "docs/planning/tickets/v1/T54-docs-screenshots-refresh.md",
       "status": "todo"
+    },
+    {
+      "id": "T55",
+      "title": "Write-path domain models (TicketDraft, TicketEdit, DiffPreview, WriteResult)",
+      "track": "file-adapter",
+      "milestone": "v2",
+      "depends_on": [
+        "T07"
+      ],
+      "provides": "domain/write.py — canonical Pydantic write DTOs consumed by the FileWriter port, diff engine, endpoints, and the SPA",
+      "path": "docs/planning/tickets/v2/T55-write-domain-models.md",
+      "status": "todo"
+    },
+    {
+      "id": "T56",
+      "title": "RunStateGate — todo-only mutability",
+      "track": "file-adapter",
+      "milestone": "v2",
+      "depends_on": [
+        "T04",
+        "T15"
+      ],
+      "provides": "file_adapter/write_gate.py — ensure_mutable allowing only todo/unknown; TicketNotMutable (409) otherwise",
+      "path": "docs/planning/tickets/v2/T56-run-state-gate.md",
+      "status": "todo"
+    },
+    {
+      "id": "T57",
+      "title": "Write-render — desired manifest+markdown+roadmap contents",
+      "track": "file-adapter",
+      "milestone": "v2",
+      "depends_on": [
+        "T12",
+        "T13",
+        "T38",
+        "T55"
+      ],
+      "provides": "file_adapter/write_render.py — pure render of the desired manifest+md+roadmap PlannedChange set, preserving unknown fields",
+      "path": "docs/planning/tickets/v2/T57-write-render.md",
+      "status": "todo"
+    },
+    {
+      "id": "T58",
+      "title": "Dry-run diff engine (unified DiffPreview, no writes)",
+      "track": "file-adapter",
+      "milestone": "v2",
+      "depends_on": [
+        "T55",
+        "T57"
+      ],
+      "provides": "file_adapter/write_diff.py — dry-run unified DiffPreview computed without writing",
+      "path": "docs/planning/tickets/v2/T58-dry-run-diff-engine.md",
+      "status": "todo"
+    },
+    {
+      "id": "T59",
+      "title": "Atomic co-writer (tmp-write + os.replace)",
+      "track": "file-adapter",
+      "milestone": "v2",
+      "depends_on": [
+        "T13",
+        "T15",
+        "T57"
+      ],
+      "provides": "file_adapter/atomic_write.py — atomic three-file co-writer; hard-refuses run-state paths",
+      "path": "docs/planning/tickets/v2/T59-atomic-co-writer.md",
+      "status": "todo"
+    },
+    {
+      "id": "T60",
+      "title": "FileWriter Protocol + FakeFileWriter",
+      "track": "file-adapter",
+      "milestone": "v2",
+      "depends_on": [
+        "T10",
+        "T55",
+        "T57",
+        "T58"
+      ],
+      "provides": "file_adapter/writer_protocol.py FileWriter port (symmetric to FileAdapter) + fake_writer.py FakeFileWriter",
+      "path": "docs/planning/tickets/v2/T60-file-writer-port-and-fake.md",
+      "status": "todo"
+    },
+    {
+      "id": "T61",
+      "title": "RealFileWriter — disk-backed FileWriter",
+      "track": "file-adapter",
+      "milestone": "v2",
+      "depends_on": [
+        "T17",
+        "T56",
+        "T57",
+        "T58",
+        "T59",
+        "T60"
+      ],
+      "provides": "file_adapter/real_writer.py — production RealFileWriter composing gate+render+diff+atomic",
+      "path": "docs/planning/tickets/v2/T61-real-file-writer.md",
+      "status": "todo"
+    },
+    {
+      "id": "T62",
+      "title": "Wire the FileWriter port into create_app + CLI (get_file_writer)",
+      "track": "backend",
+      "milestone": "v2",
+      "depends_on": [
+        "T20",
+        "T25",
+        "T60",
+        "T61"
+      ],
+      "provides": "create_app + CLI wire the FileWriter; get_file_writer DI seam",
+      "path": "docs/planning/tickets/v2/T62-file-writer-di-wiring.md",
+      "status": "todo"
+    },
+    {
+      "id": "T63",
+      "title": "WriteService + write error types",
+      "track": "backend",
+      "milestone": "v2",
+      "depends_on": [
+        "T22",
+        "T24",
+        "T55",
+        "T56",
+        "T58",
+        "T60"
+      ],
+      "provides": "services/write_service.py WriteService (create/edit/delete/preview) + WriteConflict/WriteValidationError",
+      "path": "docs/planning/tickets/v2/T63-write-service.md",
+      "status": "todo"
+    },
+    {
+      "id": "T64",
+      "title": "Per-session loopback write token (X-Factory-Write-Token)",
+      "track": "backend",
+      "milestone": "v2",
+      "depends_on": [
+        "T20",
+        "T25",
+        "T62"
+      ],
+      "provides": "per-session loopback write token + require_write_token dependency (X-Factory-Write-Token, 401)",
+      "path": "docs/planning/tickets/v2/T64-write-token.md",
+      "status": "todo"
+    },
+    {
+      "id": "T65",
+      "title": "POST/PUT/DELETE /api/v1/tickets with ?dryRun",
+      "track": "backend",
+      "milestone": "v2",
+      "depends_on": [
+        "T20",
+        "T22",
+        "T55",
+        "T62",
+        "T63",
+        "T64"
+      ],
+      "provides": "POST/PUT/DELETE /api/v1/tickets with ?dryRun, token-gated, published in OpenAPI",
+      "path": "docs/planning/tickets/v2/T65-ticket-write-endpoints.md",
+      "status": "todo"
+    },
+    {
+      "id": "T66",
+      "title": "Write API client + regenerated types + write-token store & prompt",
+      "track": "frontend",
+      "milestone": "v2",
+      "depends_on": [
+        "T28",
+        "T46",
+        "T64",
+        "T65"
+      ],
+      "provides": "write API client wrappers + regenerated types.ts + writeToken sessionStorage store + WriteTokenPrompt",
+      "path": "docs/planning/tickets/v2/T66-write-api-client-and-token-store.md",
+      "status": "todo"
+    },
+    {
+      "id": "T67",
+      "title": "CodeMirror markdown editor + form validation + editability",
+      "track": "frontend",
+      "milestone": "v2",
+      "depends_on": [
+        "T28",
+        "T29"
+      ],
+      "provides": "MarkdownEditor (CodeMirror 6) + ticketForm validation (TICKET_ID_PATTERN) + isEditable predicate",
+      "path": "docs/planning/tickets/v2/T67-markdown-editor-and-validation.md",
+      "status": "todo"
+    },
+    {
+      "id": "T68",
+      "title": "Reusable TicketForm with live validation",
+      "track": "frontend",
+      "milestone": "v2",
+      "depends_on": [
+        "T29",
+        "T67"
+      ],
+      "provides": "TicketForm.svelte — editable front-matter fields + body editor + live per-field validation",
+      "path": "docs/planning/tickets/v2/T68-ticket-form.md",
+      "status": "todo"
+    },
+    {
+      "id": "T69",
+      "title": "Diff-preview modal + confirm dialog + unified-diff renderer",
+      "track": "frontend",
+      "milestone": "v2",
+      "depends_on": [
+        "T29",
+        "T31",
+        "T66"
+      ],
+      "provides": "DiffPreviewModal (dry-run diff, gates save+confirm) + ConfirmDialog + unifiedDiff renderer",
+      "path": "docs/planning/tickets/v2/T69-diff-preview-modal.md",
+      "status": "todo"
+    },
+    {
+      "id": "T70",
+      "title": "Gated edit + delete on the ticket detail route",
+      "track": "frontend",
+      "milestone": "v2",
+      "depends_on": [
+        "T29",
+        "T31",
+        "T65",
+        "T66",
+        "T67",
+        "T68",
+        "T69"
+      ],
+      "provides": "gated edit+delete on /tickets/[id] + EditGate banner + edit/dry-run/save+confirm and delete/confirm flows",
+      "path": "docs/planning/tickets/v2/T70-detail-edit-delete.md",
+      "status": "todo"
+    },
+    {
+      "id": "T71",
+      "title": "Create-ticket route + 'New ticket' affordance",
+      "track": "frontend",
+      "milestone": "v2",
+      "depends_on": [
+        "T30",
+        "T65",
+        "T66",
+        "T67",
+        "T68",
+        "T69"
+      ],
+      "provides": "/tickets/new create route reusing TicketForm + dry-run preview + 'New ticket' button on the list",
+      "path": "docs/planning/tickets/v2/T71-create-ticket-route.md",
+      "status": "todo"
+    },
+    {
+      "id": "T72",
+      "title": "Property-based write-safety invariant tests (Hypothesis)",
+      "track": "testing",
+      "milestone": "v2",
+      "depends_on": [
+        "T35",
+        "T56",
+        "T59",
+        "T60",
+        "T61"
+      ],
+      "provides": "Hypothesis property tests: no write mutates a non-todo ticket; co-writer is all-or-nothing",
+      "path": "docs/planning/tickets/v2/T72-write-safety-property-tests.md",
+      "status": "todo"
+    },
+    {
+      "id": "T73",
+      "title": "Integration tests for the write endpoints",
+      "track": "testing",
+      "milestone": "v2",
+      "depends_on": [
+        "T35",
+        "T63",
+        "T64",
+        "T65"
+      ],
+      "provides": "httpx/TestClient coverage of create/edit/delete, token auth (401), non-todo rejection, dry-run, error envelope",
+      "path": "docs/planning/tickets/v2/T73-write-endpoint-integration-tests.md",
+      "status": "todo"
+    },
+    {
+      "id": "T74",
+      "title": "Editing e2e (part 1): create/edit/diff-preview/save",
+      "track": "testing",
+      "milestone": "v2",
+      "depends_on": [
+        "T33",
+        "T53",
+        "T64",
+        "T65",
+        "T70",
+        "T71"
+      ],
+      "provides": "extended mutable-console harness (stderr write token) + Playwright create/edit/diff-preview/save spec",
+      "path": "docs/planning/tickets/v2/T74-editing-e2e-create-edit.md",
+      "status": "todo"
+    },
+    {
+      "id": "T75",
+      "title": "Editing e2e (part 2): delete-confirm + non-todo banner",
+      "track": "testing",
+      "milestone": "v2",
+      "depends_on": [
+        "T65",
+        "T70",
+        "T74"
+      ],
+      "provides": "Playwright delete-with-confirm + non-todo disabled state + banner spec",
+      "path": "docs/planning/tickets/v2/T75-editing-e2e-delete-guardrails.md",
+      "status": "todo"
+    },
+    {
+      "id": "T76",
+      "title": "Signed releases + sigstore attestations",
+      "track": "infra-devops",
+      "milestone": "v2",
+      "depends_on": [
+        "T26"
+      ],
+      "provides": "release.yml signs wheel+sdist + publishes sigstore/cosign attestations on tag vX.Y.Z + a verify step",
+      "path": "docs/planning/tickets/v2/T76-signed-releases-sigstore.md",
+      "status": "todo"
+    },
+    {
+      "id": "T77",
+      "title": "v2 docs + README refresh",
+      "track": "docs",
+      "milestone": "v2",
+      "depends_on": [
+        "T54",
+        "T65",
+        "T70",
+        "T71",
+        "T76"
+      ],
+      "provides": "usage.md editing section + write-token workflow + README write capabilities + signed-release verification",
+      "path": "docs/planning/tickets/v2/T77-v2-docs-refresh.md",
+      "status": "todo"
     }
   ]
 }
