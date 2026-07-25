@@ -10,6 +10,7 @@ the PURITY guarantee — no file on disk is ever written. All I/O is confined to
 """
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -27,6 +28,8 @@ from factory_console.file_adapter.write_render import (
     render_delete,
     render_edit,
 )
+
+_UNICODE_ESCAPE_RE = re.compile(r"\\u[0-9a-fA-F]{4}")
 
 _MANIFEST = {
     "project": "trailmark",
@@ -219,6 +222,38 @@ def test_create_inserts_roadmap_line_under_matching_section(tmp_path: Path) -> N
     v1_index = roadmap.newText.index("## v1")
     new_line_index = roadmap.newText.index("**TM-050**")
     assert mvp_index < new_line_index < v1_index
+
+
+def test_create_preserves_non_ascii_manifest_verbatim(tmp_path: Path) -> None:
+    # The factory writes tickets.json as raw UTF-8; a rendered manifest must keep
+    # non-ASCII characters verbatim rather than escaping them to \uXXXX, or every
+    # untouched entry would diff spuriously (and get mangled on apply).
+    project = _make_project(tmp_path)
+    manifest = json.loads(json.dumps(_MANIFEST))  # deep copy
+    manifest["tickets"][0]["title"] = "Ingest trail reports → store"
+    manifest["tickets"][1]["provides"] = "GET /api/v1/trails/{slug}/status — live"
+    _seed(project, manifest=manifest)
+
+    changes = render_create(project, _draft())
+
+    new_text = _by_rel(changes, _MANIFEST_REL).newText
+    assert "→ store" in new_text
+    assert "status — live" in new_text
+    assert _UNICODE_ESCAPE_RE.search(new_text) is None  # no \uXXXX escapes
+
+
+def test_create_md_front_matter_preserves_non_ascii_verbatim(tmp_path: Path) -> None:
+    # The ticket .md front-matter is rendered as raw UTF-8 too (allow_unicode=True),
+    # consistent with the manifest — non-ASCII must not be escaped to \uXXXX.
+    project = _make_project(tmp_path)
+    _seed(project)
+
+    changes = render_create(project, _draft(frontMatter={"owner": "José", "note": "café —"}))
+
+    md_text = _by_rel(changes, "docs/planning/tickets/TM-050.md").newText
+    assert "owner: José" in md_text
+    assert "café —" in md_text
+    assert _UNICODE_ESCAPE_RE.search(md_text) is None  # no \uXXXX escapes
 
 
 def test_create_raises_on_duplicate_id(tmp_path: Path) -> None:

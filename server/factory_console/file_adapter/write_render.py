@@ -188,8 +188,12 @@ def _serialize_manifest(manifest_obj: Mapping[str, Any]) -> str:
 
     2-space indent plus a trailing newline, matching how the App Factory writes
     ``tickets.json`` so a rendered manifest diffs cleanly against the original.
+    ``ensure_ascii=False`` keeps non-ASCII characters (e.g. ``—``/``→``) verbatim
+    — the factory writes raw UTF-8, so escaping them here would make every rendered
+    manifest diff against the original on characters the user never touched (and
+    rewrite them to ``\\uXXXX`` on apply).
     """
-    return json.dumps(manifest_obj, indent=2) + "\n"
+    return json.dumps(manifest_obj, indent=2, ensure_ascii=False) + "\n"
 
 
 def _draft_to_entry(draft: TicketDraft) -> dict[str, Any]:
@@ -238,11 +242,14 @@ def _render_md(front_matter: Mapping[str, Any], body_markdown: str) -> str:
     When ``front_matter`` is non-empty, emit a ``---`` fenced YAML block
     (``sort_keys=False`` to keep author order) followed by the body — round-trip
     consistent with :func:`~factory_console.file_adapter.ticket_md.read_ticket_md`.
-    When it is empty, emit just the body with no fence.
+    When it is empty, emit just the body with no fence. ``allow_unicode=True``
+    keeps non-ASCII front-matter values verbatim, matching the raw-UTF-8 the body
+    and manifest are rendered with (see :func:`_serialize_manifest`) so no coupled
+    file escapes characters the user never touched.
     """
     if not front_matter:
         return body_markdown
-    yaml_block = yaml.safe_dump(dict(front_matter), sort_keys=False)
+    yaml_block = yaml.safe_dump(dict(front_matter), sort_keys=False, allow_unicode=True)
     return f"{_FENCE}\n{yaml_block}{_FENCE}\n{body_markdown}"
 
 
