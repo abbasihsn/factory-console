@@ -16,7 +16,10 @@ test('happy path: list -> filter -> ticket -> deps -> dep ticket', async ({ page
 	});
 
 	await test.step('searching "Daily" narrows the list to CAD-125', async () => {
-		await page.getByRole('searchbox', { name: 'Search tickets' }).fill('Daily');
+		// Scope to the FiltersBar box in <main>: the header banner's NavSearch box
+		// carries the same role+name ("Search tickets"), so an unscoped locator is
+		// strict-mode ambiguous on the index route.
+		await page.getByRole('main').getByRole('searchbox', { name: 'Search tickets' }).fill('Daily');
 		// The query re-filters server-side over id + title; only CAD-125 ("Daily
 		// check-in…") survives, so the CAD-100 link disappears.
 		await expect(page.getByRole('link', { name: 'CAD-100' })).toHaveCount(0);
