@@ -65,6 +65,51 @@ malformed-manifest) arrive with the full CLI wiring in backend T25.
 
 ## What you'll see
 
+Every page shares a header with a **Factory Console** label, the served project
+path, a navigation cluster (**Home / Graph / Roadmap** links plus a **global
+search box**), and a **Reload** button. A **live-update indicator** pill sits just
+below the header on the right.
+
+### Ticket list, detail, and deps
+
+The landing page (`/`) is a searchable, filterable list of every ticket. Open a
+ticket for its detail view — the rendered `.md` body, resolved
+`depends_on` / `provides`, and a factory run-state badge — and follow "View dep
+neighborhood" for that ticket's direct deps and dependents as clickable links.
+
+### Global search
+
+The search box in the header is a **full-text** search over ticket titles _and_
+bodies. Type a term and press Enter to land on `/search`, which lists the matching
+tickets (each row showing which fields matched, e.g. `bodyMarkdown`); every result
+links through to its ticket detail. An empty or no-match query renders a friendly
+empty state rather than an error.
+
+### Dependency graph
+
+`/graph` (the header **Graph** link) draws the whole project as a
+dependency DAG. Each node is a ticket colored by its factory run-state
+(`todo` / `in-flight` / `ready` / `merged`), and edges point from a ticket to the
+tickets it depends on. Click a node to open that ticket's detail page.
+
+### Roadmap
+
+`/roadmap` (the header **Roadmap** link) renders the project's `ROADMAP.md` as
+milestone sections — each item shows its checkbox state and, when it references a
+ticket, a monospace id link into the ticket detail — followed by the roadmap's
+prose body.
+
+### Live updates
+
+The console watches the project on disk. When a ticket's run-state changes, an
+open page **auto-refreshes** over a Server-Sent-Events stream — no manual reload
+needed. The indicator pill reflects the stream's health: **Connecting…** while it
+opens, **Live** once connected, **Offline** if the stream drops, and it briefly
+flashes **Updated** when a change arrives. Where the browser has no `EventSource`,
+the app degrades gracefully to the manual **Reload** button.
+
+### Screenshots
+
 Captured from the real UI by the Playwright screenshots pipeline against the
 `with_run_state` fixture — see the ["Screenshots"](../README.md#screenshots)
 section of the root README to regenerate them.
@@ -80,3 +125,19 @@ _The `CAD-125` detail view with rendered body, deps, and run-state badge._
 ![Dependency neighborhood](screenshots/deps.png)
 
 _The `CAD-125` dependency neighborhood listing its direct deps._
+
+![Global search results](screenshots/search.png)
+
+_Full-text search for `idempotent` at `/search`, matching two ticket bodies._
+
+![Dependency graph](screenshots/graph.png)
+
+_The `/graph` dependency DAG, nodes colored by factory run-state._
+
+![Roadmap](screenshots/roadmap.png)
+
+_The `/roadmap` milestone view rendered from the project's `ROADMAP.md`._
+
+![Live-update indicator](screenshots/live.png)
+
+_The live-update pill in its connected `Live` state._
