@@ -37,6 +37,12 @@ export interface TicketFormValues {
 	provides: string;
 	/** Newline-delimited list of file paths this ticket touches. */
 	files: string;
+	/**
+	 * The ticket's markdown body. Optional so existing literals/tests that predate
+	 * the editor stay valid; it is NOT a validated/required field — the server
+	 * accepts an empty `bodyMarkdown`, so {@link validateTicketForm} ignores it.
+	 */
+	body?: string;
 }
 
 /**
