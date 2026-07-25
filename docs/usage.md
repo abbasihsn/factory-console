@@ -55,10 +55,10 @@ authoritative contract see the CLI section of
 
 ## Exit codes
 
-| Code | Meaning |
-|---|---|
-| `0` | ok (`--version`, or a clean run) |
-| `2` | invalid `--host` (non-loopback) or unrecognized `--log-level` |
+| Code | Meaning                                                       |
+| ---- | ------------------------------------------------------------- |
+| `0`  | ok (`--version`, or a clean run)                              |
+| `2`  | invalid `--host` (non-loopback) or unrecognized `--log-level` |
 
 The richer, purpose-specific codes (`1` project-not-found, port-in-use,
 malformed-manifest) arrive with the full CLI wiring in backend T25.
@@ -79,9 +79,10 @@ neighborhood" for that ticket's direct deps and dependents as clickable links.
 
 ### Global search
 
-The search box in the header is a **full-text** search over ticket titles _and_
-bodies. Type a term and press Enter to land on `/search`, which lists the matching
-tickets (each row showing which fields matched, e.g. `bodyMarkdown`); every result
+The search box in the header is a **full-text** search over a ticket's `id`,
+title, `provides`, _and_ body Markdown. Type a term and press Enter to land on
+`/search`, which lists the matching tickets (each row showing which fields
+matched, e.g. `bodyMarkdown`); every result
 links through to its ticket detail. An empty or no-match query renders a friendly
 empty state rather than an error.
 
@@ -101,9 +102,9 @@ prose body.
 
 ### Live updates
 
-The console watches the project on disk. When a ticket's run-state changes, an
-open page **auto-refreshes** over a Server-Sent-Events stream — no manual reload
-needed. The indicator pill reflects the stream's health: **Connecting…** while it
+The console watches the project on disk. When its tickets change — a run-state
+marker moves, or a ticket's `.md` is edited — an open page **auto-refreshes**
+over a Server-Sent-Events stream — no manual reload needed. The indicator pill reflects the stream's health: **Connecting…** while it
 opens, **Live** once connected, **Offline** if the stream drops, and it briefly
 flashes **Updated** when a change arrives. Where the browser has no `EventSource`,
 the app degrades gracefully to the manual **Reload** button.

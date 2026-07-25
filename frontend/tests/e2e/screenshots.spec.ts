@@ -9,9 +9,12 @@ import { test, expect } from '@playwright/test';
 // from the happy-path spec so a broken screenshot pipeline never masks an e2e
 // regression.
 //
-// Like happy-path, the SPA is client-side routed with ssr=false, so every
-// navigation is by CLICK/`goto` starting from `/` — deep-link reloads of
-// /tickets/... aren't served by the static mount. Locators are role/label/text
+// Like happy-path, the SPA is client-side routed with ssr=false. Top-level
+// routes (`/`, `/graph`, `/roadmap`) are reached by `goto` — the server's SPA
+// static mount falls back to index.html for any non-API client route, so a
+// deep-link load IS served — while in-app destinations (a ticket detail, its
+// deps, the /search results) are reached by CLICK/submit from `/`, exactly as a
+// user would. Locators are role/label/text
 // based and each screenshot is taken only AFTER the web-first visibility
 // assertion for its page has passed, so no capture is blank or partial. We do
 // NOT wait for `networkidle`: the layout opens a long-lived `/api/v1/events` SSE

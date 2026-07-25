@@ -27,7 +27,7 @@ Within a few seconds the console discovers the project, starts a local server on
 - A searchable, filterable list of every ticket (id / status / title / track).
 - A detail view with the rendered ticket `.md`, resolved `depends_on` / `provides`, and a factory run-state badge.
 - A dependency-neighborhood view listing direct deps and dependents as clickable links.
-- A **global full-text search** box (header) over ticket titles and bodies, with results at `/search`.
+- A **global full-text search** box (header) over a ticket's id, title, `provides`, and body, with results at `/search`.
 - A **dependency graph** (`/graph`) — the whole project as a run-state-colored DAG; click a node to open its ticket.
 - A **roadmap** (`/roadmap`) rendering the project's `ROADMAP.md` as milestone sections.
 - **Live updates**: open pages auto-refresh over SSE when a ticket's run-state changes on disk, with a status indicator pill (and graceful fallback to the Reload button).
