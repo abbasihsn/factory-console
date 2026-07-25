@@ -11,6 +11,7 @@ render + apply. All I/O is confined to ``tmp_path`` so the suite is hermetic.
 
 import json
 import os
+import stat
 from datetime import datetime
 from pathlib import Path
 
@@ -309,6 +310,90 @@ def test_replace_failure_on_second_file_surfaces_atomic_write_error_no_temps(
     # No dangling mkstemp temp files in either target directory.
     assert _leftover_temps(project.ticketsManifestPath.parent) == []
     assert _leftover_temps(project.ticketsDir) == []
+
+
+def test_mid_apply_failure_logs_inconsistency_warning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    project = _make_project(tmp_path)
+    _seed(project)
+    md_rel = "docs/planning/tickets/TM-050.md"
+    changes = [
+        _planned(project, _MANIFEST_REL, '{"tickets": []}\n'),
+        _planned(project, md_rel, "# md\n"),
+    ]
+
+    real_replace = os.replace
+    state = {"calls": 0}
+
+    def flaky_replace(src: object, dst: object) -> None:
+        state["calls"] += 1
+        if state["calls"] == 2:
+            raise OSError("simulated replace failure")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(atomic_write.os, "replace", flaky_replace)
+
+    with (
+        caplog.at_level("WARNING", logger="factory_console.file_adapter.atomic_write"),
+        pytest.raises(AtomicWriteError),
+    ):
+        apply_changes(project, changes)
+
+    warnings = [record for record in caplog.records if record.levelname == "WARNING"]
+    assert len(warnings) == 1
+    # Static message; the variable data (which file failed, what already landed) is
+    # carried as structured ``extra`` fields, not interpolated into the message.
+    assert warnings[0].getMessage() == (
+        "atomic apply failed mid-sequence; file set may be inconsistent"
+    )
+    assert warnings[0].relPath == md_rel
+    assert warnings[0].written == [_MANIFEST_REL]
+
+
+# --------------------------------------------------------------------------- #
+# File-mode preservation — an edit must not tighten permissions to mkstemp's 0600
+# --------------------------------------------------------------------------- #
+
+
+def test_edit_preserves_existing_file_mode(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    _seed(project)
+    # The manifest exists at a conventional 0644; editing it must not tighten it.
+    os.chmod(project.ticketsManifestPath, 0o644)
+
+    apply_changes(project, [_planned(project, _MANIFEST_REL, '{"tickets": []}\n')])
+
+    mode = stat.S_IMODE(os.stat(project.ticketsManifestPath).st_mode)
+    assert mode == 0o644  # not silently reset to mkstemp's 0600
+
+
+def test_edit_preserves_nonstandard_existing_file_mode(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    _seed(project)
+    assert project.roadmapPath is not None
+    os.chmod(project.roadmapPath, 0o640)
+
+    apply_changes(project, [_planned(project, _ROADMAP_REL, "# Roadmap\n")])
+
+    mode = stat.S_IMODE(os.stat(project.roadmapPath).st_mode)
+    assert mode == 0o640
+
+
+def test_create_new_file_uses_umask_default_not_0600(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    _seed(project)
+    md_rel = "docs/planning/tickets/TM-050.md"
+
+    apply_changes(project, [_planned(project, md_rel, "# new\n")])
+
+    current_umask = os.umask(0o022)
+    os.umask(current_umask)
+    expected = 0o666 & ~current_umask
+    mode = stat.S_IMODE(os.stat(project.rootPath / md_rel).st_mode)
+    assert mode == expected  # a normal create's mode, not mkstemp's 0600
 
 
 # --------------------------------------------------------------------------- #

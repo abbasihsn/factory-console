@@ -28,7 +28,9 @@ caller should treat the trio as possibly inconsistent.
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
+import stat
 import tempfile
 from pathlib import Path
 
@@ -37,6 +39,8 @@ from factory_console.errors import FactoryConsoleError
 from factory_console.file_adapter.path_safety import PathTraversal
 from factory_console.file_adapter.run_state import RUN_STATE_RELATIVE_LOCATIONS
 from factory_console.file_adapter.write_render import PlannedChange
+
+_LOGGER = logging.getLogger(__name__)
 
 _ESCAPES_ROOT_REASON = "Change target resolves outside the project root"
 _RUN_STATE_REASON = "Change target resolves inside the factory run-state directory"
@@ -105,6 +109,10 @@ def apply_changes(project: Project, planned: list[PlannedChange]) -> list[str]:
                 _atomic_replace(change.path, change.newText, created_temps)
         except OSError as exc:
             _cleanup_temps(created_temps)
+            _LOGGER.warning(
+                "atomic apply failed mid-sequence; file set may be inconsistent",
+                extra={"relPath": change.relPath, "written": written},
+            )
             raise AtomicWriteError(change.relPath) from exc
         written.append(change.relPath)
     return written
@@ -170,6 +178,12 @@ def _atomic_replace(target: Path, text: str, created_temps: list[str]) -> None:
     durability, then swaps it into place. The temp path is registered in
     ``created_temps`` while it exists on disk and removed once ``os.replace``
     consumes it, so a caller's cleanup unlinks only genuinely leftover temps.
+
+    ``mkstemp`` always creates the temp ``0600`` and ``os.replace`` keeps the temp
+    inode's mode, so the temp's mode is set to match the target BEFORE the swap — an
+    existing target's own mode is preserved (an edit must not silently tighten a
+    ``0644`` file to ``0600``), and a new target gets the mode a normal create would
+    (``0666`` masked by the process umask).
     """
     parent = target.parent
     parent.mkdir(parents=True, exist_ok=True)
@@ -179,8 +193,24 @@ def _atomic_replace(target: Path, text: str, created_temps: list[str]) -> None:
         handle.write(text)
         handle.flush()
         os.fsync(handle.fileno())
+    os.chmod(tmp_name, _mode_for_target(target))
     os.replace(tmp_name, target)
     created_temps.remove(tmp_name)
+
+
+def _mode_for_target(target: Path) -> int:
+    """Return the permission bits to apply to the file being swapped into ``target``.
+
+    Preserve an existing target's own mode so an edit never changes its permissions;
+    for a target that does not yet exist, use the mode a normal ``open(..., "w")``
+    create would get — ``0o666`` masked by the process umask.
+    """
+    try:
+        return stat.S_IMODE(os.stat(target).st_mode)
+    except FileNotFoundError:
+        umask = os.umask(0o022)
+        os.umask(umask)
+        return 0o666 & ~umask
 
 
 def _delete_if_present(target: Path) -> None:
