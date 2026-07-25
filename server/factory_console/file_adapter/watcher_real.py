@@ -27,7 +27,7 @@ Design (all three properties are load-bearing):
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast, get_args
@@ -215,12 +215,12 @@ class RealFileWatcher:
 
     # -- fan-out ------------------------------------------------------------ #
 
-    def subscribe(self) -> AsyncIterator[ChangeEvent]:
+    def subscribe(self) -> AsyncGenerator[ChangeEvent, None]:
         """Register a fresh per-client queue and yield each awaited event.
 
         Identical external contract to
         :meth:`~factory_console.file_adapter.watcher.FakeFileWatcher.subscribe`
-        because both return the same :class:`_SubscriberHub`'s async iterator: the
+        because both return the same :class:`_SubscriberHub`'s async generator: the
         queue registers on first await and is unregistered in a ``finally`` (which
         runs on close) so a cancelled or disconnected client leaks nothing and
         never blocks others.

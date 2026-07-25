@@ -21,7 +21,7 @@ FakeFileWatcher``); this module is deliberately NOT re-exported from
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from typing import Protocol, runtime_checkable
 
 from factory_console.domain.watch import ChangeEvent
@@ -51,7 +51,7 @@ class _SubscriberHub:
         for queue in list(self._subscribers):
             queue.put_nowait(event)
 
-    async def subscribe(self) -> AsyncIterator[ChangeEvent]:
+    async def subscribe(self) -> AsyncGenerator[ChangeEvent, None]:
         """Register a fresh queue and yield each awaited event until cancelled."""
         queue: asyncio.Queue[ChangeEvent] = asyncio.Queue()
         self._subscribers.append(queue)
@@ -81,11 +81,12 @@ class FileWatcher(Protocol):
         """Halt watching and release resources (idempotent — calling twice is safe)."""
         ...
 
-    def subscribe(self) -> AsyncIterator[ChangeEvent]:
+    def subscribe(self) -> AsyncGenerator[ChangeEvent, None]:
         """Register a fresh, independent per-client stream of :class:`ChangeEvent`s.
 
-        Each call returns a new async iterator; iterators are independent, so one
-        client disconnecting never affects another.
+        Each call returns a new async generator; generators are independent, so one
+        client disconnecting never affects another, and the consumer can ``aclose()``
+        it to release the subscription leak-safely.
         """
         ...
 
@@ -117,10 +118,10 @@ class FakeFileWatcher:
         """Fan ``event`` out to every registered subscriber (test driver, not on the port)."""
         self._hub.fan_out(event)
 
-    def subscribe(self) -> AsyncIterator[ChangeEvent]:
+    def subscribe(self) -> AsyncGenerator[ChangeEvent, None]:
         """Register a fresh queue and yield each awaited event until cancelled.
 
-        Returns the shared :class:`_SubscriberHub`'s async iterator directly (not
+        Returns the shared :class:`_SubscriberHub`'s async generator directly (not
         a wrapper), so closing it runs the hub's ``finally`` that unregisters the
         queue — a cancelled or closed subscriber leaks nothing and does not block
         the others.

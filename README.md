@@ -27,6 +27,10 @@ Within a few seconds the console discovers the project, starts a local server on
 - A searchable, filterable list of every ticket (id / status / title / track).
 - A detail view with the rendered ticket `.md`, resolved `depends_on` / `provides`, and a factory run-state badge.
 - A dependency-neighborhood view listing direct deps and dependents as clickable links.
+- A **global full-text search** box (header) over a ticket's id, title, `provides`, and body, with results at `/search`.
+- A **dependency graph** (`/graph`) — the whole project as a run-state-colored DAG; click a node to open its ticket.
+- A **roadmap** (`/roadmap`) rendering the project's `ROADMAP.md` as milestone sections.
+- **Live updates**: open pages auto-refresh over SSE when a ticket's run-state changes on disk, with a status indicator pill (and graceful fallback to the Reload button).
 
 Press Ctrl-C to stop. See [`docs/usage.md`](docs/usage.md) for flags, exit codes, and path resolution.
 
@@ -45,6 +49,22 @@ _The `CAD-125` detail view with rendered body, deps, and run-state badge._
 ![Dependency neighborhood](docs/screenshots/deps.png)
 
 _The `CAD-125` dependency neighborhood listing its direct deps._
+
+![Global search results](docs/screenshots/search.png)
+
+_Full-text search for `idempotent` at `/search`, matching two ticket bodies._
+
+![Dependency graph](docs/screenshots/graph.png)
+
+_The `/graph` dependency DAG, nodes colored by factory run-state._
+
+![Roadmap](docs/screenshots/roadmap.png)
+
+_The `/roadmap` milestone view rendered from the project's `ROADMAP.md`._
+
+![Live-update indicator](docs/screenshots/live.png)
+
+_The live-update pill in its connected `Live` state._
 
 Regenerate with `pnpm --dir frontend screenshots` (equivalently `pnpm --dir frontend e2e --grep screenshots && node frontend/scripts/copy-screenshots.mjs`).
 
