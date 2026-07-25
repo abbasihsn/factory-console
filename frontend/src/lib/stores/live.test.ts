@@ -13,6 +13,9 @@ class FakeEventSource {
 	onopen: (() => void) | null = null;
 	onmessage: (() => void) | null = null;
 	onerror: (() => void) | null = null;
+	// Named-event listeners registered via addEventListener — the real backend
+	// sends `event: change` frames, which reach these (not onmessage).
+	listeners = new Map<string, Array<() => void>>();
 
 	constructor(url: string) {
 		this.url = url;
@@ -23,11 +26,20 @@ class FakeEventSource {
 		this.closed = true;
 	}
 
+	addEventListener(type: string, cb: () => void): void {
+		const forType = this.listeners.get(type) ?? [];
+		forType.push(cb);
+		this.listeners.set(type, forType);
+	}
+
 	emitOpen(): void {
 		this.onopen?.();
 	}
 	emitMessage(): void {
 		this.onmessage?.();
+	}
+	emitEvent(type: string): void {
+		for (const cb of this.listeners.get(type) ?? []) cb();
 	}
 	emitError(): void {
 		this.onerror?.();
@@ -90,6 +102,21 @@ describe('createLiveStore', () => {
 		expect(get(live.lastEvent)).toBe(4242);
 
 		FakeEventSource.last.emitMessage();
+		expect(get(live.bump)).toBe(2);
+	});
+
+	it('bumps and stamps lastEvent on a named change event (the frame the backend sends)', () => {
+		const live = createLiveStore({ eventSourceCtor: fakeCtor, now: () => 4242 });
+		live.start();
+		FakeEventSource.last.emitOpen();
+
+		// The server emits `event: change` — a named frame — which the EventSource
+		// spec delivers to addEventListener('change'), NOT onmessage.
+		FakeEventSource.last.emitEvent('change');
+		expect(get(live.bump)).toBe(1);
+		expect(get(live.lastEvent)).toBe(4242);
+
+		FakeEventSource.last.emitEvent('change');
 		expect(get(live.bump)).toBe(2);
 	});
 
