@@ -24,7 +24,7 @@ adapter/writer or the filesystem.
 from __future__ import annotations
 
 from factory_console.domain import Project
-from factory_console.domain.write import TicketDraft, TicketEdit, WriteResult
+from factory_console.domain.write import DiffPreview, TicketDraft, TicketEdit, WriteResult
 from factory_console.errors import FactoryConsoleError
 from factory_console.file_adapter.protocol import FileAdapter
 from factory_console.file_adapter.writer_protocol import FileWriter
@@ -98,14 +98,7 @@ class WriteService:
         if self._adapter.get_ticket(project, payload.id) is not None:
             raise WriteConflict(payload.id)
         if dry_run:
-            preview = self._writer.preview_create(project, payload)
-            return WriteResult(
-                applied=False,
-                ticketId=payload.id,
-                changedFiles=[file.path for file in preview.files],
-                diff=preview,
-                ticket=None,
-            )
+            return self._dry_run_result(payload.id, self._writer.preview_create(project, payload))
         result = self._writer.create_ticket(project, payload)
         return self._with_reread(project, payload.id, result)
 
@@ -125,13 +118,8 @@ class WriteService:
         if self._adapter.get_ticket(project, ticket_id) is None:
             raise TicketNotFound(ticket_id)
         if dry_run:
-            preview = self._writer.preview_edit(project, ticket_id, payload)
-            return WriteResult(
-                applied=False,
-                ticketId=ticket_id,
-                changedFiles=[file.path for file in preview.files],
-                diff=preview,
-                ticket=None,
+            return self._dry_run_result(
+                ticket_id, self._writer.preview_edit(project, ticket_id, payload)
             )
         result = self._writer.edit_ticket(project, ticket_id, payload)
         return self._with_reread(project, ticket_id, result)
@@ -155,15 +143,24 @@ class WriteService:
         if self._adapter.get_ticket(project, ticket_id) is None:
             raise TicketNotFound(ticket_id)
         if dry_run:
-            preview = self._writer.preview_delete(project, ticket_id)
-            return WriteResult(
-                applied=False,
-                ticketId=ticket_id,
-                changedFiles=[file.path for file in preview.files],
-                diff=preview,
-                ticket=None,
-            )
+            return self._dry_run_result(ticket_id, self._writer.preview_delete(project, ticket_id))
         return self._writer.delete_ticket(project, ticket_id)
+
+    def _dry_run_result(self, ticket_id: str, preview: DiffPreview) -> WriteResult:
+        """Wrap a writer ``preview_*`` :class:`DiffPreview` as an ``applied=False`` result.
+
+        The uniform dry-run envelope shared by all three write methods: it carries the
+        planned ``changedFiles`` (derived from the preview so they always agree with the
+        ``diff``) and no ``ticket``, mirroring :class:`RealFileWriter`'s ``_applied_result``
+        on the apply side rather than repeating the construction at each call site.
+        """
+        return WriteResult(
+            applied=False,
+            ticketId=ticket_id,
+            changedFiles=[file.path for file in preview.files],
+            diff=preview,
+            ticket=None,
+        )
 
     def _with_reread(self, project: Project, ticket_id: str, result: WriteResult) -> WriteResult:
         """Return ``result`` carrying the ticket re-read through the ``FileAdapter``.
