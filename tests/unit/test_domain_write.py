@@ -307,3 +307,18 @@ def test_write_result_changed_files_default_empty_and_ticket_none() -> None:
     result = WriteResult(applied=False, ticketId="T55", diff=_make_diff_preview())
     assert result.changedFiles == []
     assert result.ticket is None
+
+
+# --------------------------------------------------------------------------- #
+# WriteResult applied <=> ticket invariant
+# --------------------------------------------------------------------------- #
+
+
+def test_write_result_rejects_applied_true_without_ticket() -> None:
+    with pytest.raises(ValidationError):
+        WriteResult(applied=True, ticketId="T55", diff=_make_diff_preview(), ticket=None)
+
+
+def test_write_result_rejects_applied_false_with_ticket() -> None:
+    with pytest.raises(ValidationError):
+        WriteResult(applied=False, ticketId="T55", diff=_make_diff_preview(), ticket=_make_ticket())

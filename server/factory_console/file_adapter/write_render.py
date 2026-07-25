@@ -289,6 +289,18 @@ def _find_matching_heading(lines: list[str], milestone: str) -> int | None:
     return None
 
 
+def _heading_index_for_line(lines: list[str], line_index: int) -> int | None:
+    """Return the index of the ``## `` heading whose section contains ``line_index``.
+
+    Walks backward from ``line_index`` to the nearest preceding milestone heading;
+    ``None`` when the line precedes every ``## `` heading (e.g. a preamble bullet).
+    """
+    for index in range(line_index, -1, -1):
+        if lines[index].strip().startswith(_H2_PREFIX):
+            return index
+    return None
+
+
 def _section_body_bounds(lines: list[str], heading_index: int) -> tuple[int, int]:
     """Return ``[start, end)`` line bounds of a section's body after its heading.
 
@@ -356,17 +368,53 @@ def _roadmap_create_text(
     return "\n".join(lines)
 
 
-def _roadmap_edit_text(current: str, ticket_id: str, title: str) -> str | None:
-    """Return the roadmap text with ``ticket_id``'s item relabelled, else ``None``.
+def _roadmap_edit_text(
+    current: str, ticket_id: str, milestone: str | None, title: str
+) -> str | None:
+    """Return the roadmap text reflecting an edit to ``ticket_id``, else ``None``.
 
-    ``None`` when no list item carries ``ticket_id`` — the caller omits the change.
+    Relabels the ticket's existing item in place, but when the edit moves the ticket
+    to a DIFFERENT milestone whose ``## `` section exists, removes the old line and
+    re-inserts it under the new section — so the roadmap tracks the manifest's
+    ``milestone`` (which :func:`_merge_edit` updates) instead of silently keeping the
+    line under its old heading. A cross-section move re-lists the item as ``- [ ]``,
+    matching how :func:`_roadmap_create_text` first lists a ticket (a moved ticket
+    is a fresh entry under its new milestone). When the new milestone has no matching
+    section, the line is relabelled in place rather than lost, mirroring create's
+    "no matching section → skip the roadmap" tolerance.
+
+    ``None`` when no list item carries ``ticket_id`` — the caller then omits the
+    roadmap change.
     """
     lines = current.split("\n")
-    for index, line in enumerate(lines):
-        if _LIST_ITEM_RE.match(line.strip()) and _extract_ticket_id(line) == ticket_id:
-            lines[index] = _rebuild_item_line(line, ticket_id, title)
-            return "\n".join(lines)
-    return None
+    item_index = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if _LIST_ITEM_RE.match(line.strip()) and _extract_ticket_id(line) == ticket_id
+        ),
+        None,
+    )
+    if item_index is None:
+        return None
+
+    heading_index = _heading_index_for_line(lines, item_index)
+    # A None milestone can't target a section; otherwise the item is already where
+    # it belongs only when a heading precedes it AND that heading names the
+    # milestone. An item with no preceding heading (preamble) but a real milestone
+    # section elsewhere is NOT in its target section, so it moves too.
+    in_target_section = milestone is None or (
+        heading_index is not None
+        and _heading_matches(lines[heading_index].strip()[len(_H2_PREFIX) :], milestone)
+    )
+    if not in_target_section:
+        without_item = lines[:item_index] + lines[item_index + 1 :]
+        moved = _roadmap_create_text("\n".join(without_item), milestone, ticket_id, title)
+        if moved is not None:
+            return moved
+
+    lines[item_index] = _rebuild_item_line(lines[item_index], ticket_id, title)
+    return "\n".join(lines)
 
 
 def _roadmap_delete_text(current: str, ticket_id: str) -> str | None:
@@ -441,7 +489,11 @@ def render_create(project: Project, draft: TicketDraft) -> list[PlannedChange]:
         PlannedChange(
             path=md_path,
             relPath=_rel_posix(md_path, project.rootPath),
-            currentText=None,
+            # Read the current text (normally None — the id is new to the manifest)
+            # so an orphan <id>.md on disk that is absent from the manifest surfaces
+            # in the diff as a modify instead of being silently clobbered, matching
+            # the edit/delete siblings.
+            currentText=_read_text_or_none(md_path),
             newText=_render_md(draft.frontMatter, draft.bodyMarkdown),
         ),
     ]
@@ -487,7 +539,8 @@ def render_edit(project: Project, ticket_id: str, edit: TicketEdit) -> list[Plan
         ),
     ]
     roadmap_change = _roadmap_change(
-        project, lambda current: _roadmap_edit_text(current, ticket_id, edit.title)
+        project,
+        lambda current: _roadmap_edit_text(current, ticket_id, edit.milestone, edit.title),
     )
     if roadmap_change is not None:
         changes.append(roadmap_change)

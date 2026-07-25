@@ -335,6 +335,61 @@ def test_edit_relabels_roadmap_line_in_place(tmp_path: Path) -> None:
     assert "Public read API (TM-015)" not in roadmap.newText
 
 
+def test_edit_moves_roadmap_line_when_milestone_changes(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    _seed(project)
+
+    # TM-015 starts under the ## v1 section; move it to MVP.
+    changes = render_edit(project, "TM-015", _edit(milestone="MVP", title="Public read API"))
+
+    roadmap = _by_rel(changes, _ROADMAP_REL)
+    # The old in-place line under v1 is gone and the item now sits under MVP.
+    assert "Public read API (TM-015)" not in roadmap.newText
+    mvp_index = roadmap.newText.index("## MVP")
+    v1_index = roadmap.newText.index("## v1")
+    moved_index = roadmap.newText.index("**TM-015**")
+    assert mvp_index < moved_index < v1_index
+
+
+def test_edit_relabels_in_place_when_milestone_section_missing(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    _seed(project)
+
+    # No ## v99 section exists, so the line is relabelled in place, never lost.
+    changes = render_edit(
+        project, "TM-015", _edit(milestone="v99-nonexistent", title="Renamed here")
+    )
+
+    roadmap = _by_rel(changes, _ROADMAP_REL)
+    v1_index = roadmap.newText.index("## v1")
+    item_index = roadmap.newText.index("**TM-015** — Renamed here")
+    assert item_index > v1_index  # still under its original v1 section
+
+
+def test_edit_moves_preamble_item_into_its_milestone_section(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    # TM-015's roadmap line sits in the preamble (before any ## heading); the edit
+    # gives it milestone MVP, whose section exists, so it moves under MVP.
+    preamble_roadmap = (
+        "# TrailMark Roadmap\n"
+        "\n"
+        "- [ ] Public read API (TM-015)\n"
+        "\n"
+        "## MVP — make ranger reports usable\n"
+        "\n"
+        "- [ ] Ingest trail reports (TM-001)\n"
+    )
+    _seed(project, roadmap=preamble_roadmap)
+
+    changes = render_edit(project, "TM-015", _edit(milestone="MVP", title="Public read API"))
+
+    roadmap = _by_rel(changes, _ROADMAP_REL)
+    assert "Public read API (TM-015)" not in roadmap.newText  # left the preamble
+    mvp_index = roadmap.newText.index("## MVP")
+    moved_index = roadmap.newText.index("**TM-015**")
+    assert moved_index > mvp_index  # now under the MVP section
+
+
 def test_edit_raises_unknown_ticket(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     _seed(project)
