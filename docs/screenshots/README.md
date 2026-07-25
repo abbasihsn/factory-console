@@ -10,6 +10,10 @@ will be overwritten on the next regeneration.
 | `list.png` | The ticket list (`/`). |
 | `detail.png` | The `CAD-125` ticket detail (`/tickets/CAD-125`). |
 | `deps.png` | The `CAD-125` dependency neighborhood (`/tickets/CAD-125/deps`). |
+| `search.png` | Full-text search results for `idempotent` (`/search`). |
+| `graph.png` | The dependency graph (`/graph`). |
+| `roadmap.png` | The roadmap / milestone view (`/roadmap`). |
+| `live.png` | The live-update indicator pill in its connected `Live` state. |
 
 ## Regenerate
 
@@ -20,7 +24,7 @@ pnpm --dir frontend screenshots
 ```
 
 That runs the `frontend/tests/e2e/screenshots.spec.ts` e2e (which boots a real
-`factory-console` on the `with_run_state` fixture and captures the three PNGs
+`factory-console` on the `with_run_state` fixture and captures the PNGs above
 into the gitignored `frontend/tests/e2e/__screenshots__/`), then
 `frontend/scripts/copy-screenshots.mjs` copies them here. Commit the updated PNGs
 so the README images stay in sync with the UI.
