@@ -10,7 +10,11 @@ importing a concrete adapter. It also accepts an optional long-lived
 ``app.state.file_watcher`` for the ``Depends(get_file_watcher)`` seam and driven by
 a FastAPI ``lifespan`` that ``start()``s it at boot and ``stop()``s it on shutdown
 — the first (deliberate) deviation from the MVP's no-watcher rule, plumbing the
-watcher backbone the SSE endpoint (T45) builds on. It wires the two cross-cutting
+watcher backbone the SSE endpoint (T45) builds on. It also accepts an optional
+write-core :class:`~factory_console.file_adapter.writer_protocol.FileWriter` (T60/T61's
+port), stashed on ``app.state.file_writer`` for the ``Depends(get_file_writer)`` seam
+the v2 write endpoints consume; the writer is stateless, so it drives no lifespan.
+It wires the two cross-cutting
 concerns every endpoint relies on: the domain/validation exception handlers
 (:func:`~factory_console.api.error_handlers.register_error_handlers`) and a single
 access-log line per request (:class:`AccessLogMiddleware`). The packaged SPA is
@@ -18,10 +22,11 @@ served last, unchanged from the walking skeleton.
 
 :func:`create_dev_app` is the zero-arg factory ``scripts/dev.sh``'s
 ``uvicorn --factory`` invocation targets; it discovers the project root and
-instantiates the filesystem-backed ``RealFileAdapter`` and the watchdog-backed
-``RealFileWatcher`` lazily, so importing this module never imports ``real.py`` or
-``watcher_real.py`` (and never pulls in ``watchdog``) — their only runtime users
-are this dev shortcut and T25's production CLI.
+instantiates the filesystem-backed ``RealFileAdapter``, the watchdog-backed
+``RealFileWatcher``, and the ``RealFileWriter`` lazily, so importing this module
+never imports ``real.py``, ``watcher_real.py``, or ``real_writer.py`` (and never
+pulls in ``watchdog``) — their only runtime users are this dev shortcut and T25's
+production CLI.
 """
 
 from __future__ import annotations
@@ -46,6 +51,7 @@ from factory_console.api.v1 import API_V1_PREFIX
 from factory_console.api.v1 import router as v1_router
 from factory_console.file_adapter.protocol import FileAdapter
 from factory_console.file_adapter.watcher import FileWatcher
+from factory_console.file_adapter.writer_protocol import FileWriter
 from factory_console.logging import request_log_line
 
 # ``API_V1_PREFIX`` (imported above) is owned by the ``api.v1`` package so the
@@ -166,6 +172,7 @@ def create_app(
     version: str,
     project_root: Path,
     file_watcher: FileWatcher | None = None,
+    file_writer: FileWriter | None = None,
 ) -> FastAPI:
     """Build the Factory Console app around an injected ``FileAdapter``.
 
@@ -175,11 +182,15 @@ def create_app(
     :class:`FileWatcher` port) is stashed on ``app.state.file_watcher`` for the
     ``Depends(get_file_watcher)`` seam and driven by :func:`_watcher_lifespan`,
     which ``start()``s it at boot and ``stop()``s it on shutdown; leaving it
-    ``None`` keeps the app watcher-free (the adapter-only default). Registers the
-    domain/validation exception handlers and the access-log middleware, includes
-    the v1 router, and mounts the packaged SPA last. ``project_root`` is
-    non-optional: the CLI always discovers a root before boot and tests always pass
-    a fixture root.
+    ``None`` keeps the app watcher-free (the adapter-only default). The optional
+    write-core ``file_writer`` (T60/T61's :class:`FileWriter` port) is stashed on
+    ``app.state.file_writer`` for the ``Depends(get_file_writer)`` seam; it is
+    stateless, so it drives no lifespan, and leaving it ``None`` keeps the app
+    write-free until a write route asks for it (then a missing writer is a wiring
+    bug the seam raises on). Registers the domain/validation exception handlers and
+    the access-log middleware, includes the v1 router, and mounts the packaged SPA
+    last. ``project_root`` is non-optional: the CLI always discovers a root before
+    boot and tests always pass a fixture root.
     """
     app = FastAPI(
         title="Factory Console",
@@ -193,6 +204,7 @@ def create_app(
     app.state.project_root = project_root
     app.state.version = version
     app.state.file_watcher = file_watcher
+    app.state.file_writer = file_writer
 
     register_error_handlers(app)
     app.add_middleware(AccessLogMiddleware)
@@ -208,14 +220,17 @@ def create_dev_app() -> FastAPI:
     filesystem-backed :class:`~factory_console.file_adapter.real.RealFileAdapter`
     plus the watchdog-backed
     :class:`~factory_console.file_adapter.watcher_real.RealFileWatcher` rooted at
-    that same root. The imports are lazy so importing this module never pulls in
-    ``real.py`` or ``watcher_real.py`` (and never imports ``watchdog``) — the only
-    runtime users of the concrete adapter/watcher are this dev shortcut and T25's
-    CLI.
+    that same root and the filesystem-backed
+    :class:`~factory_console.file_adapter.real_writer.RealFileWriter`. The imports
+    are lazy so importing this module never pulls in ``real.py``,
+    ``watcher_real.py``, or ``real_writer.py`` (and never imports ``watchdog``) —
+    the only runtime users of the concrete adapter/watcher/writer are this dev
+    shortcut and T25's CLI.
     """
     from factory_console import __version__
     from factory_console.file_adapter.discovery import discover_project
     from factory_console.file_adapter.real import RealFileAdapter
+    from factory_console.file_adapter.real_writer import RealFileWriter
     from factory_console.file_adapter.watcher_real import RealFileWatcher
 
     root = discover_project(None, Path.cwd())
@@ -224,4 +239,5 @@ def create_dev_app() -> FastAPI:
         version=__version__,
         project_root=root,
         file_watcher=RealFileWatcher(root),
+        file_writer=RealFileWriter(),
     )
