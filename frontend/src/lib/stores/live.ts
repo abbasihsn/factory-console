@@ -109,11 +109,20 @@ export function createLiveStore(options: LiveStoreOptions = {}): LiveStore {
 			attempt = 0;
 			status.set('live');
 		};
-		// Any event is an untyped "refresh" signal — never parse the body.
-		es.onmessage = () => {
+		// Any event is an untyped "refresh" signal — never parse the body. The
+		// backend emits NAMED frames (`event: change`; see the server's
+		// events_service), and per the EventSource spec a named frame does NOT
+		// trigger `onmessage` — that fires only for unnamed `message` frames. So
+		// listen for `change` explicitly; `onmessage` is kept for robustness against
+		// an unnamed/default frame. The `ready` handshake frame is deliberately
+		// ignored — `onopen` already marks the stream live, and a fresh connection
+		// should not trigger a data refresh.
+		const onSignal = (): void => {
 			lastEvent.set(now());
 			bump.update((n) => n + 1);
 		};
+		es.onmessage = onSignal;
+		es.addEventListener('change', onSignal);
 		es.onerror = () => {
 			// Drop the native auto-reconnect and drive our own capped backoff.
 			closeSource();
