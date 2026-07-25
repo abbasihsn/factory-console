@@ -20,11 +20,12 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel
 from starlette.routing import Mount
 
-from factory_console.api.deps import get_file_adapter, get_file_watcher
+from factory_console.api.deps import get_file_adapter, get_file_watcher, get_file_writer
 from factory_console.app import _SpaStaticFiles, create_app
 from factory_console.domain import TICKET_ID_PATTERN, Project
 from factory_console.file_adapter import FakeFileAdapter
 from factory_console.file_adapter.discovery import ProjectNotFound
+from factory_console.file_adapter.fake_writer import FakeFileWriter
 
 
 class _Body(BaseModel):
@@ -188,6 +189,30 @@ def test_get_file_adapter_raises_when_unbound() -> None:
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
     with pytest.raises(RuntimeError, match="file_adapter"):
         get_file_adapter(request)  # type: ignore[arg-type]
+
+
+def test_get_file_writer_returns_the_writer_bound_by_create_app() -> None:
+    # create_app stashes the optional write-core writer on app.state; the DI
+    # provider reads it back so a write handler gets the exact instance the
+    # composition root wired, without importing a concrete writer.
+    writer = FakeFileWriter(manifest=[])
+    app = create_app(
+        _make_fake(),
+        version="0.0.0",
+        project_root=Path("/tmp/fake-root"),
+        file_writer=writer,
+    )
+    request = SimpleNamespace(app=app)
+    assert get_file_writer(request) is writer  # type: ignore[arg-type]
+
+
+def test_get_file_writer_raises_when_unbound() -> None:
+    # The writer seam mirrors the adapter's guard (not the opt-in watcher): an
+    # app.state without a bound writer is a wiring bug, so the provider raises
+    # rather than returning None.
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
+    with pytest.raises(RuntimeError, match="file_writer"):
+        get_file_writer(request)  # type: ignore[arg-type]
 
 
 def _spa_client(tmp_path: Path) -> TestClient:
