@@ -28,7 +28,10 @@ apply, and a dry-run previews a non-mutable ticket rather than refusing it.
 They also do no error handling of their own; every failure mode already has a
 registered handler that renders the REST v1 envelope:
 :class:`~factory_console.api.write_token.WriteTokenInvalid` (401),
-``invalid_ticket_id`` (400, re-mapped from the ``Path`` pattern violation),
+``invalid_ticket_id`` (400, re-mapped from the pattern violation — the ``Path``
+parameter on edit/delete, the ``TicketDraft.id`` body field on create),
+``unknown_query_param`` and ``repeated_query_param`` (400, both from
+:func:`reject_unknown_query_params`),
 :class:`~factory_console.services.ticket_service.TicketNotFound` (404),
 :class:`~factory_console.file_adapter.write_gate.TicketNotMutable` and
 :class:`~factory_console.services.write_service.WriteConflict` (409), and
@@ -48,14 +51,75 @@ from factory_console.api.deps import get_file_adapter, get_file_writer
 from factory_console.api.write_token import WRITE_TOKEN_SCHEME_NAME, require_write_token
 from factory_console.domain.ticket import TICKET_ID_PATTERN
 from factory_console.domain.write import TicketDraft, TicketEdit, WriteResult
+from factory_console.errors import FactoryConsoleError
 from factory_console.file_adapter.protocol import FileAdapter
 from factory_console.file_adapter.writer_protocol import FileWriter
 from factory_console.services.write_service import WriteService
 
+# Every query key these routes understand. ``dryRun`` is the only one; the guard below
+# rejects anything else rather than letting it pass unread.
+_ALLOWED_QUERY_KEYS = frozenset({"dryRun"})
+
+
+def reject_unknown_query_params(request: Request) -> None:
+    """Reject any unrecognized OR repeated query key on these write routes, as a 400.
+
+    Two ways the one flag that separates "show me the diff" from "rewrite the manifest,
+    the ticket file, and the roadmap" can fail OPEN, and this guard closes both:
+
+    * an **unrecognized** key — Starlette hands undeclared keys to nobody, so a
+      plausible miscasing like ``?dryrun=true`` or ``?dry_run=true`` would leave
+      ``dry_run`` at its ``False`` default and take the APPLY branch, and
+    * a **repeated** key — ``?dryRun=true&dryRun=false`` carries the allowed name, but
+      FastAPI binds a scalar ``bool`` through last-wins ``QueryParams.get``, so the
+      request that explicitly asked for a preview APPLIES. Checking the key *set* alone
+      cannot see this: the duplicate collapses before the allow-list is consulted, so
+      the multi-item list is what has to be inspected. Reachable with no malice at all —
+      any caller or proxy that appends ``&dryRun=true`` to a URL already carrying a
+      ``dryRun`` value gets a write while asking for a preview.
+
+    On routes whose apply path deletes a file, the safety flag must fail CLOSED: an
+    unusable query string is an error, never a silent apply.
+
+    Attached at the router so it covers all three verbs and cannot be forgotten on a
+    fourth. Read routes are unaffected — this lives only on this module's router.
+
+    Raises:
+        FactoryConsoleError: A query key is unrecognized (``unknown_query_param``) or
+            given more than once (``repeated_query_param``); both 400.
+    """
+    params = request.query_params
+    unknown = sorted({key for key, _ in params.multi_items()} - _ALLOWED_QUERY_KEYS)
+    if unknown:
+        raise FactoryConsoleError(
+            code="unknown_query_param",
+            message=f"Unrecognized query parameter(s): {', '.join(unknown)}",
+            status=400,
+            details={"unknown": unknown, "allowed": sorted(_ALLOWED_QUERY_KEYS)},
+        )
+
+    # Only allowed keys remain, so any duplicate here is a repeated `dryRun`.
+    repeated = sorted({key for key, _ in params.multi_items() if len(params.getlist(key)) > 1})
+    if repeated:
+        raise FactoryConsoleError(
+            code="repeated_query_param",
+            message=(
+                f"Query parameter(s) given more than once: {', '.join(repeated)}. "
+                "Send each at most once."
+            ),
+            status=400,
+            details={"repeated": repeated},
+        )
+
+
 # The package ``__init__`` owns the ``/api/v1`` prefix; this sub-router only names the
 # routes and their OpenAPI tag (mirrors ``api/v1/tickets.py``) — plus the write-token
-# dependency, which is what makes this module, and nothing else, header-gated.
-router = APIRouter(tags=["tickets"], dependencies=[Depends(require_write_token)])
+# dependency, which is what makes this module, and nothing else, header-gated, and the
+# strict query guard that keeps ``?dryRun`` from failing open on a typo.
+router = APIRouter(
+    tags=["tickets"],
+    dependencies=[Depends(require_write_token), Depends(reject_unknown_query_params)],
+)
 
 # ``require_write_token`` is a plain dependency rather than a ``SecurityBase``, so
 # FastAPI cannot derive a ``security`` requirement from it. Each write operation

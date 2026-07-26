@@ -85,7 +85,13 @@ require it on every request:
 | `DELETE /api/v1/tickets/{id}` | delete a ticket (`200`)                        |
 
 Each returns the same `WriteResult` body carrying the unified diff of what changed, and
-each accepts `?dryRun=true` to get that diff back **without** writing anything.
+each accepts `?dryRun=true` to get that diff back **without** writing anything. `dryRun`
+is the only query parameter these endpoints take, and it is matched exactly: any other
+key — including a miscasing like `?dryrun=true` — is refused with
+`400 unknown_query_param` rather than quietly applying the write you meant to preview.
+Sending `dryRun` **more than once** (`?dryRun=true&dryRun=false`) is refused the same way
+with `400 repeated_query_param`, because only the last value would otherwise bind — so a
+request that asks for a preview must never apply.
 
 Only tickets whose factory run-state is `todo` (or `unknown`, when the project has no
 run-state directory) may be edited or deleted — an `in-flight`, `ready`, or `merged`
@@ -111,10 +117,9 @@ line reads `X-Factory-Write-Token: <pinned, not echoed>`.
 | Code | Meaning                                                       |
 | ---- | ------------------------------------------------------------- |
 | `0`  | ok (`--version`, or a clean run)                              |
-| `2`  | invalid `--host` (non-loopback), unrecognized `--log-level`, or a bad `FACTORY_CONSOLE_WRITE_TOKEN` pin |
-
-The richer, purpose-specific codes (`1` project-not-found, port-in-use,
-malformed-manifest) arrive with the full CLI wiring in backend T25.
+| `1`  | project not found                                             |
+| `2`  | invalid `--host` (non-loopback), out-of-range `--port`, unrecognized `--log-level`, a bad `FACTORY_CONSOLE_WRITE_TOKEN` pin, or the port already in use |
+| `3`  | malformed ticket manifest                                     |
 
 ## What you'll see
 

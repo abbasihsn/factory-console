@@ -21,10 +21,17 @@ export const TICKET_ID_PATTERN = /^[A-Za-z0-9_.-]+$/;
 /**
  * Raw form values as held by the edit/create form.
  *
- * `dependsOn`, `provides`, and `files` are newline-delimited strings while being
- * edited in a textarea; use {@link parseList} / {@link serializeList} to convert
- * to and from the `string[]` the API payload (aligned with T66's
- * `TicketCreate` / `TicketUpdate`) expects.
+ * `dependsOn` and `files` are newline-delimited strings while being edited in a
+ * textarea; they are also the two the API takes as arrays, so they convert with
+ * {@link parseList} / {@link serializeList} to and from the `string[]` that
+ * `TicketCreate` / `TicketUpdate` declare.
+ *
+ * `provides` is neither: the write DTOs type it as a scalar `string` (see
+ * `TicketDraft.provides` in `$lib/api/types.ts`, from `domain/write.py`'s
+ * `provides: str = ""`), so it is edited in a single-line input and its value is sent
+ * through as-is. Do not {@link parseList} it — the server stores the string verbatim
+ * and the read model hands it back as a SINGLE-ELEMENT `Ticket.provides` list, so
+ * anything that looks like a multi-entry list here collapses on the next round-trip.
  */
 export interface TicketFormValues {
 	/** Ticket id — required in `create` mode, fixed by the route in `edit` mode. */
@@ -33,7 +40,7 @@ export interface TicketFormValues {
 	title: string;
 	/** Newline-delimited list of ticket ids this ticket depends on. */
 	dependsOn: string;
-	/** Newline-delimited list of capability tags this ticket provides. */
+	/** The capability tag this ticket provides — a single scalar value on the wire. */
 	provides: string;
 	/** Newline-delimited list of file paths this ticket touches. */
 	files: string;
