@@ -300,11 +300,13 @@ async def _write(
 
 
 def test_the_recording_writer_satisfies_the_file_writer_port() -> None:
-    # Every zero-write assertion below is only as good as the instrument taking it: if
-    # the spy stopped covering the port, the app would fall back to some other writer
-    # (or fail at the seam) and an empty call log would mean nothing. ``FileWriter`` is
-    # ``@runtime_checkable``, so the decorator is held to the same structural bar as
-    # ``RealFileWriter`` and ``FakeFileWriter``.
+    # Every "no port call happened" assertion below is only as good as the instrument
+    # taking it, and each one is satisfied by an EMPTY log — so a spy that quietly stopped
+    # covering some of the port would make those tests pass for the wrong reason. Nothing
+    # in the DI seam type-checks the writer, so the port is enforced here instead:
+    # ``FileWriter`` is ``@runtime_checkable``, which holds the decorator to the same
+    # structural bar as ``RealFileWriter`` and ``FakeFileWriter``, and a method added to
+    # the port later fails HERE rather than silently going unrecorded.
     _app, writer = _spied_app()
     assert isinstance(writer, FileWriter)
 
