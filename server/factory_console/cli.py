@@ -2,10 +2,11 @@
 
 Extends the T06 walking skeleton into the production launcher and is the ONLY
 place in the codebase that constructs the concrete
-:class:`~factory_console.file_adapter.real.RealFileAdapter` and
-:class:`~factory_console.file_adapter.watcher_real.RealFileWatcher` for a
+:class:`~factory_console.file_adapter.real.RealFileAdapter`,
+:class:`~factory_console.file_adapter.watcher_real.RealFileWatcher`, and
+:class:`~factory_console.file_adapter.real_writer.RealFileWriter` for a
 production boot (the dev loop's :func:`~factory_console.app.create_dev_app` is the
-other, sole runtime user of both). The watcher is handed to ``create_app`` and
+other, sole runtime user of all three). The watcher is handed to ``create_app`` and
 started/stopped entirely by the app lifespan — this module never touches it
 directly. It wires, in a deliberate cheap-input-first order, the full CLI contract
 from ``ARCHITECTURE.md``:
@@ -66,6 +67,7 @@ from factory_console.config import require_loopback_host
 from factory_console.file_adapter.discovery import ProjectNotFound, discover_project
 from factory_console.file_adapter.manifest import MalformedManifest
 from factory_console.file_adapter.real import RealFileAdapter
+from factory_console.file_adapter.real_writer import RealFileWriter
 from factory_console.file_adapter.watcher_real import RealFileWatcher
 from factory_console.logging import LOG_LEVELS, configure_logging, normalize_log_level
 
@@ -203,6 +205,7 @@ def main(
         version=factory_console.__version__,
         project_root=root,
         file_watcher=RealFileWatcher(root),
+        file_writer=RealFileWriter(),
     )
 
     # Discovery only checks the manifest FILE exists; force a real parse now so a
