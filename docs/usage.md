@@ -114,10 +114,9 @@ line reads `X-Factory-Write-Token: <pinned, not echoed>`.
 | Code | Meaning                                                       |
 | ---- | ------------------------------------------------------------- |
 | `0`  | ok (`--version`, or a clean run)                              |
-| `2`  | invalid `--host` (non-loopback), unrecognized `--log-level`, or a bad `FACTORY_CONSOLE_WRITE_TOKEN` pin |
-
-The richer, purpose-specific codes (`1` project-not-found, port-in-use,
-malformed-manifest) arrive with the full CLI wiring in backend T25.
+| `1`  | project not found                                             |
+| `2`  | invalid `--host` (non-loopback), out-of-range `--port`, unrecognized `--log-level`, a bad `FACTORY_CONSOLE_WRITE_TOKEN` pin, or the port already in use |
+| `3`  | malformed ticket manifest                                     |
 
 ## What you'll see
 

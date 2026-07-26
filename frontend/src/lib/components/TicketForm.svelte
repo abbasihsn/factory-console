@@ -9,8 +9,9 @@
 	// each caller (create route, detail-route edit flow) owns its own
 	// write/confirm orchestration.
 	//
-	// Fields rendered are EXACTLY those in `TicketFormValues` (id, title, and the
-	// newline-list textareas dependsOn/provides/files) plus the markdown body.
+	// Fields rendered are EXACTLY those in `TicketFormValues` (id, title, the
+	// newline-list textareas dependsOn/files, and the single-line provides) plus the
+	// markdown body.
 	// The ticket's day-one prose mentioned `status`/`track`/`milestone`, but those
 	// are NOT part of the `TicketFormValues` contract T67 shipped and have nowhere
 	// to go in `onSubmit`, so they are intentionally absent.
@@ -31,9 +32,11 @@
 	// Local editable state seeded ONCE from `initial` — later prop changes must not
 	// clobber in-progress edits, so `untrack` documents that we read only the
 	// initial snapshot (this also silences Svelte's `state_referenced_locally`
-	// hint). The list fields stay as raw newline-delimited strings here (as
-	// `TicketFormValues` holds them); the caller runs `parseList` when it builds the
-	// API payload. `body` is optional on the type, so seed it from `initial.body ?? ''`.
+	// hint). The list fields (`dependsOn`, `files`) stay as raw newline-delimited
+	// strings here (as `TicketFormValues` holds them); the caller runs `parseList` on
+	// THOSE TWO when it builds the API payload — `provides` is a scalar on the wire and
+	// must be passed through as-is. `body` is optional on the type, so seed it from
+	// `initial.body ?? ''`.
 	let id = $state(untrack(() => initial.id));
 	let title = $state(untrack(() => initial.title));
 	let dependsOn = $state(untrack(() => initial.dependsOn));
@@ -123,7 +126,8 @@
 		{/if}
 	</label>
 
-	<!-- Newline-delimited lists; one entry per line (parsed by the caller). -->
+	<!-- dependsOn and files are newline-delimited lists; one entry per line (parsed by
+	     the caller). provides, between them below, is deliberately NOT one. -->
 	<label class="flex flex-col gap-1 text-xs text-muted">
 		Depends on
 		<textarea
@@ -136,16 +140,21 @@
 		></textarea>
 	</label>
 
+	<!-- provides is a SCALAR on the wire (`TicketDraft.provides: string`), so it gets a
+	     single-line input, not a newline list — see the contract note in
+	     `$lib/forms/ticketForm.ts`. A textarea here would invite a multi-entry value
+	     that the server stores verbatim and the read model hands back collapsed into
+	     one element. -->
 	<label class="flex flex-col gap-1 text-xs text-muted">
 		Provides
-		<textarea
+		<input
+			type="text"
 			class={FIELD_CLASS}
-			rows="3"
 			aria-label="Provides"
-			placeholder="One capability per line"
+			placeholder="Capability this ticket provides"
 			{disabled}
 			bind:value={provides}
-		></textarea>
+		/>
 	</label>
 
 	<label class="flex flex-col gap-1 text-xs text-muted">

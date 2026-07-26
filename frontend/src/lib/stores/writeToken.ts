@@ -11,8 +11,10 @@ import { writable, type Readable, type Writable } from 'svelte/store';
  * outlives the server session it belongs to is only a stale secret at rest.
  */
 
-// Namespaced so it cannot collide with anything else on 127.0.0.1, which every
-// locally-served app shares as an origin.
+// Prefixed so the key cannot collide with anything else this app stores. Storage is
+// already partitioned per origin — and an origin includes the PORT, so another
+// locally-served app on a different port shares nothing with us — so this is
+// hygiene within our own namespace, not a cross-app boundary.
 const STORAGE_KEY = 'factory-console:writeToken';
 
 /**
