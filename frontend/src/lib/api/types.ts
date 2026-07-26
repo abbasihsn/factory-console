@@ -53,7 +53,20 @@ export interface paths {
          */
         readonly get: operations["list_tickets_api_v1_tickets_get"];
         readonly put?: never;
-        readonly post?: never;
+        /**
+         * Create Ticket
+         * @description Create the ticket described by ``payload``, or preview it when ``?dryRun=true``.
+         *
+         *     The status code follows the RESULT rather than the query flag: an apply reports
+         *     ``201 Created``, a dry-run ``200 OK``, because a preview creates nothing and a
+         *     ``201`` would tell the SPA (and any cache between them) that it did. Setting
+         *     ``response.status_code`` overrides the route's declared default, which stays ``201``
+         *     so that remains the documented success code.
+         *
+         *     Delegates to :meth:`~factory_console.services.write_service.WriteService.create`,
+         *     whose ``WriteConflict`` (409) propagates for an id that already exists.
+         */
+        readonly post: operations["create_ticket_api_v1_tickets_post"];
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -78,9 +91,29 @@ export interface paths {
          *     domain-error handler as a 404 for an id absent from the manifest.
          */
         readonly get: operations["get_ticket_api_v1_tickets__ticket_id__get"];
-        readonly put?: never;
+        /**
+         * Edit Ticket
+         * @description Apply ``payload`` to ``ticket_id``, or preview the edit when ``?dryRun=true``.
+         *
+         *     Always ``200``: an edit creates no resource on either path. Delegates to
+         *     :meth:`~factory_console.services.write_service.WriteService.edit`, whose
+         *     ``TicketNotFound`` (404) and ``TicketNotMutable`` (409, the todo-only editing rule)
+         *     propagate to the registered handlers.
+         */
+        readonly put: operations["edit_ticket_api_v1_tickets__ticket_id__put"];
         readonly post?: never;
-        readonly delete?: never;
+        /**
+         * Delete Ticket
+         * @description Delete ``ticket_id``, or preview the delete when ``?dryRun=true``.
+         *
+         *     Always ``200`` with the uniform :class:`WriteResult` body rather than a bodiless
+         *     ``204``, because the SPA renders the delete's diff in the same confirmation view as
+         *     a create or an edit. Delegates to
+         *     :meth:`~factory_console.services.write_service.WriteService.delete`, whose
+         *     ``TicketNotFound`` (404) and ``TicketNotMutable`` (409) propagate to the registered
+         *     handlers.
+         */
+        readonly delete: operations["delete_ticket_api_v1_tickets__ticket_id__delete"];
         readonly options?: never;
         readonly head?: never;
         readonly patch?: never;
@@ -221,6 +254,34 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/api/v1/events": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Events
+         * @description Stream live :class:`ChangeEvent`s to the client as ``text/event-stream``.
+         *
+         *     Delegates the entire stream body to
+         *     :func:`~factory_console.services.events_service.sse_event_stream`, which yields
+         *     the initial ``ready`` frame, an ``event: change`` frame per file change while
+         *     the injected ``watcher`` is present, and periodic ``: keepalive`` comments,
+         *     releasing the watcher subscription when the client disconnects. The
+         *     ``no-cache`` / ``X-Accel-Buffering: no`` headers keep the long-lived stream
+         *     un-cached and un-buffered by any intermediary.
+         */
+        readonly get: operations["events_api_v1_events_get"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -240,6 +301,34 @@ export interface components {
             readonly directDependents?: readonly components["schemas"]["TicketSummary"][];
             /** Unresolveddeps */
             readonly unresolvedDeps?: readonly string[];
+        };
+        /**
+         * DiffPreview
+         * @description The set of per-file diffs a write produces, keyed by ticket id.
+         */
+        readonly DiffPreview: {
+            /** Ticketid */
+            readonly ticketId: string;
+            /** Files */
+            readonly files?: readonly components["schemas"]["FileDiff"][];
+        };
+        /**
+         * FileDiff
+         * @description A single file's planned or applied change, as a unified diff.
+         *
+         *     ``path`` is project-relative POSIX; ``changeKind`` classifies the change;
+         *     ``diff`` is the unified-diff text the SPA renders.
+         */
+        readonly FileDiff: {
+            /** Path */
+            readonly path: string;
+            /**
+             * Changekind
+             * @enum {string}
+             */
+            readonly changeKind: "create" | "modify" | "delete";
+            /** Diff */
+            readonly diff: string;
         };
         /**
          * GraphEdge
@@ -482,6 +571,69 @@ export interface components {
             };
         };
         /**
+         * TicketDraft
+         * @description Inbound request body to CREATE a ticket.
+         *
+         *     ``id`` is validated against :data:`TICKET_ID_PATTERN` at this boundary; the
+         *     rest mirror the manifest/body fields a new ticket carries. ``frontMatter``
+         *     holds arbitrary extra YAML front-matter keys not named explicitly.
+         */
+        readonly TicketDraft: {
+            /** Id */
+            readonly id: string;
+            /** Title */
+            readonly title: string;
+            /** Track */
+            readonly track?: string | null;
+            /** Milestone */
+            readonly milestone?: string | null;
+            /** Dependson */
+            readonly dependsOn?: readonly string[];
+            /**
+             * Provides
+             * @default
+             */
+            readonly provides: string;
+            /** Files */
+            readonly files?: readonly string[];
+            /** Bodymarkdown */
+            readonly bodyMarkdown: string;
+            /** Frontmatter */
+            readonly frontMatter?: {
+                readonly [key: string]: unknown;
+            };
+        };
+        /**
+         * TicketEdit
+         * @description Inbound request body to EDIT a ticket.
+         *
+         *     Identical to :class:`TicketDraft` minus ``id`` — the id of the ticket being
+         *     edited comes from the path parameter, not the body.
+         */
+        readonly TicketEdit: {
+            /** Title */
+            readonly title: string;
+            /** Track */
+            readonly track?: string | null;
+            /** Milestone */
+            readonly milestone?: string | null;
+            /** Dependson */
+            readonly dependsOn?: readonly string[];
+            /**
+             * Provides
+             * @default
+             */
+            readonly provides: string;
+            /** Files */
+            readonly files?: readonly string[];
+            /** Bodymarkdown */
+            readonly bodyMarkdown: string;
+            /** Frontmatter */
+            readonly frontMatter?: {
+                readonly [key: string]: unknown;
+            };
+        };
+        /**
          * TicketGraph
          * @description The whole-project dependency DAG: run-state-coloured nodes and edges.
          *
@@ -543,6 +695,28 @@ export interface components {
             readonly input?: unknown;
             /** Context */
             readonly ctx?: Record<string, never>;
+        };
+        /**
+         * WriteResult
+         * @description Uniform envelope returned by every write endpoint (apply or dry-run).
+         *
+         *     Two shapes:
+         *
+         *     * **Apply** → ``applied=True``, ``ticket`` set to the re-read
+         *       :class:`~factory_console.domain.ticket.Ticket`, ``changedFiles`` the paths
+         *       actually written, ``diff`` the preview of what was written.
+         *     * **Dry-run** → ``applied=False``, ``ticket=None``, ``changedFiles`` the
+         *       planned paths, ``diff`` the preview of what would be written.
+         */
+        readonly WriteResult: {
+            /** Applied */
+            readonly applied: boolean;
+            /** Ticketid */
+            readonly ticketId: string;
+            /** Changedfiles */
+            readonly changedFiles?: readonly string[];
+            readonly diff: components["schemas"]["DiffPreview"];
+            readonly ticket?: components["schemas"]["Ticket"] | null;
         };
     };
     responses: never;
@@ -607,6 +781,50 @@ export interface operations {
             };
         };
     };
+    readonly create_ticket_api_v1_tickets_post: {
+        readonly parameters: {
+            readonly query?: {
+                readonly dryRun?: boolean;
+            };
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["TicketDraft"];
+            };
+        };
+        readonly responses: {
+            /** @description Dry-run preview: the diff that WOULD be written; nothing was created. */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["WriteResult"];
+                };
+            };
+            /** @description Successful Response */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["WriteResult"];
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     readonly get_ticket_api_v1_tickets__ticket_id__get: {
         readonly parameters: {
             readonly query?: never;
@@ -625,6 +843,76 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["Ticket"];
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly edit_ticket_api_v1_tickets__ticket_id__put: {
+        readonly parameters: {
+            readonly query?: {
+                readonly dryRun?: boolean;
+            };
+            readonly header?: never;
+            readonly path: {
+                readonly ticket_id: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["TicketEdit"];
+            };
+        };
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["WriteResult"];
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly delete_ticket_api_v1_tickets__ticket_id__delete: {
+        readonly parameters: {
+            readonly query?: {
+                readonly dryRun?: boolean;
+            };
+            readonly header?: never;
+            readonly path: {
+                readonly ticket_id: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["WriteResult"];
                 };
             };
             /** @description Validation Error */
@@ -757,6 +1045,26 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["TicketGraph"];
+                };
+            };
+        };
+    };
+    readonly events_api_v1_events_get: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": unknown;
                 };
             };
         };

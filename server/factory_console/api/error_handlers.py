@@ -11,11 +11,13 @@ app:
   :func:`~factory_console.errors.to_error_response` at the status the exception
   declares, so ONE handler covers them all transparently, and
 * a :class:`~fastapi.exceptions.RequestValidationError` becomes a
-  ``validation_error`` (422) envelope, EXCEPT when it is a ``ticket_id`` ``Path``
-  pattern violation, which is re-mapped to the exact ``invalid_ticket_id`` (400)
+  ``validation_error`` (422) envelope, EXCEPT when it is a ticket-id pattern
+  violation, which is re-mapped to the exact ``invalid_ticket_id`` (400)
   envelope a deep :class:`~factory_console.file_adapter.path_safety.PathTraversal`
-  would produce — so an invalid ticket id yields ONE envelope for the SPA whether
-  it is rejected at the FastAPI ``Path`` boundary or deeper in ``_safe_resolve``.
+  would produce — so an invalid ticket id yields ONE envelope for the SPA wherever
+  it is rejected: the FastAPI ``Path`` boundary (``GET``/``PUT``/``DELETE``), the
+  ``TicketDraft.id`` body field a create carries instead of a path param, or
+  deeper in ``_safe_resolve``.
 """
 
 from __future__ import annotations
@@ -29,27 +31,42 @@ from factory_console.errors import FactoryConsoleError, to_error_response
 from factory_console.file_adapter.path_safety import PathTraversal
 
 
+def _is_ticket_id_loc(loc: object) -> bool:
+    """Return whether ``loc`` addresses a ticket id the SPA can mistype.
+
+    Two shapes carry one, and both must map to the same envelope:
+
+    * ``('path', …, 'ticket_id')`` — the FastAPI ``Path`` parameter on
+      ``GET``/``PUT``/``DELETE /tickets/{ticket_id}``, and
+    * ``('body', 'id')`` — the :class:`~factory_console.domain.write.TicketDraft`
+      field a ``POST /tickets`` carries INSTEAD of a path param, whose ``TicketId``
+      annotation enforces the very same :data:`TICKET_ID_PATTERN`.
+
+    Without the second, one user mistake would answer ``400 invalid_ticket_id`` on
+    edit/delete but ``422 validation_error`` on create, and the SPA could not branch
+    on ``error.code`` alone.
+    """
+    if not isinstance(loc, tuple | list) or not loc:
+        return False
+    if loc[0] == "path" and loc[-1] == "ticket_id":
+        return True
+    return tuple(loc) == ("body", "id")
+
+
 def _ticket_id_pattern_violation(
     errors: list[dict[str, object]],
 ) -> dict[str, object] | None:
-    """Return the first ``ticket_id`` ``Path`` pattern-mismatch entry, or ``None``.
+    """Return the first ticket-id pattern-mismatch entry, or ``None``.
 
     A match is an error entry whose ``type`` is ``'string_pattern_mismatch'`` and
-    whose ``loc`` is a ``('path', …, 'ticket_id')`` tuple — the FastAPI ``Path``
-    parameter named ``ticket_id`` failing :data:`TICKET_ID_PATTERN`. Returns
+    whose ``loc`` :func:`passes <_is_ticket_id_loc>` — i.e. a ticket id failing
+    :data:`TICKET_ID_PATTERN` at either boundary that can carry one. Returns
     ``None`` when no entry matches so the caller falls through to the generic
     ``validation_error`` envelope. A single request may carry several error
     entries; the first ticket-id violation short-circuits the whole response.
     """
     for err in errors:
-        loc = err.get("loc")
-        if (
-            err.get("type") == "string_pattern_mismatch"
-            and isinstance(loc, tuple | list)
-            and loc
-            and loc[0] == "path"
-            and loc[-1] == "ticket_id"
-        ):
+        if err.get("type") == "string_pattern_mismatch" and _is_ticket_id_loc(err.get("loc")):
             return err
     return None
 
@@ -68,9 +85,10 @@ def register_error_handlers(app: FastAPI) -> None:
     ) -> JSONResponse:
         """Map request validation failures to the ``validation_error`` envelope.
 
-        Special-cases a ``ticket_id`` ``Path`` pattern violation to the identical
-        ``invalid_ticket_id`` (400) envelope a deep ``PathTraversal`` yields, so an
-        invalid ticket id is rejected uniformly regardless of validation depth.
+        Special-cases a ticket-id pattern violation — at the ``Path`` boundary or in
+        a create's ``id`` body field — to the identical ``invalid_ticket_id`` (400)
+        envelope a deep ``PathTraversal`` yields, so an invalid ticket id is rejected
+        uniformly regardless of verb or validation depth.
         ``details`` runs through :func:`jsonable_encoder` because raw pydantic
         errors can carry values (exceptions, ``bytes``) that are not JSON-native.
         """

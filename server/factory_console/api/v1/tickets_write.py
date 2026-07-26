@@ -28,7 +28,9 @@ apply, and a dry-run previews a non-mutable ticket rather than refusing it.
 They also do no error handling of their own; every failure mode already has a
 registered handler that renders the REST v1 envelope:
 :class:`~factory_console.api.write_token.WriteTokenInvalid` (401),
-``invalid_ticket_id`` (400, re-mapped from the ``Path`` pattern violation),
+``invalid_ticket_id`` (400, re-mapped from the pattern violation — the ``Path``
+parameter on edit/delete, the ``TicketDraft.id`` body field on create),
+``unknown_query_param`` (400, from :func:`reject_unknown_query_params`),
 :class:`~factory_console.services.ticket_service.TicketNotFound` (404),
 :class:`~factory_console.file_adapter.write_gate.TicketNotMutable` and
 :class:`~factory_console.services.write_service.WriteConflict` (409), and
@@ -48,14 +50,50 @@ from factory_console.api.deps import get_file_adapter, get_file_writer
 from factory_console.api.write_token import WRITE_TOKEN_SCHEME_NAME, require_write_token
 from factory_console.domain.ticket import TICKET_ID_PATTERN
 from factory_console.domain.write import TicketDraft, TicketEdit, WriteResult
+from factory_console.errors import FactoryConsoleError
 from factory_console.file_adapter.protocol import FileAdapter
 from factory_console.file_adapter.writer_protocol import FileWriter
 from factory_console.services.write_service import WriteService
 
+# Every query key these routes understand. ``dryRun`` is the only one; the guard below
+# rejects anything else rather than letting it pass unread.
+_ALLOWED_QUERY_KEYS = frozenset({"dryRun"})
+
+
+def reject_unknown_query_params(request: Request) -> None:
+    """Reject any query key these write routes do not declare, as a 400 envelope.
+
+    Starlette hands undeclared query keys to nobody, so by default ``?dryrun=true`` or
+    ``?dry_run=true`` — a plausible miscasing of the one flag that separates "show me
+    the diff" from "rewrite the manifest, the ticket file, and the roadmap" — would
+    leave ``dry_run`` at its ``False`` default and take the APPLY branch. On routes
+    whose apply path deletes a file, the safety flag must fail CLOSED: an unrecognized
+    key is an error, never a silent apply.
+
+    Attached at the router so it covers all three verbs and cannot be forgotten on a
+    fourth. Read routes are unaffected — this lives only on this module's router.
+
+    Raises:
+        FactoryConsoleError: One or more query keys are not recognized (400).
+    """
+    unknown = sorted(set(request.query_params) - _ALLOWED_QUERY_KEYS)
+    if unknown:
+        raise FactoryConsoleError(
+            code="unknown_query_param",
+            message=f"Unrecognized query parameter(s): {', '.join(unknown)}",
+            status=400,
+            details={"unknown": unknown, "allowed": sorted(_ALLOWED_QUERY_KEYS)},
+        )
+
+
 # The package ``__init__`` owns the ``/api/v1`` prefix; this sub-router only names the
 # routes and their OpenAPI tag (mirrors ``api/v1/tickets.py``) — plus the write-token
-# dependency, which is what makes this module, and nothing else, header-gated.
-router = APIRouter(tags=["tickets"], dependencies=[Depends(require_write_token)])
+# dependency, which is what makes this module, and nothing else, header-gated, and the
+# strict query guard that keeps ``?dryRun`` from failing open on a typo.
+router = APIRouter(
+    tags=["tickets"],
+    dependencies=[Depends(require_write_token), Depends(reject_unknown_query_params)],
+)
 
 # ``require_write_token`` is a plain dependency rather than a ``SecurityBase``, so
 # FastAPI cannot derive a ``security`` requirement from it. Each write operation

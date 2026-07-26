@@ -85,7 +85,10 @@ require it on every request:
 | `DELETE /api/v1/tickets/{id}` | delete a ticket (`200`)                        |
 
 Each returns the same `WriteResult` body carrying the unified diff of what changed, and
-each accepts `?dryRun=true` to get that diff back **without** writing anything.
+each accepts `?dryRun=true` to get that diff back **without** writing anything. `dryRun`
+is the only query parameter these endpoints take, and it is matched exactly: any other
+key — including a miscasing like `?dryrun=true` — is refused with
+`400 unknown_query_param` rather than quietly applying the write you meant to preview.
 
 Only tickets whose factory run-state is `todo` (or `unknown`, when the project has no
 run-state directory) may be edited or deleted — an `in-flight`, `ready`, or `merged`
