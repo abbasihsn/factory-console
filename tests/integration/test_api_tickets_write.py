@@ -1,0 +1,441 @@
+"""Integration tests for ``POST``/``PUT``/``DELETE`` ``/api/v1/tickets`` (T65).
+
+Drive the real ``create_app`` over ``httpx.AsyncClient`` + ``ASGITransport`` (the repo
+runs ``asyncio_mode=auto``, so ``async def test_...`` needs no decorator) against two
+wirings, each chosen for what it can actually prove:
+
+* the **filesystem pair** — :class:`RealFileAdapter` + :class:`RealFileWriter` over a
+  ``tmp_path`` copy of the checked-in ``with_run_state`` fixture (3 ``todo`` tickets, 3
+  non-``todo``) — for every assertion that needs the write and read ports to agree.
+  ``GET /tickets/{id}`` must observe what a ``POST``/``PUT``/``DELETE`` wrote, and
+  ``?dryRun=true`` must leave the project byte-for-byte untouched; both are claims about
+  ONE shared project, which the shipped :class:`FakeFileWriter` and
+  :class:`FakeFileAdapter` cannot make (they hold SEPARATE in-memory state — see the
+  fixture note in ``tests/unit/test_write_service.py``). The fixture's run-states also
+  make the todo-only editing gate real rather than seeded.
+* the **in-memory pair** — :class:`FakeFileAdapter` + :class:`FakeFileWriter` — for the
+  assertions that never reach a port at all: the write-token 401s, the
+  ``invalid_ticket_id`` 400 rejected at the ``Path`` boundary, the frozen OpenAPI shape,
+  and the proof that read routes stayed header-free.
+
+Every failure assertion pins the envelope's ``error.code``, not just the status number,
+since that code is what the SPA branches on.
+"""
+
+from __future__ import annotations
+
+import shutil
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import pytest
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
+
+from factory_console.api.write_token import WRITE_TOKEN_SCHEME_NAME
+from factory_console.app import create_app
+from factory_console.config import WRITE_TOKEN_HEADER
+from factory_console.domain import Project
+from factory_console.file_adapter import FakeFileAdapter
+from factory_console.file_adapter.fake_writer import FakeFileWriter
+from factory_console.file_adapter.real import RealFileAdapter
+from factory_console.file_adapter.real_writer import RealFileWriter
+
+WITH_RUN_STATE = Path(__file__).resolve().parents[1] / "fixtures" / "projects" / "with_run_state"
+
+# Pinned so the request headers can name the exact token create_app bound.
+PINNED_TOKEN = "pinned-write-token-for-tests"
+WRONG_TOKEN = "pinned-write-token-for-tesXX"
+AUTH = {WRITE_TOKEN_HEADER: PINNED_TOKEN}
+
+# The fixture's run-states: only ``todo`` ids are editable (write_gate.MUTABLE_STATES).
+TODO_ID = "CAD-131"
+DELETABLE_TODO_ID = "CAD-152"
+NON_TODO_IDS = ["CAD-100", "CAD-118", "CAD-125"]
+NEW_ID = "CAD-210"
+
+# Outside TICKET_ID_PATTERN, so the ``Path`` validator rejects it before any handler.
+INVALID_ID = "bad$id"
+
+
+def _draft_body(ticket_id: str = NEW_ID, **overrides: Any) -> dict[str, Any]:
+    """A valid ``TicketDraft`` request body (``extra='forbid'``, so no stray keys)."""
+    body: dict[str, Any] = {
+        "id": ticket_id,
+        "title": "Team analytics dashboard",
+        "track": "frontend",
+        "milestone": "v2",
+        "dependsOn": [DELETABLE_TODO_ID],
+        "provides": "Participation and consistency across a team",
+        "files": ["frontend/src/routes/team/+page.svelte"],
+        "bodyMarkdown": "# Team analytics\n\nDashboard body.\n",
+    }
+    body.update(overrides)
+    return body
+
+
+def _edit_body(**overrides: Any) -> dict[str, Any]:
+    """A valid ``TicketEdit`` request body (``TicketDraft`` minus ``id``)."""
+    body: dict[str, Any] = {
+        "title": "Weekly digest email (revised)",
+        "track": "notifications",
+        "milestone": "v1",
+        "dependsOn": [],
+        "provides": "Monday-morning digest, rewritten",
+        "files": ["server/cadence/notifications/weekly_digest.py"],
+        "bodyMarkdown": "# Weekly digest\n\nRewritten body.\n",
+    }
+    body.update(overrides)
+    return body
+
+
+def _real_app(tmp_path: Path) -> tuple[FastAPI, Path]:
+    """Build the app over the filesystem pair and a throwaway copy of the fixture.
+
+    The copy is what makes a write test safe: the checked-in fixture is shared by the
+    read-side suites and must never be mutated. Both ports are rooted at the same copy,
+    so an adapter read after a writer apply sees the written state — the coupling
+    production has and the in-memory pair does not.
+    """
+    root = tmp_path / "project"
+    shutil.copytree(WITH_RUN_STATE, root)
+    app = create_app(
+        RealFileAdapter(),
+        version="0.0.0",
+        project_root=root,
+        file_writer=RealFileWriter(),
+        write_token=PINNED_TOKEN,
+    )
+    return app, root
+
+
+def _fake_app() -> FastAPI:
+    """Build the app over the in-memory pair, for the paths that reach no port."""
+    project = Project(
+        rootPath=Path("/factory/demo-project"),
+        ticketsManifestPath=Path("/factory/demo-project/docs/planning/tickets.json"),
+        ticketsDir=Path("/factory/demo-project/docs/planning/tickets"),
+        discoveredAt=datetime(2026, 7, 25, 12, 0, 0),
+    )
+    return create_app(
+        FakeFileAdapter(project=project, tickets=[]),
+        version="0.0.0",
+        project_root=project.rootPath,
+        file_writer=FakeFileWriter(manifest=[]),
+        write_token=PINNED_TOKEN,
+    )
+
+
+def _client(app: FastAPI) -> AsyncClient:
+    """An ``httpx.AsyncClient`` speaking ASGI directly to ``app`` (no socket)."""
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+
+
+def _snapshot(root: Path) -> dict[str, bytes]:
+    """Map every file under ``root`` (root-relative POSIX) to its exact bytes.
+
+    A dry-run must write NOTHING, so the comparison is over the whole project tree
+    rather than the three files a write touches: that also catches a stray temp file the
+    atomic writer might leave behind, which a per-file check would miss.
+    """
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def _diff_texts(body: dict[str, Any]) -> list[str]:
+    """The unified-diff text of every file in a ``WriteResult``'s ``DiffPreview``."""
+    return [file["diff"] for file in body["diff"]["files"]]
+
+
+def _assert_applied_with_diff(body: dict[str, Any], ticket_id: str) -> None:
+    """Assert a ``WriteResult`` reports an apply carrying a real, non-empty diff."""
+    assert body["applied"] is True
+    assert body["ticketId"] == ticket_id
+    assert body["changedFiles"]
+    texts = _diff_texts(body)
+    assert texts
+    assert all(text for text in texts)
+    # changedFiles and the diff describe the same write, so they always agree.
+    assert body["changedFiles"] == [file["path"] for file in body["diff"]["files"]]
+
+
+def _assert_previewed_with_diff(body: dict[str, Any], ticket_id: str) -> None:
+    """Assert a ``WriteResult`` reports a dry-run: a diff, no apply, and no ticket."""
+    assert body["applied"] is False
+    assert body["ticket"] is None
+    assert body["ticketId"] == ticket_id
+    texts = _diff_texts(body)
+    assert texts
+    assert all(text for text in texts)
+
+
+# --------------------------------------------------------------------------- #
+# Apply — the write lands and GET /tickets/{id} observes it
+# --------------------------------------------------------------------------- #
+
+
+async def test_create_applies_with_201_and_is_observable_via_get(tmp_path: Path) -> None:
+    app, _root = _real_app(tmp_path)
+    async with _client(app) as client:
+        resp = await client.post("/api/v1/tickets", json=_draft_body(), headers=AUTH)
+        # 201: an apply created a resource (the dry-run twin below answers 200).
+        assert resp.status_code == 201
+        body = resp.json()
+        _assert_applied_with_diff(body, NEW_ID)
+        assert body["ticket"]["title"] == "Team analytics dashboard"
+
+        detail = await client.get(f"/api/v1/tickets/{NEW_ID}")
+        assert detail.status_code == 200
+        assert detail.json()["title"] == "Team analytics dashboard"
+
+
+async def test_edit_on_todo_ticket_applies_and_is_observable_via_get(tmp_path: Path) -> None:
+    app, _root = _real_app(tmp_path)
+    async with _client(app) as client:
+        resp = await client.put(f"/api/v1/tickets/{TODO_ID}", json=_edit_body(), headers=AUTH)
+        assert resp.status_code == 200
+        _assert_applied_with_diff(resp.json(), TODO_ID)
+
+        detail = (await client.get(f"/api/v1/tickets/{TODO_ID}")).json()
+        assert detail["title"] == "Weekly digest email (revised)"
+        assert "Rewritten body." in detail["bodyMarkdown"]
+
+
+async def test_delete_on_todo_ticket_applies_and_the_ticket_is_gone(tmp_path: Path) -> None:
+    app, _root = _real_app(tmp_path)
+    async with _client(app) as client:
+        resp = await client.delete(f"/api/v1/tickets/{DELETABLE_TODO_ID}", headers=AUTH)
+        assert resp.status_code == 200
+        _assert_applied_with_diff(resp.json(), DELETABLE_TODO_ID)
+
+        detail = await client.get(f"/api/v1/tickets/{DELETABLE_TODO_ID}")
+        assert detail.status_code == 404
+        assert detail.json()["error"]["code"] == "ticket_not_found"
+
+
+# --------------------------------------------------------------------------- #
+# ?dryRun=true — a diff, no apply, and provably nothing written
+# --------------------------------------------------------------------------- #
+
+
+async def test_create_dry_run_returns_200_and_writes_nothing(tmp_path: Path) -> None:
+    app, root = _real_app(tmp_path)
+    before = _snapshot(root)
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/v1/tickets", params={"dryRun": "true"}, json=_draft_body(), headers=AUTH
+        )
+        # 200, not 201: a preview created nothing, so it must not claim it did.
+        assert resp.status_code == 200
+        _assert_previewed_with_diff(resp.json(), NEW_ID)
+
+        assert (await client.get(f"/api/v1/tickets/{NEW_ID}")).status_code == 404
+    assert _snapshot(root) == before
+
+
+async def test_edit_dry_run_previews_and_writes_nothing(tmp_path: Path) -> None:
+    app, root = _real_app(tmp_path)
+    before = _snapshot(root)
+    async with _client(app) as client:
+        resp = await client.put(
+            f"/api/v1/tickets/{TODO_ID}",
+            params={"dryRun": "true"},
+            json=_edit_body(),
+            headers=AUTH,
+        )
+        assert resp.status_code == 200
+        _assert_previewed_with_diff(resp.json(), TODO_ID)
+
+        detail = (await client.get(f"/api/v1/tickets/{TODO_ID}")).json()
+        assert detail["title"] == "Weekly digest email"
+    assert _snapshot(root) == before
+
+
+async def test_delete_dry_run_previews_and_writes_nothing(tmp_path: Path) -> None:
+    app, root = _real_app(tmp_path)
+    before = _snapshot(root)
+    async with _client(app) as client:
+        resp = await client.delete(
+            f"/api/v1/tickets/{DELETABLE_TODO_ID}", params={"dryRun": "true"}, headers=AUTH
+        )
+        assert resp.status_code == 200
+        _assert_previewed_with_diff(resp.json(), DELETABLE_TODO_ID)
+
+        assert (await client.get(f"/api/v1/tickets/{DELETABLE_TODO_ID}")).status_code == 200
+    assert _snapshot(root) == before
+
+
+# --------------------------------------------------------------------------- #
+# The todo-only editing gate + the create-collision guard (409s)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("ticket_id", NON_TODO_IDS)
+async def test_edit_on_non_todo_ticket_is_ticket_not_mutable_409(
+    ticket_id: str, tmp_path: Path
+) -> None:
+    app, root = _real_app(tmp_path)
+    before = _snapshot(root)
+    async with _client(app) as client:
+        resp = await client.put(f"/api/v1/tickets/{ticket_id}", json=_edit_body(), headers=AUTH)
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "ticket_not_mutable"
+    # The gate fires before any write, so an in-flight/ready/merged ticket is untouched.
+    assert _snapshot(root) == before
+
+
+@pytest.mark.parametrize("ticket_id", NON_TODO_IDS)
+async def test_delete_on_non_todo_ticket_is_ticket_not_mutable_409(
+    ticket_id: str, tmp_path: Path
+) -> None:
+    app, root = _real_app(tmp_path)
+    before = _snapshot(root)
+    async with _client(app) as client:
+        resp = await client.delete(f"/api/v1/tickets/{ticket_id}", headers=AUTH)
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "ticket_not_mutable"
+    assert _snapshot(root) == before
+
+
+@pytest.mark.parametrize("dry_run", ["false", "true"])
+async def test_create_on_an_existing_id_is_write_conflict_409(dry_run: str, tmp_path: Path) -> None:
+    # Both paths reject: previewing a create for an id that already exists would be a
+    # misleading preview, so WriteService guards before the writer runs either way.
+    app, _root = _real_app(tmp_path)
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/v1/tickets",
+            params={"dryRun": dry_run},
+            json=_draft_body(ticket_id=TODO_ID),
+            headers=AUTH,
+        )
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "write_conflict"
+
+
+async def test_edit_unknown_id_is_ticket_not_found_404(tmp_path: Path) -> None:
+    app, _root = _real_app(tmp_path)
+    async with _client(app) as client:
+        resp = await client.put("/api/v1/tickets/CAD-999", json=_edit_body(), headers=AUTH)
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "ticket_not_found"
+
+
+async def test_delete_unknown_id_is_ticket_not_found_404(tmp_path: Path) -> None:
+    app, _root = _real_app(tmp_path)
+    async with _client(app) as client:
+        resp = await client.delete("/api/v1/tickets/CAD-999", headers=AUTH)
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "ticket_not_found"
+
+
+# --------------------------------------------------------------------------- #
+# The write-token guard covers all three verbs (in-memory pair — no port reached)
+# --------------------------------------------------------------------------- #
+
+
+async def _call_write_verb(client: AsyncClient, verb: str, headers: dict[str, str]) -> Any:
+    """Issue a well-formed request for ``verb`` so only the token can decide the outcome."""
+    if verb == "POST":
+        return await client.post("/api/v1/tickets", json=_draft_body(), headers=headers)
+    if verb == "PUT":
+        return await client.put(f"/api/v1/tickets/{TODO_ID}", json=_edit_body(), headers=headers)
+    return await client.delete(f"/api/v1/tickets/{TODO_ID}", headers=headers)
+
+
+@pytest.mark.parametrize("verb", ["POST", "PUT", "DELETE"])
+@pytest.mark.parametrize(
+    ("case", "headers"),
+    [("missing", {}), ("wrong", {WRITE_TOKEN_HEADER: WRONG_TOKEN})],
+    ids=["missing-token", "wrong-token"],
+)
+async def test_every_write_verb_rejects_a_bad_token_as_401(
+    verb: str, case: str, headers: dict[str, str]
+) -> None:
+    # The router-level dependency gates all three verbs, so no verb can be forgotten.
+    async with _client(_fake_app()) as client:
+        resp = await _call_write_verb(client, verb, headers)
+    assert resp.status_code == 401, f"{verb}/{case}"
+    error = resp.json()["error"]
+    assert error["code"] == "write_token_invalid", f"{verb}/{case}"
+    # Neither the expected secret nor the supplied guess may appear in the response.
+    assert PINNED_TOKEN not in resp.text
+    assert WRONG_TOKEN not in resp.text
+
+
+@pytest.mark.parametrize("verb", ["PUT", "DELETE"])
+async def test_invalid_ticket_id_is_rejected_as_400(verb: str) -> None:
+    # A valid token, so the 400 is the Path-boundary pattern rejection and not a 401 —
+    # the id never reaches the adapter or the writer.
+    async with _client(_fake_app()) as client:
+        if verb == "PUT":
+            resp = await client.put(
+                f"/api/v1/tickets/{INVALID_ID}", json=_edit_body(), headers=AUTH
+            )
+        else:
+            resp = await client.delete(f"/api/v1/tickets/{INVALID_ID}", headers=AUTH)
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "invalid_ticket_id"
+
+
+@pytest.mark.parametrize(
+    "headers", [{}, {WRITE_TOKEN_HEADER: WRONG_TOKEN}], ids=["no-header", "wrong-header"]
+)
+async def test_read_ticket_routes_stay_token_free(headers: dict[str, str], tmp_path: Path) -> None:
+    # The guard lives on the write router alone: adding it must not have leaked onto the
+    # GET routes that share the /tickets path, and a bogus header stays ignored there.
+    app, _root = _real_app(tmp_path)
+    async with _client(app) as client:
+        for read_path in ("/api/v1/tickets", f"/api/v1/tickets/{TODO_ID}"):
+            resp = await client.get(read_path, headers=headers)
+            assert resp.status_code == 200, read_path
+
+
+# --------------------------------------------------------------------------- #
+# Frozen OpenAPI shape (what the frontend codegen regenerates TS types from)
+# --------------------------------------------------------------------------- #
+
+
+async def test_openapi_publishes_the_three_write_routes() -> None:
+    async with _client(_fake_app()) as client:
+        schema = (await client.get("/api/v1/openapi.json")).json()
+    assert "post" in schema["paths"]["/api/v1/tickets"]
+    assert "put" in schema["paths"]["/api/v1/tickets/{ticket_id}"]
+    assert "delete" in schema["paths"]["/api/v1/tickets/{ticket_id}"]
+    # The domain write models are the published request/response schemas — no api-model layer.
+    for model in ("TicketDraft", "TicketEdit", "WriteResult", "DiffPreview"):
+        assert model in schema["components"]["schemas"]
+
+
+async def test_openapi_publishes_dry_run_query_and_both_create_status_codes() -> None:
+    async with _client(_fake_app()) as client:
+        schema = (await client.get("/api/v1/openapi.json")).json()
+    create = schema["paths"]["/api/v1/tickets"]["post"]
+    assert [param["name"] for param in create["parameters"]] == ["dryRun"]
+    # Both outcomes are documented against the one WriteResult shape, so the SPA's
+    # generated client types the dry-run response as well as the apply.
+    for code in ("200", "201"):
+        ref = create["responses"][code]["content"]["application/json"]["schema"]["$ref"]
+        assert ref.endswith("/WriteResult"), code
+
+
+async def test_openapi_write_operations_require_the_token_scheme_and_reads_do_not() -> None:
+    # require_write_token is a plain dependency FastAPI cannot infer security from, so
+    # each write operation declares the published scheme itself — otherwise the document
+    # would name a header no operation requires.
+    async with _client(_fake_app()) as client:
+        schema = (await client.get("/api/v1/openapi.json")).json()
+        # FastAPI caches the document and all three operations share one declaration, so
+        # the second read must be identical — never mutated or duplicated by the first.
+        assert (await client.get("/api/v1/openapi.json")).json() == schema
+    expected = [{WRITE_TOKEN_SCHEME_NAME: []}]
+    assert schema["paths"]["/api/v1/tickets"]["post"]["security"] == expected
+    assert schema["paths"]["/api/v1/tickets/{ticket_id}"]["put"]["security"] == expected
+    assert schema["paths"]["/api/v1/tickets/{ticket_id}"]["delete"]["security"] == expected
+    assert "security" not in schema
+    assert "security" not in schema["paths"]["/api/v1/tickets"]["get"]
+    assert "security" not in schema["paths"]["/api/v1/tickets/{ticket_id}"]["get"]
