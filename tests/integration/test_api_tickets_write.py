@@ -31,8 +31,12 @@ from typing import Any
 
 import pytest
 from fastapi import FastAPI
+from fastapi.dependencies.utils import get_flat_dependant
+from fastapi.routing import APIRoute
 from httpx import ASGITransport, AsyncClient
 
+from factory_console.api.v1.tickets_write import _ALLOWED_QUERY_KEYS
+from factory_console.api.v1.tickets_write import router as write_router
 from factory_console.api.write_token import WRITE_TOKEN_SCHEME_NAME
 from factory_console.app import create_app
 from factory_console.config import WRITE_TOKEN_HEADER
@@ -329,6 +333,21 @@ async def test_a_repeated_dry_run_flag_is_rejected_on_create_and_edit(tmp_path: 
         assert edited.status_code == 400
         assert edited.json()["error"]["code"] == "repeated_query_param"
     assert _snapshot(root) == before
+
+
+def test_the_query_allow_list_matches_what_the_routes_declare() -> None:
+    # Attaching the guard at the router makes it impossible to forget on a fourth verb,
+    # but `_ALLOWED_QUERY_KEYS` is still hand-maintained — so a query param added to any
+    # of these routes would be refused as `unknown_query_param` even though the route
+    # declares it and OpenAPI publishes it. Pin the two together so that drift fails HERE
+    # instead of at runtime. Flattened so a param declared by a dependency counts too.
+    declared = {
+        param.alias
+        for route in write_router.routes
+        if isinstance(route, APIRoute)
+        for param in get_flat_dependant(route.dependant).query_params
+    }
+    assert declared == set(_ALLOWED_QUERY_KEYS)
 
 
 async def test_a_single_dry_run_flag_still_previews(tmp_path: Path) -> None:
