@@ -73,15 +73,27 @@ see a line like this in the output of any run:
 X-Factory-Write-Token: 3s9Kv-1QpZ...
 ```
 
-That token is what will authorize v2 write requests, sent in the `X-Factory-Write-Token`
-header. It lasts only as long as the process, so the one printed by a previous run stops
-working. Reads never need it, so browsing the project is unaffected — and today nothing
-else needs it either: **the write endpoints that require this header are not part of
-this release yet.** For now the line is purely informational.
+That token authorizes write requests, sent in the `X-Factory-Write-Token` header. It
+lasts only as long as the process, so the one printed by a previous run stops working.
+Reads never need it, so browsing the project is unaffected; the three write endpoints
+require it on every request:
+
+| Endpoint                      | Effect                                         |
+| ----------------------------- | ---------------------------------------------- |
+| `POST /api/v1/tickets`        | create a ticket (`201`, or `200` on a dry-run) |
+| `PUT /api/v1/tickets/{id}`    | edit a ticket (`200`)                          |
+| `DELETE /api/v1/tickets/{id}` | delete a ticket (`200`)                        |
+
+Each returns the same `WriteResult` body carrying the unified diff of what changed, and
+each accepts `?dryRun=true` to get that diff back **without** writing anything. Only
+tickets whose factory run-state is `todo` (or `unknown`, when the project has no
+run-state directory) may be edited or deleted — anything `in-flight`, `ready`, or
+`merged` is refused with `409 ticket_not_mutable`. A missing or wrong token is
+`401 write_token_invalid`.
 
 The console binds to loopback only, so the token is defence-in-depth *behind* that
 boundary — it stops another process on your machine, or a drive-by request from a page in
-your browser, from mutating the project once writes exist. There is no command-line flag
+your browser, from mutating the project. There is no command-line flag
 for it, because anything on the command line is readable by every local process.
 
 If you pinned the token with the dev override above, the value is *not* echoed — you
