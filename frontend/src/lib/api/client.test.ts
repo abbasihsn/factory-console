@@ -1,15 +1,21 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+	createTicket,
+	deleteTicket,
 	getGraph,
 	getProject,
 	getRoadmap,
 	getTicket,
 	getTicketDeps,
 	listTickets,
+	previewWrite,
 	request,
-	searchTickets
+	searchTickets,
+	TOKEN_HEADER,
+	updateTicket
 } from './client';
 import { ApiError } from './errors';
+import type { TicketCreate, TicketUpdate, WriteResult } from './models';
 
 // Minimal `Response` stand-in: the client only touches `ok`, `status`, `json()`.
 function jsonResponse(body: unknown, { ok = true, status = 200 } = {}): Response {
@@ -236,5 +242,198 @@ describe('API client', () => {
 
 		await expect(getRoadmap()).resolves.toEqual({ present: false });
 		expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/roadmap');
+	});
+});
+
+const TOKEN = 'tok-abc123';
+
+// A create body: `provides` is required by the generated schema (it has a server
+// default), so a valid draft always carries it — even as the empty string.
+const DRAFT: TicketCreate = {
+	id: 'T01',
+	title: 'First',
+	provides: '',
+	bodyMarkdown: '# First'
+};
+
+const EDIT: TicketUpdate = { title: 'Renamed', provides: '', bodyMarkdown: '# Renamed' };
+
+// The uniform envelope every write verb answers with — apply or dry-run.
+function writeResult(overrides: Partial<WriteResult> = {}): WriteResult {
+	return {
+		applied: true,
+		ticketId: 'T01',
+		changedFiles: ['docs/planning/tickets/T01.md', 'docs/planning/tickets.json'],
+		diff: {
+			ticketId: 'T01',
+			files: [
+				{
+					path: 'docs/planning/tickets/T01.md',
+					changeKind: 'create',
+					diff: '--- /dev/null\n+++ b/T01.md\n+# First\n'
+				}
+			]
+		},
+		ticket: null,
+		...overrides
+	};
+}
+
+// The RequestInit the wrapper handed to fetch, typed for field assertions.
+function initOf(fetchMock: ReturnType<typeof stubFetch>, call = 0): RequestInit {
+	return fetchMock.mock.calls[call][1] as RequestInit;
+}
+
+function headersOf(fetchMock: ReturnType<typeof stubFetch>, call = 0): Record<string, string> {
+	return initOf(fetchMock, call).headers as Record<string, string>;
+}
+
+describe('write wrappers', () => {
+	it('POSTs a create with the token header, JSON content-type, and serialized body', async () => {
+		const result = writeResult();
+		const fetchMock = stubFetch();
+		// An applying create answers 201.
+		fetchMock.mockResolvedValue(jsonResponse(result, { status: 201 }));
+
+		await expect(createTicket(DRAFT, TOKEN)).resolves.toEqual(result);
+
+		expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/tickets');
+		expect(initOf(fetchMock).method).toBe('POST');
+		expect(headersOf(fetchMock)['X-Factory-Write-Token']).toBe(TOKEN);
+		expect(headersOf(fetchMock)['content-type']).toBe('application/json');
+		expect(initOf(fetchMock).body).toBe(JSON.stringify(DRAFT));
+	});
+
+	it('exposes the token header name the backend publishes', () => {
+		// Must stay byte-identical to the server's WRITE_TOKEN_HEADER / the
+		// FactoryWriteToken security scheme, or every write 401s.
+		expect(TOKEN_HEADER).toBe('X-Factory-Write-Token');
+	});
+
+	it('PUTs an update to the id path with the token header and body', async () => {
+		const result = writeResult({ ticketId: 'T 01' });
+		const fetchMock = stubFetch();
+		fetchMock.mockResolvedValue(jsonResponse(result));
+
+		await expect(updateTicket('T 01', EDIT, TOKEN)).resolves.toEqual(result);
+
+		// The id is percent-encoded exactly like getTicket's.
+		expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/tickets/T%2001');
+		expect(initOf(fetchMock).method).toBe('PUT');
+		expect(headersOf(fetchMock)['X-Factory-Write-Token']).toBe(TOKEN);
+		expect(headersOf(fetchMock)['content-type']).toBe('application/json');
+		expect(initOf(fetchMock).body).toBe(JSON.stringify(EDIT));
+	});
+
+	it('DELETEs with the token header, no body, and resolves the WriteResult', async () => {
+		// The server answers 200 with the full envelope (not a bodiless 204), so a
+		// delete's diff renders like a create's.
+		const result = writeResult({ changedFiles: ['docs/planning/tickets/T01.md'] });
+		const fetchMock = stubFetch();
+		fetchMock.mockResolvedValue(jsonResponse(result));
+
+		await expect(deleteTicket('T01', TOKEN)).resolves.toEqual(result);
+
+		expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/tickets/T01');
+		expect(initOf(fetchMock).method).toBe('DELETE');
+		expect(headersOf(fetchMock)['X-Factory-Write-Token']).toBe(TOKEN);
+		expect(initOf(fetchMock).body).toBeUndefined();
+		// No body means no content-type to describe.
+		expect(headersOf(fetchMock)['content-type']).toBeUndefined();
+	});
+
+	it('appends ?dryRun=true for each previewed verb, carrying the token header', async () => {
+		const preview = writeResult({ applied: false, ticket: null });
+		const fetchMock = stubFetch();
+		fetchMock.mockResolvedValue(jsonResponse(preview));
+
+		await expect(previewWrite({ verb: 'create', body: DRAFT }, TOKEN)).resolves.toEqual(preview);
+		expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/tickets?dryRun=true');
+		expect(initOf(fetchMock, 0).method).toBe('POST');
+		expect(headersOf(fetchMock, 0)['X-Factory-Write-Token']).toBe(TOKEN);
+
+		await previewWrite({ verb: 'update', id: 'T01', body: EDIT }, TOKEN);
+		expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/tickets/T01?dryRun=true');
+		expect(initOf(fetchMock, 1).method).toBe('PUT');
+
+		await previewWrite({ verb: 'delete', id: 'T01' }, TOKEN);
+		expect(fetchMock.mock.calls[2][0]).toBe('/api/v1/tickets/T01?dryRun=true');
+		expect(initOf(fetchMock, 2).method).toBe('DELETE');
+		expect(headersOf(fetchMock, 2)['X-Factory-Write-Token']).toBe(TOKEN);
+	});
+
+	it('never sends dryRun on the applying wrappers', async () => {
+		const fetchMock = stubFetch();
+		fetchMock.mockResolvedValue(jsonResponse(writeResult()));
+
+		await createTicket(DRAFT, TOKEN);
+		await updateTicket('T01', EDIT, TOKEN);
+		await deleteTicket('T01', TOKEN);
+
+		for (const call of fetchMock.mock.calls) {
+			expect(String(call[0])).not.toContain('dryRun');
+		}
+	});
+
+	it('percent-encodes a hostile id instead of escaping the same-origin path', async () => {
+		const fetchMock = stubFetch();
+		fetchMock.mockResolvedValue(jsonResponse(writeResult()));
+
+		await deleteTicket('../../etc/passwd', TOKEN);
+		expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/tickets/..%2F..%2Fetc%2Fpasswd');
+	});
+
+	it('still refuses an absolute path on a write request without calling fetch', async () => {
+		// Writes go through the same `request()` as reads, so the same-origin guard
+		// covers them too — with a method/body/token init in play.
+		const fetchMock = stubFetch();
+
+		const error = await rejection(
+			request('http://evil.example/api/v1/tickets', {
+				method: 'POST',
+				headers: { [TOKEN_HEADER]: TOKEN },
+				body: JSON.stringify(DRAFT)
+			})
+		);
+		expect(error).toBeInstanceOf(ApiError);
+		expect(error.code).toBe('invalid_request');
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it('surfaces a 401 write_token_invalid as ApiError with the envelope code', async () => {
+		const fetchMock = stubFetch();
+		fetchMock.mockResolvedValue(
+			jsonResponse(
+				{ error: { code: 'write_token_invalid', message: 'Invalid write token.' } },
+				{ ok: false, status: 401 }
+			)
+		);
+
+		const error = await rejection(createTicket(DRAFT, 'stale-token'));
+		expect(error).toBeInstanceOf(ApiError);
+		expect(error.code).toBe('write_token_invalid');
+		expect(error.status).toBe(401);
+	});
+
+	it('surfaces the 409 todo-only conflict as ApiError on an update', async () => {
+		const fetchMock = stubFetch();
+		fetchMock.mockResolvedValue(
+			jsonResponse(
+				{
+					error: {
+						code: 'ticket_not_mutable',
+						message: 'Only todo tickets may be edited.',
+						details: { runState: 'merged' }
+					}
+				},
+				{ ok: false, status: 409 }
+			)
+		);
+
+		const error = await rejection(updateTicket('T01', EDIT, TOKEN));
+		expect(error).toBeInstanceOf(ApiError);
+		expect(error.code).toBe('ticket_not_mutable');
+		expect(error.status).toBe(409);
+		expect(error.details).toEqual({ runState: 'merged' });
 	});
 });
