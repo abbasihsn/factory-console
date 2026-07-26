@@ -1,9 +1,10 @@
 """The write-side auth seam: verify the per-session ``X-Factory-Write-Token``.
 
-The console stays loopback-only, but a v2 write crosses a state-changing boundary,
-so every mutation additionally presents a secret minted once per server start
-(``create_app`` generates it, stashes it on ``app.state.write_token``, and prints it
-to stderr for the human operator). :func:`require_write_token` is the dependency the
+The console stays loopback-only, but a v2 write crosses a state-changing boundary, so
+every mutation additionally presents a secret bound once per server start:
+``create_app`` mints one, or takes the operator's ``FACTORY_CONSOLE_WRITE_TOKEN`` pin,
+stashes it on ``app.state.write_token``, and announces the header on stderr — echoing
+the value only when it generated it. :func:`require_write_token` is the dependency the
 write router attaches — and the ONLY place that compares the supplied header against
 that secret; read routes never reference it, so the SPA's viewing flows stay
 header-free.
@@ -14,12 +15,14 @@ into a response body, a log line, or an exception string.
 
 :func:`publish_write_token_scheme` documents the header as an ``apiKey`` security
 scheme in the app's OpenAPI document — without attaching a global security requirement
-that would make every read route look authenticated. Note what that does NOT buy: the
-SPA's codegen is ``openapi-typescript``, which omits ``securitySchemes`` from its
-output entirely, so ``frontend/src/lib/api/types.ts`` gains nothing from this and the
-SPA must set the header itself. The scheme is published because it is the truthful
-OpenAPI description of the API — for humans reading the document and for any client
-that does read security schemes.
+that would make every read route look authenticated. Today that entry is a FORWARD
+DECLARATION and nothing more: T64 ships no write route, so no operation references the
+scheme yet, and it reaches no generated code either (the SPA's codegen is
+``openapi-typescript``, which omits ``securitySchemes`` outright, so
+``frontend/src/lib/api/types.ts`` gains nothing and the SPA sets the header by hand).
+It earns its keep when T65's write routes declare the requirement — see
+:func:`publish_write_token_scheme` for how — at which point the document describes not
+just the header but which operations demand it.
 """
 
 from __future__ import annotations
@@ -43,10 +46,10 @@ WRITE_TOKEN_SCHEME_NAME = "FactoryWriteToken"
 _WRITE_TOKEN_SCHEME = APIKeyHeader(
     name=WRITE_TOKEN_HEADER,
     scheme_name=WRITE_TOKEN_SCHEME_NAME,
-    # Must hold for BOTH provenances, since this text ships in openapi.json and renders
-    # in /docs: a generated token is printed and lasts one process, a pinned one is
-    # neither printed nor regenerated. Wording that named only the generated case would
-    # be false for every operator who sets FACTORY_CONSOLE_WRITE_TOKEN.
+    # Must hold for BOTH provenances, since this text ships in openapi.json (the app
+    # serves no /docs or /redoc): a generated token is printed and lasts one process, a
+    # pinned one is neither printed nor regenerated. Wording that named only the
+    # generated case would be false for every operator who sets the env var.
     description=(
         "Write token for this server session: minted at startup and printed to the "
         "server's stderr, or pinned via FACTORY_CONSOLE_WRITE_TOKEN. Required on "
@@ -128,6 +131,13 @@ def publish_write_token_scheme(app: FastAPI) -> None:
     This is documentation, not wiring: ``openapi-typescript`` (the SPA's codegen)
     drops ``securitySchemes``, so nothing here reaches the generated types and the
     SPA sends the header by hand.
+
+    And it is only half the description until write routes exist. Because
+    :func:`require_write_token` is a plain dependency rather than a
+    :class:`~fastapi.security.base.SecurityBase`, FastAPI will not stamp a ``security``
+    requirement on the operations that use it, so T65's write routes must say so
+    themselves — ``openapi_extra={"security": [{WRITE_TOKEN_SCHEME_NAME: []}]}`` on the
+    write router — or the document will name a header that no operation requires.
 
     Wraps ``app.openapi`` instead of building the document eagerly, so routes
     registered after ``create_app`` returns are still included. FastAPI caches the
