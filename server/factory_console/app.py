@@ -181,18 +181,34 @@ async def _watcher_lifespan(app: FastAPI) -> AsyncIterator[None]:
 _WRITE_TOKEN_BYTES = 32
 
 
-def _announce_write_token(token: str) -> None:
-    """Print the session's write token to stderr for the human operator.
+def _announce_write_token(token: str, *, generated: bool) -> None:
+    """Tell the human operator how to authenticate writes this session.
 
     Deliberately a ``print`` to ``sys.stderr`` rather than a log call: the token is
     a secret, and the write-path NFR is that it never reaches a log line, so it must
     NOT flow through the configured logging handlers (files, aggregation, the access
     log). stderr also keeps it off stdout, whose only content is the CLI's
     machine-parsable contract line.
+
+    ``generated`` selects what is worth saying, because the two cases differ in both
+    truth and need. A generated token exists nowhere else, so it is printed and the
+    operator is told it will not survive a restart. A *pinned* one they already have
+    (they set ``FACTORY_CONSOLE_WRITE_TOKEN``), so the value is withheld: echoing it
+    would say nothing new while writing their long-lived secret into whatever
+    captures stderr — a supervisor or CI log file, i.e. exactly the persistence
+    keeping this off the logging handlers is meant to avoid.
     """
-    print(f"{WRITE_TOKEN_HEADER}: {token}", file=sys.stderr)
+    if generated:
+        print(f"{WRITE_TOKEN_HEADER}: {token}", file=sys.stderr)
+        print(
+            "  send this header on write requests; a new token is minted at every start",
+            file=sys.stderr,
+        )
+        return
+    print(f"{WRITE_TOKEN_HEADER}: <pinned, not echoed>", file=sys.stderr)
     print(
-        "  send this header on write requests; a new token is minted at every start",
+        "  send this header on write requests; the value is the one you pinned in "
+        "FACTORY_CONSOLE_WRITE_TOKEN",
         file=sys.stderr,
     )
 
@@ -228,9 +244,10 @@ def create_app(
     never outlives the process. Either way it is stashed on
     ``app.state.write_token`` for
     :func:`~factory_console.api.write_token.require_write_token` and announced on
-    stderr, and its ``apiKey`` security scheme is published in the OpenAPI document
-    for the SPA's codegen. Read routes are untouched: nothing here attaches a global
-    dependency, so viewing the project needs no header.
+    stderr (the value itself only when it was generated — a pin the operator already
+    holds is not echoed), and its ``apiKey`` security scheme is published in the
+    OpenAPI document so the contract describes the header. Read routes are untouched:
+    nothing here attaches a global dependency, so viewing the project needs no header.
 
     Registers the domain/validation exception handlers and
     the access-log middleware, includes the v1 router, and mounts the packaged SPA
@@ -252,7 +269,10 @@ def create_app(
     app.state.file_writer = file_writer
     token = write_token or secrets.token_urlsafe(_WRITE_TOKEN_BYTES)
     app.state.write_token = token
-    _announce_write_token(token)
+    # ``generated`` mirrors the ``or`` above exactly rather than testing ``is None``:
+    # any falsy pin takes the generate branch, and the announcement must then print
+    # the value — claiming "pinned" would withhold a token the operator has no copy of.
+    _announce_write_token(token, generated=not write_token)
 
     register_error_handlers(app)
     publish_write_token_scheme(app)

@@ -106,6 +106,48 @@ def test_create_app_announces_the_token_on_stderr_only(capsys: pytest.CaptureFix
     assert captured.out == ""
 
 
+def test_a_pinned_token_is_announced_without_echoing_its_value(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A pinned token is the operator's own long-lived secret: they already have it, so
+    # printing it would only copy it into whatever captures stderr (a supervisor or CI
+    # log file) — the very persistence that keeping it off the logging handlers avoids.
+    # The announcement still names the header, so the operator knows what to send.
+    create_app(
+        _make_fake(),
+        version="0.0.0",
+        project_root=Path("/tmp/fake-root"),
+        write_token=PINNED_TOKEN,
+    )
+    captured = capsys.readouterr()
+    assert PINNED_TOKEN not in captured.err
+    assert WRITE_TOKEN_HEADER in captured.err
+    assert captured.out == ""
+
+
+def test_a_pinned_token_is_not_described_as_regenerated(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The generated-token hint ("minted at every start") is false for a pin — the whole
+    # point of pinning is that it survives restarts — so it must not be printed here.
+    create_app(
+        _make_fake(),
+        version="0.0.0",
+        project_root=Path("/tmp/fake-root"),
+        write_token=PINNED_TOKEN,
+    )
+    assert "minted at every start" not in capsys.readouterr().err
+
+
+def test_a_generated_token_is_described_as_regenerated(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Conversely the generated case must keep saying so, or an operator would assume
+    # the token they copied still works after a restart.
+    create_app(_make_fake(), version="0.0.0", project_root=Path("/tmp/fake-root"))
+    assert "minted at every start" in capsys.readouterr().err
+
+
 # --------------------------------------------------------------------------- #
 # The guarded write route
 # --------------------------------------------------------------------------- #

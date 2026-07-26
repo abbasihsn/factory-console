@@ -13,9 +13,13 @@ header and nothing else: neither the supplied nor the expected token is ever ech
 into a response body, a log line, or an exception string.
 
 :func:`publish_write_token_scheme` documents the header as an ``apiKey`` security
-scheme in the app's OpenAPI document, so the SPA's generated client knows to send it
-— without attaching a global security requirement that would make every read route
-look authenticated.
+scheme in the app's OpenAPI document — without attaching a global security requirement
+that would make every read route look authenticated. Note what that does NOT buy: the
+SPA's codegen is ``openapi-typescript``, which omits ``securitySchemes`` from its
+output entirely, so ``frontend/src/lib/api/types.ts`` gains nothing from this and the
+SPA must set the header itself. The scheme is published because it is the truthful
+OpenAPI description of the API — for humans reading the document and for any client
+that does read security schemes.
 """
 
 from __future__ import annotations
@@ -29,8 +33,8 @@ from fastapi.security import APIKeyHeader
 from factory_console.config import WRITE_TOKEN_HEADER
 from factory_console.errors import FactoryConsoleError
 
-# The ``components.securitySchemes`` key the scheme is published under; the SPA's
-# codegen turns it into the generated client's auth handle.
+# The ``components.securitySchemes`` key the scheme is published under, and the name
+# the OpenAPI document identifies the write-token scheme by.
 WRITE_TOKEN_SCHEME_NAME = "FactoryWriteToken"
 
 # FastAPI's own ``apiKey``-in-header model, used purely to BUILD the OpenAPI scheme
@@ -113,8 +117,12 @@ def publish_write_token_scheme(app: FastAPI) -> None:
     cannot derive a security scheme from, and read routes must stay completely
     header-free — so the scheme is injected into ``components.securitySchemes``
     rather than inferred from the routes, and no global security requirement is
-    added. The SPA's generated client therefore learns the header exists without
-    any read endpoint appearing to require it.
+    added. The document therefore describes the header without any read endpoint
+    appearing to require it.
+
+    This is documentation, not wiring: ``openapi-typescript`` (the SPA's codegen)
+    drops ``securitySchemes``, so nothing here reaches the generated types and the
+    SPA sends the header by hand.
 
     Wraps ``app.openapi`` instead of building the document eagerly, so routes
     registered after ``create_app`` returns are still included. FastAPI caches the

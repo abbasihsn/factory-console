@@ -65,21 +65,27 @@ authoritative contract see the CLI section of
 
 ### The write token
 
-At startup the server prints a line like this to **stderr**:
+Unless you pin it with `FACTORY_CONSOLE_WRITE_TOKEN` (above), the server mints a fresh
+token each start and prints it to **stderr**:
 
 ```
 X-Factory-Write-Token: 3s9Kv-1QpZ...
 ```
 
-Write requests must send that value in the `X-Factory-Write-Token` header; a missing
-or wrong header is rejected with `401` and the error code `write_token_invalid`. Read
+A minted token lasts only as long as that process, so the one printed by a previous run
+stops working. When you pin it instead, the value is *not* echoed — you already have it,
+and printing it would write your long-lived secret into whatever captures stderr — so
+the line reads `X-Factory-Write-Token: <pinned, not echoed>`.
+
+Write requests must send the token in the `X-Factory-Write-Token` header; a missing or
+wrong header is rejected with `401` and the error code `write_token_invalid`. Read
 requests need no header at all, so ordinary browsing is unaffected.
 
 The console binds to loopback only, so this token is defence-in-depth *behind* that
 boundary — it stops another process on your machine, or a drive-by request from a page
-in your browser, from mutating the project. A new token is minted on every restart, so
-the one printed by a previous run stops working; there is no flag for it, because
-anything on the command line is readable by every local process.
+in your browser, from mutating the project. There is no command-line *flag* for it
+(pin it with the env var above if you need a stable value), because anything on the
+command line is readable by every local process.
 
 ## Exit codes
 
