@@ -218,14 +218,6 @@ def main(
     root = root.resolve()
 
     file_adapter = RealFileAdapter()
-    fastapi_app = create_app(
-        file_adapter,
-        version=factory_console.__version__,
-        project_root=root,
-        file_watcher=RealFileWatcher(root),
-        file_writer=RealFileWriter(),
-        write_token=write_token,
-    )
 
     # Discovery only checks the manifest FILE exists; force a real parse now so a
     # malformed manifest fails fast (exit 3) at boot rather than on the first request.
@@ -241,6 +233,23 @@ def main(
     except OSError as exc:
         typer.echo(f"port {port} on {host} is already in use", err=True)
         raise typer.Exit(2) from exc
+
+    # Constructed only once every fail-fast check above has passed, because
+    # ``create_app`` mints the per-session write token and announces it on stderr.
+    # Building it earlier printed a real, freshly generated secret for a server that
+    # then exited 2 (port in use) or 3 (malformed manifest) without ever binding a
+    # socket: the operator copies that token, the *running* instance holds a different
+    # one, and every write comes back as the deliberately opaque 401 with nothing to
+    # diagnose it by. This also restores the ordering this module's docstring states —
+    # nothing is announced before the port is bound.
+    fastapi_app = create_app(
+        file_adapter,
+        version=factory_console.__version__,
+        project_root=root,
+        file_watcher=RealFileWatcher(root),
+        file_writer=RealFileWriter(),
+        write_token=write_token,
+    )
 
     url = f"http://{_format_host_for_url(host)}:{resolved_port}"
     typer.echo(f"Factory Console v{factory_console.__version__} — serving {root} at {url}")

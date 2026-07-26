@@ -30,6 +30,7 @@ from typer.testing import CliRunner
 import factory_console
 from factory_console import cli
 from factory_console.cli import app
+from factory_console.config import WRITE_TOKEN_HEADER
 
 runner = CliRunner()
 
@@ -477,6 +478,52 @@ def test_explicit_port_in_use_in_process_exits_two(monkeypatch: pytest.MonkeyPat
         assert result.exit_code == 2
     finally:
         holder.close()
+
+
+def test_malformed_manifest_announces_no_write_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ``create_app`` mints AND announces the per-session token, so building it before
+    # the boot guards printed a real secret for a server that then exited 3 without
+    # binding a socket. Pinning the absence here is what stops the construction from
+    # drifting back above the guards: the exit code alone stays 3 either way.
+    monkeypatch.setattr("factory_console.cli.uvicorn.Server", _StubServer)
+    monkeypatch.setattr("factory_console.cli.configure_logging", lambda level: None)
+
+    result = runner.invoke(app, [str(_MALFORMED), "--no-browser", "--port", "0"])
+
+    assert result.exit_code == 3
+    assert WRITE_TOKEN_HEADER not in result.output
+
+
+def test_port_in_use_announces_no_write_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The operator-facing trap this ordering closes: a second console started on a
+    # taken port used to print a fresh token before exiting 2. Copying it authorizes
+    # nothing — the RUNNING instance holds a different one — and the deliberately
+    # opaque 401 gives no way to tell why.
+    monkeypatch.setattr("factory_console.cli.uvicorn.Server", _StubServer)
+    monkeypatch.setattr("factory_console.cli.configure_logging", lambda level: None)
+    holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        holder.bind(("127.0.0.1", 0))
+        port = holder.getsockname()[1]
+
+        result = runner.invoke(app, [str(_MINIMAL), "--no-browser", "--port", str(port)])
+
+        assert result.exit_code == 2
+        assert WRITE_TOKEN_HEADER not in result.output
+    finally:
+        holder.close()
+
+
+def test_successful_boot_still_announces_the_write_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The other half of the ordering fix: moving construction below the guards must not
+    # cost the announcement on the path that DOES serve, or the operator has no token.
+    monkeypatch.setattr("factory_console.cli.uvicorn.Server", _StubServer)
+    monkeypatch.setattr("factory_console.cli.configure_logging", lambda level: None)
+
+    result = runner.invoke(app, [str(_MINIMAL), "--no-browser", "--port", "0"])
+
+    assert result.exit_code == 0
+    assert f"{WRITE_TOKEN_HEADER}: " in result.output
 
 
 def test_boot_starts_browser_thread_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:

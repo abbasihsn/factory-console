@@ -18,10 +18,11 @@ The handlers mirror :mod:`factory_console.api.v1.tickets`: resolve the project r
 ``app.state``, load the :class:`~factory_console.domain.project.Project` through the
 read adapter, construct a request-scoped
 :class:`~factory_console.services.write_service.WriteService` over the two injected
-ports, and delegate. All request logic lives below this layer, so the handlers are
-wiring only: the service owns the create-collision guard and the existence check (both
-on the dry-run path too), and the todo-only mutability gate lives one layer further
-down, inside the writer's ``edit_ticket``/``delete_ticket``
+ports, and delegate. All request *logic* lives below this layer, so the handlers are
+wiring plus one audit line (:func:`_log_write`): the service owns the create-collision
+guard and the existence check (both on the dry-run path too), and the todo-only
+mutability gate lives one layer further down, inside the writer's
+``edit_ticket``/``delete_ticket``
 (:func:`~factory_console.file_adapter.write_gate.ensure_mutable`) — so it guards an
 apply, and a dry-run previews a non-mutable ticket rather than refusing it.
 
@@ -41,6 +42,7 @@ parameter on edit/delete, the ``TicketDraft.id`` body field on create),
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -59,6 +61,34 @@ from factory_console.services.write_service import WriteService
 # Every query key these routes understand. ``dryRun`` is the only one; the guard below
 # rejects anything else rather than letting it pass unread.
 _ALLOWED_QUERY_KEYS = frozenset({"dryRun"})
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _log_write(verb: str, result: WriteResult) -> None:
+    """Record one audit line for a completed write, naming the files it touched.
+
+    The access log is not enough on its own to reconstruct what a write did: it
+    formats ``request.url.path``, which drops the query string, and edit/delete answer
+    ``200`` whether they applied or previewed — so ``DELETE /api/v1/tickets/T64 200``
+    is byte-identical for a preview that changed nothing and an apply that deleted
+    ``<id>.md`` and rewrote ``tickets.json`` and ``ROADMAP.md``. This line carries the
+    one bit that separates them (``applied``) plus the paths actually written, so a bad
+    write can be traced to the files it modified.
+
+    Values go in ``extra=`` behind a static message per the repo's logging rule. The
+    write token is never among them — the audit records what changed, not who proved
+    they could.
+    """
+    _LOGGER.info(
+        "ticket write",
+        extra={
+            "verb": verb,
+            "ticketId": result.ticketId,
+            "applied": result.applied,
+            "changedFiles": result.changedFiles,
+        },
+    )
 
 
 def reject_unknown_query_params(request: Request) -> None:
@@ -175,6 +205,7 @@ async def create_ticket(
     root: Path = request.app.state.project_root
     project = adapter.load_project(root)
     result = WriteService(writer, adapter).create(project, payload, dry_run=dry_run)
+    _log_write("create", result)
     response.status_code = status.HTTP_201_CREATED if result.applied else status.HTTP_200_OK
     return result
 
@@ -197,7 +228,9 @@ async def edit_ticket(
     """
     root: Path = request.app.state.project_root
     project = adapter.load_project(root)
-    return WriteService(writer, adapter).edit(project, ticket_id, payload, dry_run=dry_run)
+    result = WriteService(writer, adapter).edit(project, ticket_id, payload, dry_run=dry_run)
+    _log_write("edit", result)
+    return result
 
 
 @router.delete("/tickets/{ticket_id}", openapi_extra=_WRITE_TOKEN_SECURITY)
@@ -219,4 +252,6 @@ async def delete_ticket(
     """
     root: Path = request.app.state.project_root
     project = adapter.load_project(root)
-    return WriteService(writer, adapter).delete(project, ticket_id, dry_run=dry_run)
+    result = WriteService(writer, adapter).delete(project, ticket_id, dry_run=dry_run)
+    _log_write("delete", result)
+    return result

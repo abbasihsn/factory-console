@@ -273,6 +273,34 @@ async def test_delete_dry_run_previews_and_writes_nothing(tmp_path: Path) -> Non
     assert _snapshot(root) == before
 
 
+async def test_the_audit_line_separates_an_applied_write_from_a_dry_run(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The access log formats ``request.url.path``, which drops the query string, and a
+    # delete answers 200 whichever path it took — so those two lines are byte-identical
+    # for a preview that changed nothing and an apply that removed the ticket file and
+    # rewrote the manifest. The audit record is what tells them apart afterwards.
+    app, _ = _real_app(tmp_path)
+    with caplog.at_level("INFO", logger="factory_console.api.v1.tickets_write"):
+        async with _client(app) as client:
+            await client.delete(
+                f"/api/v1/tickets/{DELETABLE_TODO_ID}", params={"dryRun": "true"}, headers=AUTH
+            )
+            await client.delete(f"/api/v1/tickets/{DELETABLE_TODO_ID}", headers=AUTH)
+
+    records = [record for record in caplog.records if record.getMessage() == "ticket write"]
+    assert len(records) == 2
+    previewed, applied = records
+    # Static message; the variable data rides in structured ``extra`` fields.
+    assert (previewed.applied, applied.applied) == (False, True)
+    assert previewed.verb == applied.verb == "delete"
+    assert previewed.ticketId == applied.ticketId == DELETABLE_TODO_ID
+    # The apply names the files it actually wrote — the point of keeping the record.
+    assert applied.changedFiles
+    # An audit trail records what changed, never the secret that authorized it.
+    assert PINNED_TOKEN not in caplog.text
+
+
 @pytest.mark.parametrize("misspelling", ["dryrun", "dry_run", "dryRunn", "DRYRUN"])
 async def test_a_misspelled_dry_run_flag_is_rejected_and_writes_nothing(
     misspelling: str, tmp_path: Path

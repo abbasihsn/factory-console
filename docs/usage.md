@@ -20,13 +20,8 @@ cd my-factory-project && factory-console
 
 The console discovers the project (walking up from the current directory for
 `docs/planning/tickets.json`), starts a local server on `127.0.0.1`, and logs the
-URL Uvicorn is serving. Open that URL in your browser and press Ctrl-C to stop.
-
-> **Walking skeleton (MVP).** Automatic browser opening, honoring an explicit
-> `PATH`, port-in-use handling, and the richer exit codes below arrive with the
-> full CLI wiring in backend T25. Today the CLI always serves the project
-> discovered from the current directory and leaves `PATH`/`--no-browser` as
-> accepted-but-unused stubs.
+URL Uvicorn is serving. Your browser opens on that URL automatically unless you pass
+`--no-browser`; press Ctrl-C to stop.
 
 ## Flags
 
@@ -34,23 +29,20 @@ URL Uvicorn is serving. Open that URL in your browser and press Ctrl-C to stop.
 factory-console [PATH] [--port N] [--host 127.0.0.1] [--no-browser] [--log-level LEVEL] [--version]
 ```
 
-- `PATH` — the project directory to serve. _Accepted but not yet wired (T25):_
-  discovery currently always walks up from the current directory.
-- `--port N` — port to bind (`0` picks a free port). Port-in-use handling (a clean
-  exit `2`) lands in T25; today an unavailable port surfaces as an unhandled
-  Uvicorn error.
+- `PATH` — the project directory to serve. A directory that holds no
+  `docs/planning/tickets.json` is rejected with exit `1`.
+- `--port N` — port to bind (`0` picks a free port). A port already in use is
+  rejected with a clean exit `2`.
 - `--host 127.0.0.1` — bind address; restricted to loopback (`127.0.0.1`,
   `localhost`, `::1`). A non-loopback host is rejected with exit `2`.
-- `--no-browser` — _accepted but not yet wired (T25):_ no browser is opened yet
-  regardless of this flag.
+- `--no-browser` — don't open the browser on startup.
 - `--log-level LEVEL` — logging verbosity (e.g. `info`, `debug`); logs go to
   stderr. An unrecognized level is rejected with exit `2`.
 - `--version` — print the version and exit `0`.
 
-**Path resolution (planned, T25):** an explicit `PATH` argument will win; until
-then the CLI always walks up from the current directory looking for
-`docs/planning/tickets.json`, the same way `git` finds its repo root. For the
-authoritative contract see the CLI section of
+**Path resolution:** an explicit `PATH` argument wins; without one the CLI walks up
+from the current directory looking for `docs/planning/tickets.json`, the same way
+`git` finds its repo root. For the authoritative contract see the CLI section of
 [`planning/ARCHITECTURE.md`](planning/ARCHITECTURE.md).
 
 ## Environment
