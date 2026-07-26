@@ -73,14 +73,20 @@ def test_unusable_write_token_pin_is_rejected(pin: str) -> None:
     # validator ``write_token or secrets.token_urlsafe(...)`` would mint a RANDOM
     # token, silently discarding the operator's override and 401-ing every write with
     # nothing to diagnose it by. Fail fast at config time instead.
-    with pytest.raises(ValidationError):
-        Settings(write_token=pin)
+    #
+    # ``host=`` is pinned (per this module's contract) and the failing field asserted by
+    # name, because a bare ``pytest.raises(ValidationError)`` is satisfied by ANY field:
+    # with a non-loopback FACTORY_CONSOLE_HOST in the environment the host validator
+    # alone would satisfy it, and this test would stay green with the pin rule deleted.
+    with pytest.raises(ValidationError) as excinfo:
+        Settings(host="127.0.0.1", write_token=pin)
+    assert [error["loc"] for error in excinfo.value.errors()] == [("write_token",)]
 
 
 def test_write_token_pin_is_stripped() -> None:
     # A pin pasted with stray whitespace must not become a different secret than the
     # one the operator thinks they set.
-    assert Settings(write_token=f"  {VALID_PIN}  ").write_token == VALID_PIN
+    assert Settings(host="127.0.0.1", write_token=f"  {VALID_PIN}  ").write_token == VALID_PIN
 
 
 def test_read_write_token_returns_none_when_unpinned(monkeypatch: pytest.MonkeyPatch) -> None:

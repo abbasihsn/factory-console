@@ -240,8 +240,8 @@ def test_openapi_publishes_the_write_token_security_scheme() -> None:
 
 
 def test_openapi_scheme_description_covers_both_provenances() -> None:
-    # This description ships in openapi.json and renders in /docs, so it must be true
-    # for a pinned token as well as a generated one. Wording that promised regeneration
+    # This description ships in openapi.json (the app serves no /docs), so it must be
+    # true for a pinned token as well as a generated one. Wording that promised regeneration
     # on every restart would be flatly wrong for anyone using the env var, which is the
     # one place such a claim could survive unnoticed by the stderr-announcement tests.
     client = TestClient(_make_app())

@@ -58,34 +58,35 @@ authoritative contract see the CLI section of
 - `FACTORY_CONSOLE_HOST` / `FACTORY_CONSOLE_PORT` / `FACTORY_CONSOLE_LOG_LEVEL` — env
   equivalents of the flags above. An explicit flag wins over the env var, and the env
   var over the default; all three run through the same validation either way.
-- `FACTORY_CONSOLE_WRITE_TOKEN` — pins the write token below instead of minting a
-  fresh one each boot. Leaving it unset is the normal case. If you do set it, it must
-  be at least 16 characters: a blank or too-short value is rejected with exit `2`
-  rather than silently falling back to a generated token.
+- `FACTORY_CONSOLE_WRITE_TOKEN` — a **development and testing** override that pins the
+  write token below to a fixed value instead of minting a fresh one. Normal runs leave
+  it unset; the token is per-session by design. If you do set it, it must be at least 16
+  characters — a blank or too-short value is rejected with exit `2` rather than silently
+  falling back to a generated token.
 
 ### The write token
 
-Unless you pin it with `FACTORY_CONSOLE_WRITE_TOKEN` (above), the server mints a fresh
-token each start and prints it to **stderr**:
+The console mints a write token at every start and prints it to **stderr**, so you'll
+see a line like this in the output of any run:
 
 ```
 X-Factory-Write-Token: 3s9Kv-1QpZ...
 ```
 
-A minted token lasts only as long as that process, so the one printed by a previous run
-stops working. When you pin it instead, the value is *not* echoed — you already have it,
-and printing it would write your long-lived secret into whatever captures stderr — so
-the line reads `X-Factory-Write-Token: <pinned, not echoed>`.
+That token is what will authorize v2 write requests, sent in the `X-Factory-Write-Token`
+header. It lasts only as long as the process, so the one printed by a previous run stops
+working. Reads never need it, so browsing the project is unaffected — and today nothing
+else needs it either: **the write endpoints that require this header are not part of
+this release yet.** For now the line is purely informational.
 
-Write requests must send the token in the `X-Factory-Write-Token` header; a missing or
-wrong header is rejected with `401` and the error code `write_token_invalid`. Read
-requests need no header at all, so ordinary browsing is unaffected.
+The console binds to loopback only, so the token is defence-in-depth *behind* that
+boundary — it stops another process on your machine, or a drive-by request from a page in
+your browser, from mutating the project once writes exist. There is no command-line flag
+for it, because anything on the command line is readable by every local process.
 
-The console binds to loopback only, so this token is defence-in-depth *behind* that
-boundary — it stops another process on your machine, or a drive-by request from a page
-in your browser, from mutating the project. There is no command-line *flag* for it
-(pin it with the env var above if you need a stable value), because anything on the
-command line is readable by every local process.
+If you pinned the token with the dev override above, the value is *not* echoed — you
+already have it, and printing it would copy it into whatever captures stderr — so the
+line reads `X-Factory-Write-Token: <pinned, not echoed>`.
 
 ## Exit codes
 

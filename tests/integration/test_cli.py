@@ -33,6 +33,32 @@ from factory_console.cli import app
 
 runner = CliRunner()
 
+# Every ``FACTORY_CONSOLE_*`` variable the CLI reads through Typer's ``envvar=``.
+_ENV_VARS = (
+    "FACTORY_CONSOLE_HOST",
+    "FACTORY_CONSOLE_PORT",
+    "FACTORY_CONSOLE_LOG_LEVEL",
+    "FACTORY_CONSOLE_WRITE_TOKEN",
+)
+
+
+@pytest.fixture(autouse=True)
+def _clear_ambient_console_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Strip ambient ``FACTORY_CONSOLE_*`` values so every case starts from the defaults.
+
+    These vars are real CLI inputs (``envvar=``), so one exported in the developer's
+    shell silently rewrites the command under test: ``FACTORY_CONSOLE_HOST=0.0.0.0``
+    turns any invocation that omits ``--host`` into an exit-2 run, and a bogus
+    ``FACTORY_CONSOLE_LOG_LEVEL`` does the same. That reaches the subprocess cases too,
+    since ``_child_env`` inherits ``os.environ``.
+
+    Cases that WANT a variable set still pass it via ``runner.invoke(env=...)``, which
+    applies on top of this — so precedence tests are unaffected.
+    """
+    for var in _ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+
 _TESTS_DIR = Path(__file__).resolve().parents[1]
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SERVER_DIR = _REPO_ROOT / "server"
