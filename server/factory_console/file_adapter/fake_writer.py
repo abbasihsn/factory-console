@@ -115,7 +115,7 @@ class FakeFileWriter:
         new_entry = write_render._draft_to_entry(draft)
         self._manifest.append(new_entry)
         self._bodies[draft.id] = draft.bodyMarkdown
-        self._front_matter[draft.id] = dict(draft.frontMatter)
+        self._front_matter[draft.id] = write_render._client_front_matter(draft.frontMatter)
         self._apply_roadmap(project, planned)
 
         state = self._run_states.get(draft.id, RunState.unknown)
@@ -141,7 +141,12 @@ class FakeFileWriter:
         merged = write_render._merge_edit(self._manifest[index], edit)
         self._manifest[index] = merged
         self._bodies[ticket_id] = edit.bodyMarkdown
-        self._front_matter[ticket_id] = dict(edit.frontMatter)
+        # Overlay, not replace — the real writer preserves the on-disk header and
+        # refreshes the manifest-mirrored keys, so the seeded state must too or the
+        # fake's post-apply reads would diverge from production.
+        self._front_matter[ticket_id] = write_render._overlay_front_matter(
+            self._front_matter.get(ticket_id, {}), edit
+        )
         self._apply_roadmap(project, planned)
 
         state = self._run_states.get(ticket_id, RunState.unknown)
@@ -195,7 +200,9 @@ class FakeFileWriter:
                 project,
                 draft.id,
                 current=self._current_md(draft.id),
-                new=write_render._render_md(draft.frontMatter, draft.bodyMarkdown),
+                new=write_render._render_md(
+                    write_render._client_front_matter(draft.frontMatter), draft.bodyMarkdown
+                ),
             ),
         ]
         self._append_roadmap(
@@ -220,8 +227,11 @@ class FakeFileWriter:
             self._md_change(
                 project,
                 ticket_id,
-                current=self._current_md(ticket_id),
-                new=write_render._render_md(edit.frontMatter, edit.bodyMarkdown),
+                current=(current_md := self._current_md(ticket_id)),
+                # Through the SAME renderer as the real writer, over the same
+                # (current text, edit) inputs — so the two implementations of this
+                # port cannot disagree about what an edit does to a YAML header.
+                new=write_render.render_edit_md(current_md, edit),
             ),
         ]
         self._append_roadmap(

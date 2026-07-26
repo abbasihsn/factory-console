@@ -127,6 +127,19 @@ describe('TicketForm', () => {
 		});
 	});
 
+	it('edits provides in a single-line input, not a newline textarea', () => {
+		// `provides` is a SCALAR on the wire (`TicketDraft.provides: string`), so a
+		// textarea would invite a multi-entry value the server stores verbatim and the
+		// read model hands back collapsed into one element. The sibling list fields stay
+		// textareas. Asserted because `disabled` alone passes for either element, so a
+		// revert to a textarea would otherwise stay green.
+		render(TicketForm, { props: { mode: 'create', initial: initial(), onSubmit: vi.fn() } });
+
+		expect(screen.getByLabelText('Provides').tagName).toBe('INPUT');
+		expect(screen.getByLabelText('Depends on').tagName).toBe('TEXTAREA');
+		expect(screen.getByLabelText('Files').tagName).toBe('TEXTAREA');
+	});
+
 	it('disabled makes every field inert and the submit button disabled', () => {
 		const onSubmit = vi.fn();
 		render(TicketForm, {

@@ -8,24 +8,33 @@ with no Node runtime required at launch. The layers run strictly in one directio
 **CLI → HTTP → Domain → FileAdapter**. The CLI owns path discovery, port
 selection, and browser launch; the HTTP server exposes the REST endpoints and
 serves the SPA; the domain services (`TicketService`, `DepsService`) hold the read
-logic; and a pure, read-only `FileAdapter` port is the only layer that touches
-disk. There is no database, no cache, and no file-watcher — every request re-reads
-the project's own files (`docs/planning/tickets.json`, the ticket `.md` files,
-`ROADMAP.md`, and the factory run-state directory), so the browser always reflects
-what is on disk.
+logic; and two narrow ports are the only layers that touch disk — the read-only
+`FileAdapter`, and (since v2) the `FileWriter` behind the token-gated write
+endpoints. There is no database and no cache — every request re-reads the project's
+own files (`docs/planning/tickets.json`, the ticket `.md` files, `ROADMAP.md`, and
+the factory run-state directory), so the browser always reflects what is on disk.
 
 For the full backbone — tech stack, data model, cross-cutting concerns, and DevOps
 — see [`planning/ARCHITECTURE.md`](planning/ARCHITECTURE.md).
 
 ## Contracts
 
-The system is defined by four contracts. This page names them; the authoritative
+The system is defined by five contracts. This page names them; the authoritative
 definitions live in [`planning/ARCHITECTURE.md`](planning/ARCHITECTURE.md) and are
 fleshed out here as each track lands.
 
 - **REST v1** — the versioned JSON API under `http://127.0.0.1:<port>/api/v1`
   (camelCase, ISO-8601, errors as `{ error: { code, message, details? } }`). The
-  SPA regenerates its TypeScript types from the published OpenAPI schema.
+  SPA regenerates its TypeScript types from the published OpenAPI schema. Reads are
+  open; the v2 write verbs (`POST` / `PUT` / `DELETE /api/v1/tickets`) require the
+  per-session write token in an `X-Factory-Write-Token` header, each return the one
+  `WriteResult` diff envelope, and each honour `?dryRun=true` to preview without
+  writing. Only `todo` tickets may be edited or deleted.
+- **FileWriter port** — the write-side `Protocol` the v2 endpoints depend on via
+  `Depends()`, paired with the read adapter. Its applies write the ticket `.md`,
+  `tickets.json`, and `ROADMAP.md` as one atomic trio; its `preview_*` half is pure.
+  Two implementations: `RealFileWriter` (real filesystem) and `FakeFileWriter`
+  (in-memory, for tests). It never writes under the run-state directory.
 - **FileAdapter port** — a read-only Python `Protocol` (eight methods, including
   `search_tickets` (best-first; blank query → `[]`) and `get_graph` (whole-project
   run-state-coloured dependency DAG; resolved-only edges, self-loops and dangling

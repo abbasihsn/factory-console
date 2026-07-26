@@ -38,3 +38,53 @@ export type Roadmap = components['schemas']['Roadmap'] | components['schemas']['
 
 /** Dependency neighborhood of one ticket from `GET /api/v1/tickets/{id}/deps`. */
 export type DepNeighborhood = components['schemas']['DepNeighborhood'];
+
+/**
+ * Request body for `POST /api/v1/tickets`. The server publishes this schema as
+ * `TicketDraft`; `TicketCreate` is the friendly name the client uses.
+ *
+ * The SERVER requires only `id`, `title`, and `bodyMarkdown` — every other field
+ * has a default. This TYPE additionally requires `provides`, which is a codegen
+ * artifact, not a server rule: `provides` is the one defaulted field whose default
+ * is a non-null literal (`""`), and `openapi-typescript` marks a property with a
+ * default as non-optional. So a call site must pass `provides: ''` to type-check
+ * even though omitting it over the wire is valid.
+ */
+export type TicketCreate = components['schemas']['TicketDraft'];
+
+/**
+ * Request body for `PUT /api/v1/tickets/{id}`. Published as `TicketEdit` —
+ * identical to {@link TicketCreate} minus `id`, which comes from the path
+ * (including the `provides` caveat noted there).
+ *
+ * One edit-only difference from create: `frontMatter` is an OVERLAY on the ticket
+ * `.md`'s existing YAML header, not a replacement. Keys sent here are added or
+ * overridden, keys already on disk are preserved, and there is no way to delete a
+ * key. Factory-owned keys (`id`, `status`, and the fields mirrored from the
+ * manifest entry) are ignored here — they follow the named fields above.
+ */
+export type TicketUpdate = components['schemas']['TicketEdit'];
+
+/**
+ * Uniform response body of EVERY write verb — create, update, and delete, on
+ * both the applying and the dry-run path. An apply sets `applied: true` and
+ * carries the re-read `ticket`; a dry-run sets `applied: false`, `ticket: null`,
+ * and reports the paths/diff that WOULD be written.
+ */
+export type WriteResult = components['schemas']['WriteResult'];
+
+/**
+ * A dry-run preview.
+ *
+ * The server publishes NO separate preview schema: `?dryRun=true` returns the same
+ * {@link WriteResult} envelope with `applied: false` and `ticket: null`. So this is
+ * an alias, not a distinct shape — it exists to let a preview-rendering call site
+ * name what it is holding without implying a second contract.
+ */
+export type WritePreview = WriteResult;
+
+/** The per-file diffs one write produces, carried as a {@link WriteResult}'s `diff`. */
+export type DiffPreview = components['schemas']['DiffPreview'];
+
+/** A single file's planned or applied change as a unified diff, inside {@link DiffPreview}. */
+export type FileDiff = components['schemas']['FileDiff'];

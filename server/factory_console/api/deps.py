@@ -23,11 +23,27 @@ the provider raises rather than returning ``None``.
 
 from __future__ import annotations
 
+from typing import Annotated
+
+from fastapi import Path as PathParam
 from fastapi import Request
 
+from factory_console.domain.ticket import TICKET_ID_PATTERN
 from factory_console.file_adapter.protocol import FileAdapter
 from factory_console.file_adapter.watcher import FileWatcher
 from factory_console.file_adapter.writer_protocol import FileWriter
+
+TicketIdPath = Annotated[str, PathParam(pattern=TICKET_ID_PATTERN)]
+"""A ``{ticket_id}`` path parameter validated at the FastAPI boundary.
+
+Shared by the read routes (``api/v1/tickets.py``) and the write routes
+(``api/v1/tickets_write.py``) so how a ticket id is constrained at the HTTP edge is
+stated ONCE: an invalid id becomes the ``invalid_ticket_id`` 400 envelope and never
+reaches the adapter or the writer. Lives here rather than in
+:mod:`factory_console.domain.ticket` because it is FastAPI-specific wiring, and the
+domain layer must not import a web framework — the domain still owns the pattern
+itself via :data:`TICKET_ID_PATTERN`.
+"""
 
 
 def get_file_adapter(request: Request) -> FileAdapter:

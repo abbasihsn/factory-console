@@ -30,8 +30,35 @@ from typer.testing import CliRunner
 import factory_console
 from factory_console import cli
 from factory_console.cli import app
+from factory_console.config import WRITE_TOKEN_HEADER
 
 runner = CliRunner()
+
+# Every ``FACTORY_CONSOLE_*`` variable the CLI reads through Typer's ``envvar=``.
+_ENV_VARS = (
+    "FACTORY_CONSOLE_HOST",
+    "FACTORY_CONSOLE_PORT",
+    "FACTORY_CONSOLE_LOG_LEVEL",
+    "FACTORY_CONSOLE_WRITE_TOKEN",
+)
+
+
+@pytest.fixture(autouse=True)
+def _clear_ambient_console_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Strip ambient ``FACTORY_CONSOLE_*`` values so every case starts from the defaults.
+
+    These vars are real CLI inputs (``envvar=``), so one exported in the developer's
+    shell silently rewrites the command under test: ``FACTORY_CONSOLE_HOST=0.0.0.0``
+    turns any invocation that omits ``--host`` into an exit-2 run, and a bogus
+    ``FACTORY_CONSOLE_LOG_LEVEL`` does the same. That reaches the subprocess cases too,
+    since ``_child_env`` inherits ``os.environ``.
+
+    Cases that WANT a variable set still pass it via ``runner.invoke(env=...)``, which
+    applies on top of this — so precedence tests are unaffected.
+    """
+    for var in _ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+
 
 _TESTS_DIR = Path(__file__).resolve().parents[1]
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -333,6 +360,70 @@ def test_explicit_log_level_flag_overrides_env_var(monkeypatch: pytest.MonkeyPat
     assert captured["level"] == "WARNING"
 
 
+def test_explicit_host_flag_overrides_a_non_loopback_env_var(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Same precedence for --host, and the boot must not re-read the env behind the
+    # flag's back: the CLI reads the write token via ``read_write_token()``, which
+    # touches FACTORY_CONSOLE_WRITE_TOKEN alone, so a non-loopback
+    # FACTORY_CONSOLE_HOST that --host overrode cannot resurface as an unhandled
+    # pydantic ValidationError and bypass the exit-2 contract.
+    monkeypatch.setattr("factory_console.cli.uvicorn.Server", _StubServer)
+    monkeypatch.setattr("factory_console.cli.configure_logging", lambda level: None)
+
+    result = runner.invoke(
+        app,
+        [str(_MINIMAL), "--no-browser", "--port", "0", "--host", "127.0.0.1"],
+        env={"FACTORY_CONSOLE_HOST": "0.0.0.0"},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "http://127.0.0.1:" in result.output
+
+
+def test_env_var_pins_the_write_token_on_the_built_app(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The pass-through itself: FACTORY_CONSOLE_WRITE_TOKEN must actually reach
+    # app.state.write_token. Without this, dropping the create_app kwarg in a refactor
+    # would leave every test green while the operator's pin silently stopped working.
+    pinned = "cli-pinned-write-token"
+    captured: dict[str, object] = {}
+
+    class _CapturingServer(_StubServer):
+        def __init__(self, config: object) -> None:
+            super().__init__(config)
+            captured["app"] = config.app  # type: ignore[attr-defined]
+
+    monkeypatch.setattr("factory_console.cli.uvicorn.Server", _CapturingServer)
+    monkeypatch.setattr("factory_console.cli.configure_logging", lambda level: None)
+
+    result = runner.invoke(
+        app,
+        [str(_MINIMAL), "--no-browser", "--port", "0"],
+        env={"FACTORY_CONSOLE_WRITE_TOKEN": pinned},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["app"].state.write_token == pinned  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("pin", ["", "too-short"], ids=["blank", "short"])
+def test_unusable_write_token_pin_exits_two(pin: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A pin that is set but unusable is a bad operational input, so it exits 2 with a
+    # message like a bad host or log level — never a raw pydantic traceback, and never
+    # a silent fall back to a generated token that would 401 every write.
+    monkeypatch.setattr("factory_console.cli.uvicorn.Server", _StubServer)
+    monkeypatch.setattr("factory_console.cli.configure_logging", lambda level: None)
+
+    result = runner.invoke(
+        app,
+        [str(_MINIMAL), "--no-browser", "--port", "0"],
+        env={"FACTORY_CONSOLE_WRITE_TOKEN": pin},
+    )
+
+    assert result.exit_code == 2, result.output
+    assert "FACTORY_CONSOLE_WRITE_TOKEN" in result.output
+
+
 def test_full_boot_prints_contract_line_and_configures_logging(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -387,6 +478,52 @@ def test_explicit_port_in_use_in_process_exits_two(monkeypatch: pytest.MonkeyPat
         assert result.exit_code == 2
     finally:
         holder.close()
+
+
+def test_malformed_manifest_announces_no_write_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ``create_app`` mints AND announces the per-session token, so building it before
+    # the boot guards printed a real secret for a server that then exited 3 without
+    # binding a socket. Pinning the absence here is what stops the construction from
+    # drifting back above the guards: the exit code alone stays 3 either way.
+    monkeypatch.setattr("factory_console.cli.uvicorn.Server", _StubServer)
+    monkeypatch.setattr("factory_console.cli.configure_logging", lambda level: None)
+
+    result = runner.invoke(app, [str(_MALFORMED), "--no-browser", "--port", "0"])
+
+    assert result.exit_code == 3
+    assert WRITE_TOKEN_HEADER not in result.output
+
+
+def test_port_in_use_announces_no_write_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The operator-facing trap this ordering closes: a second console started on a
+    # taken port used to print a fresh token before exiting 2. Copying it authorizes
+    # nothing — the RUNNING instance holds a different one — and the deliberately
+    # opaque 401 gives no way to tell why.
+    monkeypatch.setattr("factory_console.cli.uvicorn.Server", _StubServer)
+    monkeypatch.setattr("factory_console.cli.configure_logging", lambda level: None)
+    holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        holder.bind(("127.0.0.1", 0))
+        port = holder.getsockname()[1]
+
+        result = runner.invoke(app, [str(_MINIMAL), "--no-browser", "--port", str(port)])
+
+        assert result.exit_code == 2
+        assert WRITE_TOKEN_HEADER not in result.output
+    finally:
+        holder.close()
+
+
+def test_successful_boot_still_announces_the_write_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The other half of the ordering fix: moving construction below the guards must not
+    # cost the announcement on the path that DOES serve, or the operator has no token.
+    monkeypatch.setattr("factory_console.cli.uvicorn.Server", _StubServer)
+    monkeypatch.setattr("factory_console.cli.configure_logging", lambda level: None)
+
+    result = runner.invoke(app, [str(_MINIMAL), "--no-browser", "--port", "0"])
+
+    assert result.exit_code == 0
+    assert f"{WRITE_TOKEN_HEADER}: " in result.output
 
 
 def test_boot_starts_browser_thread_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:

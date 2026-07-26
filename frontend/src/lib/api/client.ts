@@ -6,6 +6,10 @@
  * or on a network failure. All requests are same-origin: wrappers pass a path
  * WITHOUT a leading slash (e.g. `project`, `tickets?status=todo`), and absolute
  * URLs are refused.
+ *
+ * The mutating wrappers at the bottom of the file add this session's write token
+ * in {@link TOKEN_HEADER} and otherwise go through the very same {@link request},
+ * so writes inherit the same guard, timeout, and error envelope as reads.
  */
 import { ApiError } from './errors';
 import type {
@@ -16,9 +20,13 @@ import type {
 	SearchHit,
 	SearchResponse,
 	Ticket,
+	TicketCreate,
 	TicketGraph,
 	TicketListResponse,
-	TicketSummary
+	TicketSummary,
+	TicketUpdate,
+	WritePreview,
+	WriteResult
 } from './models';
 
 const API_V1_PREFIX = '/api/v1';
@@ -31,6 +39,20 @@ const REQUEST_TIMEOUT_MS = 10_000;
 // An absolute reference: a URL scheme (`http:`, `file:`, …) or a
 // protocol-relative `//host` prefix. Same-origin paths never match.
 const ABSOLUTE_REFERENCE = /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i;
+
+/**
+ * Header carrying this session's write token on every mutating request.
+ *
+ * MUST stay byte-identical to the backend's `WRITE_TOKEN_HEADER`
+ * (`server/factory_console/config.py`), which the OpenAPI document publishes as
+ * the `FactoryWriteToken` apiKey security scheme; a mismatch makes every write
+ * fail with the 401 `write_token_invalid` envelope.
+ */
+export const TOKEN_HEADER = 'X-Factory-Write-Token';
+
+// Query flag every write verb accepts to preview instead of apply. The response
+// is the same `WriteResult` envelope with `applied: false`.
+const DRY_RUN_QUERY = 'dryRun=true';
 
 /** Optional filters for {@link listTickets}, forwarded as query params. */
 export interface ListTicketsParams {
@@ -174,4 +196,94 @@ export function getRoadmap(): Promise<Roadmap> {
 /** `GET /api/v1/health` — the liveness probe. */
 export function getHealth(): Promise<Health> {
 	return request<Health>('health');
+}
+
+/**
+ * One mutation, as a discriminated union over the three write verbs.
+ *
+ * This is the shape {@link previewWrite} takes, so a preview is described exactly
+ * like the apply it previews and the compiler enforces which fields each verb
+ * needs: `create` carries a body and no id (the id lives IN the body), `update`
+ * carries both, `delete` carries only an id. A flat
+ * `previewWrite(verb, id?, body?, token)` tuple could not express that — it would
+ * accept `('delete', undefined, body, token)` and other nonsense.
+ */
+export type WriteRequest =
+	| { readonly verb: 'create'; readonly body: TicketCreate }
+	| { readonly verb: 'update'; readonly id: string; readonly body: TicketUpdate }
+	| { readonly verb: 'delete'; readonly id: string };
+
+// The path, method, and serialized body of one write — the ONLY place the three
+// verbs differ. Ids are `encodeURIComponent`-escaped exactly like `getTicket`, so
+// an id can never break out of the same-origin path.
+function writeTarget(write: WriteRequest): {
+	readonly path: string;
+	readonly method: 'POST' | 'PUT' | 'DELETE';
+	readonly body?: string;
+} {
+	switch (write.verb) {
+		case 'create':
+			return { path: 'tickets', method: 'POST', body: JSON.stringify(write.body) };
+		case 'update':
+			return {
+				path: `tickets/${encodeURIComponent(write.id)}`,
+				method: 'PUT',
+				body: JSON.stringify(write.body)
+			};
+		case 'delete':
+			return { path: `tickets/${encodeURIComponent(write.id)}`, method: 'DELETE' };
+	}
+}
+
+/**
+ * Send one write through the shared {@link request}, applying it or previewing it.
+ *
+ * Every write goes through here so the same-origin refusal, the request timeout,
+ * and the `ApiError` envelope normalization apply to mutations exactly as they do
+ * to reads — there is no second fetch path.
+ */
+function sendWrite(
+	write: WriteRequest,
+	token: string,
+	{ dryRun }: { dryRun: boolean }
+): Promise<WriteResult> {
+	const { path, method, body } = writeTarget(write);
+	return request<WriteResult>(dryRun ? `${path}?${DRY_RUN_QUERY}` : path, {
+		method,
+		headers: {
+			[TOKEN_HEADER]: token,
+			// A content-type only describes a body; DELETE sends none.
+			...(body === undefined ? {} : { 'content-type': 'application/json' })
+		},
+		body
+	});
+}
+
+/** `POST /api/v1/tickets` — create the ticket and return the applied result (`applied: true`). */
+export function createTicket(body: TicketCreate, token: string): Promise<WriteResult> {
+	return sendWrite({ verb: 'create', body }, token, { dryRun: false });
+}
+
+/** `PUT /api/v1/tickets/{id}` — overwrite the ticket and return the applied result. */
+export function updateTicket(id: string, body: TicketUpdate, token: string): Promise<WriteResult> {
+	return sendWrite({ verb: 'update', id, body }, token, { dryRun: false });
+}
+
+/**
+ * `DELETE /api/v1/tickets/{id}` — delete the ticket.
+ *
+ * Resolves to the same {@link WriteResult} envelope as the other two verbs (the
+ * server answers `200` with a body, not a bodiless `204`), so a delete's diff
+ * renders in the same confirmation view as a create or an edit.
+ */
+export function deleteTicket(id: string, token: string): Promise<WriteResult> {
+	return sendWrite({ verb: 'delete', id }, token, { dryRun: false });
+}
+
+/**
+ * The same verb with `?dryRun=true` — the diff that WOULD be written, having
+ * written nothing (`applied: false`, `ticket: null`).
+ */
+export function previewWrite(write: WriteRequest, token: string): Promise<WritePreview> {
+	return sendWrite(write, token, { dryRun: true });
 }

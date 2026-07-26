@@ -14,7 +14,12 @@ watcher backbone the SSE endpoint (T45) builds on. It also accepts an optional
 write-core :class:`~factory_console.file_adapter.writer_protocol.FileWriter` (T60/T61's
 port), stashed on ``app.state.file_writer`` for the ``Depends(get_file_writer)`` seam
 the v2 write endpoints consume; the writer is stateless, so it drives no lifespan.
-It wires the two cross-cutting
+It mints the per-session write token (T64) — the defence-in-depth secret every v2
+mutation must present in the
+:data:`~factory_console.config.WRITE_TOKEN_HEADER` header — stashing it on
+``app.state.write_token`` for
+:func:`~factory_console.api.write_token.require_write_token` and announcing it on
+stderr for the human operator. It wires the two cross-cutting
 concerns every endpoint relies on: the domain/validation exception handlers
 (:func:`~factory_console.api.error_handlers.register_error_handlers`) and a single
 access-log line per request (:class:`AccessLogMiddleware`). The packaged SPA is
@@ -33,6 +38,8 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import secrets
+import sys
 import time
 from collections.abc import AsyncIterator
 from importlib import resources
@@ -49,6 +56,8 @@ from starlette.types import Scope
 from factory_console.api.error_handlers import register_error_handlers
 from factory_console.api.v1 import API_V1_PREFIX
 from factory_console.api.v1 import router as v1_router
+from factory_console.api.write_token import publish_write_token_scheme
+from factory_console.config import WRITE_TOKEN_HEADER
 from factory_console.file_adapter.protocol import FileAdapter
 from factory_console.file_adapter.watcher import FileWatcher
 from factory_console.file_adapter.writer_protocol import FileWriter
@@ -166,6 +175,44 @@ async def _watcher_lifespan(app: FastAPI) -> AsyncIterator[None]:
             file_watcher.stop()
 
 
+# Entropy (in bytes) of a generated write token. 32 bytes is the ``secrets`` module's
+# own recommendation for a value that must resist brute force, and yields a ~43-char
+# URL-safe string — short enough for an operator to copy out of the terminal.
+_WRITE_TOKEN_BYTES = 32
+
+
+def _announce_write_token(token: str, *, generated: bool) -> None:
+    """Tell the human operator how to authenticate writes this session.
+
+    Deliberately a ``print`` to ``sys.stderr`` rather than a log call: the token is
+    a secret, and the write-path NFR is that it never reaches a log line, so it must
+    NOT flow through the configured logging handlers (files, aggregation, the access
+    log). stderr also keeps it off stdout, whose only content is the CLI's
+    machine-parsable contract line.
+
+    ``generated`` selects what is worth saying, because the two cases differ in both
+    truth and need. A generated token exists nowhere else, so it is printed and the
+    operator is told it will not survive a restart. A *pinned* one they already have
+    (they set ``FACTORY_CONSOLE_WRITE_TOKEN``), so the value is withheld: echoing it
+    would say nothing new while writing their long-lived secret into whatever
+    captures stderr — a supervisor or CI log file, i.e. exactly the persistence
+    keeping this off the logging handlers is meant to avoid.
+    """
+    if generated:
+        print(f"{WRITE_TOKEN_HEADER}: {token}", file=sys.stderr)
+        print(
+            "  send this header on write requests; a new token is minted at every start",
+            file=sys.stderr,
+        )
+        return
+    print(f"{WRITE_TOKEN_HEADER}: <pinned, not echoed>", file=sys.stderr)
+    print(
+        "  send this header on write requests; the value is the one you pinned in "
+        "FACTORY_CONSOLE_WRITE_TOKEN",
+        file=sys.stderr,
+    )
+
+
 def create_app(
     file_adapter: FileAdapter,
     *,
@@ -173,6 +220,7 @@ def create_app(
     project_root: Path,
     file_watcher: FileWatcher | None = None,
     file_writer: FileWriter | None = None,
+    write_token: str | None = None,
 ) -> FastAPI:
     """Build the Factory Console app around an injected ``FileAdapter``.
 
@@ -187,7 +235,21 @@ def create_app(
     ``app.state.file_writer`` for the ``Depends(get_file_writer)`` seam; it is
     stateless, so it drives no lifespan, and leaving it ``None`` keeps the app
     write-free until a write route asks for it (then a missing writer is a wiring
-    bug the seam raises on). Registers the domain/validation exception handlers and
+    bug the seam raises on).
+
+    ``write_token`` pins the per-session write secret every v2 mutation must present
+    in the :data:`~factory_console.config.WRITE_TOKEN_HEADER` header (an operator
+    override from ``FACTORY_CONSOLE_WRITE_TOKEN``, or a fixed value in tests);
+    leaving it ``None`` — the normal case — mints a fresh random one, so the token
+    never outlives the process. Either way it is stashed on
+    ``app.state.write_token`` for
+    :func:`~factory_console.api.write_token.require_write_token` and announced on
+    stderr (the value itself only when it was generated — a pin the operator already
+    holds is not echoed), and its ``apiKey`` security scheme is published in the
+    OpenAPI document so the contract describes the header. Read routes are untouched:
+    nothing here attaches a global dependency, so viewing the project needs no header.
+
+    Registers the domain/validation exception handlers and
     the access-log middleware, includes the v1 router, and mounts the packaged SPA
     last. ``project_root`` is non-optional: the CLI always discovers a root before
     boot and tests always pass a fixture root.
@@ -205,8 +267,15 @@ def create_app(
     app.state.version = version
     app.state.file_watcher = file_watcher
     app.state.file_writer = file_writer
+    token = write_token or secrets.token_urlsafe(_WRITE_TOKEN_BYTES)
+    app.state.write_token = token
+    # ``generated`` mirrors the ``or`` above exactly rather than testing ``is None``:
+    # any falsy pin takes the generate branch, and the announcement must then print
+    # the value — claiming "pinned" would withhold a token the operator has no copy of.
+    _announce_write_token(token, generated=not write_token)
 
     register_error_handlers(app)
+    publish_write_token_scheme(app)
     app.add_middleware(AccessLogMiddleware)
     app.include_router(v1_router)
     _mount_static(app)
@@ -226,12 +295,33 @@ def create_dev_app() -> FastAPI:
     ``watcher_real.py``, or ``real_writer.py`` (and never imports ``watchdog``) —
     the only runtime users of the concrete adapter/watcher/writer are this dev
     shortcut and T25's CLI.
+
+    The write token comes from ``FACTORY_CONSOLE_WRITE_TOKEN`` via
+    :func:`~factory_console.config.read_write_token` so a dev loop can pin it across
+    reloads (uvicorn's reloader re-runs this factory, which would otherwise mint a new
+    token and invalidate the one in the operator's clipboard); unset, ``create_app``
+    generates one per boot. Reading it through that helper rather than a bare
+    ``Settings()`` matters here: this factory never chooses a bind host (``dev.sh``
+    passes ``--host`` to uvicorn itself), so a non-loopback ``FACTORY_CONSOLE_HOST``
+    left in the developer's shell must not be validated — and kill the dev server —
+    on the way to fetching a token.
     """
     from factory_console import __version__
+    from factory_console.config import read_write_token
     from factory_console.file_adapter.discovery import discover_project
     from factory_console.file_adapter.real import RealFileAdapter
     from factory_console.file_adapter.real_writer import RealFileWriter
     from factory_console.file_adapter.watcher_real import RealFileWatcher
+
+    # Same exit-2-style handling the CLI gives this variable. A bare ValueError here
+    # would surface as an unhandled traceback out of uvicorn's factory loader — and
+    # because dev.sh runs with ``--reload``, the factory re-runs on every save, so a
+    # too-short pin left in the shell would crash-loop the dev server instead of
+    # failing once with the message that names the fix.
+    try:
+        write_token = read_write_token()
+    except ValueError as exc:
+        raise SystemExit(f"{exc}\nSet a valid FACTORY_CONSOLE_WRITE_TOKEN or unset it.") from exc
 
     root = discover_project(None, Path.cwd())
     return create_app(
@@ -240,4 +330,5 @@ def create_dev_app() -> FastAPI:
         project_root=root,
         file_watcher=RealFileWatcher(root),
         file_writer=RealFileWriter(),
+        write_token=write_token,
     )

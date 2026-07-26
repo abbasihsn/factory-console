@@ -16,9 +16,15 @@ export {
 	searchTickets,
 	getRoadmap,
 	getHealth,
+	createTicket,
+	updateTicket,
+	deleteTicket,
+	previewWrite,
+	TOKEN_HEADER,
 	type ListTicketsParams,
 	type SearchParams,
-	type Filters
+	type Filters,
+	type WriteRequest
 } from './client';
 export { ApiError } from './errors';
 export type { ApiErrorInit } from './errors';
@@ -37,5 +43,11 @@ export type {
 	Roadmap,
 	RoadmapMilestone,
 	RoadmapItem,
-	DepNeighborhood
+	DepNeighborhood,
+	TicketCreate,
+	TicketUpdate,
+	WriteResult,
+	WritePreview,
+	DiffPreview,
+	FileDiff
 } from './models';

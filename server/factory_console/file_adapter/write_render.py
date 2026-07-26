@@ -38,6 +38,10 @@ from factory_console.errors import FactoryConsoleError
 from factory_console.file_adapter.manifest import load_manifest
 from factory_console.file_adapter.path_safety import PathTraversal
 from factory_console.file_adapter.roadmap_parse import _LIST_ITEM_RE, _extract_ticket_id
+from factory_console.file_adapter.ticket_md import (
+    TicketFileUnreadable,
+    _split_front_matter,
+)
 
 _TICKET_ID_RE = re.compile(TICKET_ID_PATTERN)
 """The canonical ticket-id pattern compiled once at import for re-validation."""
@@ -46,6 +50,30 @@ _ID_ESCAPES_ROOT = "Ticket id resolves outside the project root"
 
 _FENCE = "---"
 """A front-matter fence line — exactly three dashes on their own line."""
+
+_YAML_WIDTH = 10**6
+"""Effectively-infinite line width, so a long scalar is never folded.
+
+PyYAML defaults to ``width=80`` and folds any longer plain scalar onto a
+continuation line. Real ticket headers carry ``provides:`` values well past that,
+so the default would rewrite those lines on every edit — churn on text the user
+never touched, in the very diff the dry-run preview exists to show.
+"""
+
+
+class _BlockSequenceDumper(yaml.SafeDumper):
+    """A ``SafeDumper`` that INDENTS block sequences under their mapping key.
+
+    PyYAML emits ``dependsOn:`` items flush with the key (``- CAD-100``) while the
+    App Factory writes them indented (``  - CAD-100``). Without this the two styles
+    disagree and every list line in a preserved header shows as changed. Pairs with
+    :data:`_YAML_WIDTH` to keep a re-dumped header byte-identical to the on-disk one
+    wherever the values did not actually change.
+    """
+
+    def increase_indent(self, flow: bool = False, indentless: bool = False) -> None:
+        super().increase_indent(flow=flow, indentless=False)
+
 
 _DEFAULT_STATUS = "todo"
 """The status a freshly created ticket carries in the manifest."""
@@ -156,6 +184,29 @@ def _read_text_or_none(path: Path) -> str | None:
         return None
 
 
+def _read_ticket_md_or_none(ticket_id: str, path: Path) -> str | None:
+    """Return a ticket ``.md``'s text, or ``None`` only when it is genuinely ABSENT.
+
+    Unlike :func:`_read_text_or_none`, an existing-but-UNREADABLE file (a directory,
+    a permission-denied read, non-UTF-8 bytes) raises :class:`TicketFileUnreadable`
+    instead of reading as ``None``. An edit rebuilds the ``.md`` from what is on
+    disk, so collapsing "unreadable" into "absent" would overwrite — and destroy —
+    the very front matter the merge exists to preserve, on a file the server could
+    not even read. Failing closed surfaces it as the same mapped envelope the read
+    path already returns.
+
+    A missing file still yields ``None``: the manifest entry is what makes a ticket
+    editable, so an absent body file is a create-like edit, not a failure. Only the
+    ticket id reaches the raised error, so no filesystem path leaks.
+    """
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError) as exc:
+        raise TicketFileUnreadable(ticket_id) from exc
+
+
 def _read_manifest_source(path: Path) -> tuple[str, dict[str, Any]]:
     """Return the manifest's raw text and its parsed full object.
 
@@ -214,21 +265,64 @@ def _draft_to_entry(draft: TicketDraft) -> dict[str, Any]:
     }
 
 
+_MANIFEST_MIRRORED_KEYS = ("title", "track", "milestone", "dependsOn", "provides", "files")
+"""The fields an edit OWNS — the ones it overwrites wherever they are stored.
+
+Named once because they are written in two coupled places: the manifest entry
+(:func:`_merge_edit`, always) and the ticket ``.md``'s YAML header
+(:func:`_overlay_front_matter`, where the header already carries them). Two
+independent copies of this list is exactly how the two files drift apart.
+"""
+
+_FACTORY_OWNED_FRONT_MATTER_KEYS = frozenset({"id", "status", *_MANIFEST_MIRRORED_KEYS})
+"""Front-matter keys a CLIENT may never set through ``frontMatter``.
+
+``id`` and ``status`` are the factory's alone (:func:`_merge_edit` keeps them out of
+an edit for the same reason); the mirrored keys are owned by the edit's own named
+fields. ``frontMatter`` is an open ``dict`` on a public write route, so without this
+filter a caller could set them there and desynchronize the ``.md`` header from the
+manifest entry rendered alongside it.
+"""
+
+
+def _edit_mirror(edit: TicketEdit) -> dict[str, Any]:
+    """The edit's :data:`_MANIFEST_MIRRORED_KEYS` values, in their stored shapes.
+
+    ``provides`` stays the scalar-string manifest shape; ``dependsOn`` / ``files``
+    are copied to plain lists so no caller shares the model's sequence.
+    """
+    return {
+        "title": edit.title,
+        "track": edit.track,
+        "milestone": edit.milestone,
+        "dependsOn": list(edit.dependsOn),
+        "provides": edit.provides,
+        "files": list(edit.files),
+    }
+
+
+def _client_front_matter(front_matter: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep only the keys a client legitimately owns in ``frontMatter``.
+
+    Drops :data:`_FACTORY_OWNED_FRONT_MATTER_KEYS` so an arbitrary extra key (e.g.
+    ``owner``, ``estimate``) still round-trips while a factory-owned one cannot be
+    smuggled past the named fields that govern it.
+    """
+    return {
+        key: value
+        for key, value in front_matter.items()
+        if key not in _FACTORY_OWNED_FRONT_MATTER_KEYS
+    }
+
+
 def _merge_edit(existing: Mapping[str, Any], edit: TicketEdit) -> dict[str, Any]:
     """Overlay an edit's fields onto the EXISTING raw manifest entry.
 
     Starts from a copy of the existing entry so unknown fields (e.g. ``estimate``)
-    and the entry's ``id`` / ``status`` survive; only the editable fields are
-    overwritten. ``provides`` stays the scalar-string manifest shape.
+    and the entry's ``id`` / ``status`` survive; only the editable fields
+    (:func:`_edit_mirror`) are overwritten.
     """
-    merged = dict(existing)
-    merged["title"] = edit.title
-    merged["track"] = edit.track
-    merged["milestone"] = edit.milestone
-    merged["dependsOn"] = list(edit.dependsOn)
-    merged["provides"] = edit.provides
-    merged["files"] = list(edit.files)
-    return merged
+    return {**existing, **_edit_mirror(edit)}
 
 
 # --------------------------------------------------------------------------- #
@@ -236,21 +330,110 @@ def _merge_edit(existing: Mapping[str, Any], edit: TicketEdit) -> dict[str, Any]
 # --------------------------------------------------------------------------- #
 
 
+def _overlay_front_matter(existing: Mapping[str, Any], edit: TicketEdit) -> dict[str, Any]:
+    """Overlay an edit onto an EXISTING ``.md`` front-matter mapping. Pure.
+
+    The ``.md`` counterpart of :func:`_merge_edit`, and now for the same reason in
+    full. Starting from what is on disk means an edit never silently drops a key it
+    was never given — rendering from ``edit.frontMatter`` alone (which defaults to
+    ``{}``) deleted the whole YAML header on every ordinary edit. But the header
+    also MIRRORS the manifest fields the edit does own, so those are refreshed from
+    the edit too; leaving them at their on-disk values made the ``.md`` contradict
+    the ``tickets.json`` entry rewritten in the same change-set, permanently (every
+    later edit re-based off the same stale copy).
+
+    A mirrored key is refreshed only where the header ALREADY carries it, so a
+    ``.md`` that never had one does not gain it. ``frontMatter`` is applied last but
+    filtered through :func:`_client_front_matter`, so a client can add or override
+    its own keys and nothing else.
+
+    Kept pure and free of disk access so both :class:`FileWriter` implementations
+    can share it and cannot drift on what an edit does to a header.
+    """
+    merged = dict(existing)
+    merged.update({key: value for key, value in _edit_mirror(edit).items() if key in existing})
+    merged.update(_client_front_matter(edit.frontMatter))
+    return merged
+
+
+def _parse_front_matter(front_matter_yaml: str | None) -> dict[str, Any]:
+    """Parse a raw front-matter block with :func:`read_ticket_md`'s tolerance.
+
+    Malformed YAML, or YAML that parses to a non-mapping, yields ``{}`` rather than
+    raising — matching the read path, which never fails a ticket over a bad header.
+    """
+    if front_matter_yaml is None:
+        return {}
+    try:
+        parsed = yaml.safe_load(front_matter_yaml)
+    except yaml.YAMLError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _dump_front_matter(front_matter: Mapping[str, Any]) -> str | None:
+    """Serialize front matter in the App Factory's on-disk style, or ``None`` if empty.
+
+    ``sort_keys=False`` keeps author order; ``allow_unicode=True`` keeps non-ASCII
+    values verbatim, matching the raw UTF-8 the body and manifest are rendered with
+    (see :func:`_serialize_manifest`) so no coupled file escapes characters the user
+    never touched. :class:`_BlockSequenceDumper` and :data:`_YAML_WIDTH` pin the
+    sequence indentation and line width to the same end, for the header's own lines.
+    """
+    if not front_matter:
+        return None
+    return yaml.dump(
+        dict(front_matter),
+        Dumper=_BlockSequenceDumper,
+        sort_keys=False,
+        allow_unicode=True,
+        default_flow_style=False,
+        width=_YAML_WIDTH,
+    )
+
+
+def _render_md_text(front_matter_yaml: str | None, body_markdown: str) -> str:
+    """Assemble a ``.md`` from an ALREADY-serialized header block plus the body.
+
+    ``None`` means no header, so emit just the body with no fence. Taking the block
+    as text is what lets an edit reuse the on-disk header verbatim (see
+    :func:`render_edit_md`) instead of round-tripping it through YAML.
+    """
+    if front_matter_yaml is None:
+        return body_markdown
+    return f"{_FENCE}\n{front_matter_yaml}{_FENCE}\n{body_markdown}"
+
+
 def _render_md(front_matter: Mapping[str, Any], body_markdown: str) -> str:
     """Render a ticket ``.md`` from optional YAML front-matter plus the body.
 
-    When ``front_matter`` is non-empty, emit a ``---`` fenced YAML block
-    (``sort_keys=False`` to keep author order) followed by the body — round-trip
-    consistent with :func:`~factory_console.file_adapter.ticket_md.read_ticket_md`.
-    When it is empty, emit just the body with no fence. ``allow_unicode=True``
-    keeps non-ASCII front-matter values verbatim, matching the raw-UTF-8 the body
-    and manifest are rendered with (see :func:`_serialize_manifest`) so no coupled
-    file escapes characters the user never touched.
+    Round-trip consistent with
+    :func:`~factory_console.file_adapter.ticket_md.read_ticket_md`.
     """
-    if not front_matter:
-        return body_markdown
-    yaml_block = yaml.safe_dump(dict(front_matter), sort_keys=False, allow_unicode=True)
-    return f"{_FENCE}\n{yaml_block}{_FENCE}\n{body_markdown}"
+    return _render_md_text(_dump_front_matter(front_matter), body_markdown)
+
+
+def render_edit_md(current_text: str | None, edit: TicketEdit) -> str:
+    """Render an edited ticket ``.md`` from the ONE text already read for the diff.
+
+    Takes the current text rather than a project + id so the header folded into the
+    new text and the ``currentText`` shown in the diff come from a single read —
+    otherwise a concurrent factory write between two reads would make the preview
+    and the text about to be written describe different base states.
+
+    When the overlay leaves the header unchanged (the common body-only edit), the
+    on-disk block is reused BYTE-FOR-BYTE rather than re-dumped, so comments and any
+    formatting PyYAML cannot round-trip survive and the ``.md`` diff shows only the
+    body. Otherwise the merged header is re-dumped in the on-disk style.
+
+    Shared with :class:`FakeFileWriter` so both writers agree on what an edit does.
+    """
+    front_matter_yaml, _body = _split_front_matter(current_text) if current_text else (None, "")
+    existing = _parse_front_matter(front_matter_yaml)
+    merged = _overlay_front_matter(existing, edit)
+    if front_matter_yaml is not None and merged == existing:
+        return _render_md_text(front_matter_yaml, edit.bodyMarkdown)
+    return _render_md_text(_dump_front_matter(merged), edit.bodyMarkdown)
 
 
 # --------------------------------------------------------------------------- #
@@ -494,7 +677,10 @@ def render_create(project: Project, draft: TicketDraft) -> list[PlannedChange]:
             # in the diff as a modify instead of being silently clobbered, matching
             # the edit/delete siblings.
             currentText=_read_text_or_none(md_path),
-            newText=_render_md(draft.frontMatter, draft.bodyMarkdown),
+            # Filtered for the same reason as an edit's: ``frontMatter`` is an open
+            # dict on a public route, and the factory-owned keys are set from the
+            # manifest entry rendered alongside this file, never by the caller.
+            newText=_render_md(_client_front_matter(draft.frontMatter), draft.bodyMarkdown),
         ),
     ]
     roadmap_change = _roadmap_change(
@@ -509,10 +695,14 @@ def render_create(project: Project, draft: TicketDraft) -> list[PlannedChange]:
 def render_edit(project: Project, ticket_id: str, edit: TicketEdit) -> list[PlannedChange]:
     """Compute the planned changes for editing ticket ``ticket_id``.
 
-    Raises :class:`PathTraversal` if the id is unsafe and :class:`UnknownTicket`
-    (404) if it is absent. MERGES the edit onto the existing raw manifest entry so
-    unknown fields survive, re-renders the ``.md`` against its current on-disk
-    text, and — when a roadmap item carries the id — relabels that item in place.
+    Raises :class:`PathTraversal` if the id is unsafe, :class:`UnknownTicket` (404)
+    if it is absent, and :class:`TicketFileUnreadable` (500) if the ``.md`` exists
+    but cannot be read — an edit rebuilds that file from its current contents, so it
+    must not proceed on one it could not read. MERGES on both coupled files so
+    unknown fields survive — the edit onto the existing raw manifest entry
+    (:func:`_merge_edit`), and onto the ``.md``'s existing YAML header
+    (:func:`render_edit_md`) — replaces the ``.md`` body with ``edit.bodyMarkdown``,
+    and — when a roadmap item carries the id — relabels that item in place.
     """
     md_path = _safe_resolve(project, ticket_id)
     manifest_path = project.ticketsManifestPath
@@ -524,6 +714,10 @@ def render_edit(project: Project, ticket_id: str, edit: TicketEdit) -> list[Plan
     manifest_raw, manifest_obj = _read_manifest_source(manifest_path)
     manifest_obj["tickets"][index] = _merge_edit(manifest_obj["tickets"][index], edit)
 
+    # One read backs both halves of the .md change, so the diff's "current" and the
+    # header folded into its "new" can never come from different versions of the file.
+    current_md = _read_ticket_md_or_none(ticket_id, md_path)
+
     changes = [
         PlannedChange(
             path=manifest_path,
@@ -534,8 +728,8 @@ def render_edit(project: Project, ticket_id: str, edit: TicketEdit) -> list[Plan
         PlannedChange(
             path=md_path,
             relPath=_rel_posix(md_path, project.rootPath),
-            currentText=_read_text_or_none(md_path),
-            newText=_render_md(edit.frontMatter, edit.bodyMarkdown),
+            currentText=current_md,
+            newText=render_edit_md(current_md, edit),
         ),
     ]
     roadmap_change = _roadmap_change(

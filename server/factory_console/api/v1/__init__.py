@@ -19,6 +19,7 @@ from factory_console.api.v1.project import router as project_router
 from factory_console.api.v1.roadmap import router as roadmap_router
 from factory_console.api.v1.search import router as search_router
 from factory_console.api.v1.tickets import router as tickets_router
+from factory_console.api.v1.tickets_write import router as tickets_write_router
 
 # Every v1 route hangs off this prefix, so the schema is served at
 # ``/api/v1/openapi.json`` and each endpoint (e.g. ``/api/v1/project``) is prefixed
@@ -33,5 +34,6 @@ router.include_router(roadmap_router)
 router.include_router(search_router)
 router.include_router(graph_router)
 router.include_router(events_router)
+router.include_router(tickets_write_router)
 
 __all__ = ["API_V1_PREFIX", "router"]
