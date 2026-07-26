@@ -3,7 +3,16 @@
 
 	// Presentational only: no `$app/*` imports, so it renders deterministically
 	// under vitest/jsdom with a supplied error. `+error.svelte` wires `onReload`.
-	let { error, onReload }: { error: ApiError; onReload?: () => void } = $props();
+	//
+	// `label` names the button for callers whose action is not a reload — a modal
+	// cannot re-run its own fetch, so it dismisses instead and must not show a
+	// button reading "Reload". It defaults to `'Reload'`, so the page-level caller
+	// keeps today's text.
+	let {
+		error,
+		onReload,
+		label = 'Reload'
+	}: { error: ApiError; onReload?: () => void; label?: string } = $props();
 </script>
 
 <div class="mx-auto max-w-lg px-4 py-16 text-center">
@@ -17,6 +26,6 @@
 		class="mt-6 rounded bg-accent px-4 py-2 text-sm text-white hover:opacity-90"
 		onclick={() => onReload?.()}
 	>
-		Reload
+		{label}
 	</button>
 </div>

@@ -35,14 +35,19 @@ const NOTE_PREFIX = '\\';
 /**
  * Classify one already-newline-stripped diff line.
  *
- * The file headers share a first character with a del/add line, so they are
- * tested FIRST — but their prefixes include the space that follows the marker in
- * a real header, so they no longer swallow ordinary content. A removed `---`
- * front-matter fence (diff line `----`) reads as `del`, and an added one `add`.
+ * The file headers share their marker characters with del/add lines, so a prefix
+ * test alone can never separate them: a removed line whose own text is `-- note`
+ * arrives as `--- note`, trailing space included. The real rule is POSITIONAL —
+ * each `FileDiff.diff` covers ONE file, so `---`/`+++` headers can only appear
+ * BEFORE the first `@@` hunk header. `beforeFirstHunk` carries that position, and
+ * the prefix constants keep their trailing space so a body line inside the header
+ * region (e.g. `----`, a removed front-matter fence) still reads as del/add.
  */
-function classifyLine(text: string): DiffLineKind {
+function classifyLine(text: string, beforeFirstHunk: boolean): DiffLineKind {
 	if (text.startsWith(HUNK_PREFIX)) return 'hunk';
-	if (text.startsWith(OLD_FILE_PREFIX) || text.startsWith(NEW_FILE_PREFIX)) return 'meta';
+	if (beforeFirstHunk && (text.startsWith(OLD_FILE_PREFIX) || text.startsWith(NEW_FILE_PREFIX))) {
+		return 'meta';
+	}
 	if (text.startsWith(NOTE_PREFIX)) return 'meta';
 	// A bare '+' / '-' is an added / removed EMPTY line — still add/del.
 	if (text.startsWith('+')) return 'add';
@@ -56,11 +61,15 @@ function classifyLine(text: string): DiffLineKind {
  * Decisions worth knowing at the call site:
  * - An empty diff yields NO lines (`[]`), so a caller can treat an empty array
  *   as "nothing to show" without inspecting the string itself.
- * - A unified diff is newline-TERMINATED, so one trailing empty segment from the
- *   split is the terminator and is dropped — it is not a blank line. Interior
- *   blank lines are kept (as `context`).
+ * - The server's diffs are NOT newline-terminated: `write_diff.preview` passes
+ *   `lineterm=""` to `difflib.unified_diff` and `"\n".join(...)`s the result, so
+ *   there is no trailing segment to drop in production. Dropping one trailing
+ *   empty segment is DEFENSIVE, for hand-written or other callers that do
+ *   terminate. Interior blank lines are always kept (as `context`).
  * - A trailing `\r` is stripped per line so a CRLF diff classifies and renders
  *   the same as an LF one.
+ * - `---`/`+++` are read as file headers only before the first `@@` hunk header,
+ *   since one `FileDiff.diff` describes one file (see `classifyLine`).
  */
 export function parseDiffLines(diff: string): DiffLine[] {
 	if (diff === '') return [];
@@ -70,8 +79,11 @@ export function parseDiffLines(diff: string): DiffLine[] {
 		segments.pop();
 	}
 
+	let beforeFirstHunk = true;
 	return segments.map((segment) => {
 		const text = segment.endsWith('\r') ? segment.slice(0, -1) : segment;
-		return { text, kind: classifyLine(text) };
+		const kind = classifyLine(text, beforeFirstHunk);
+		if (kind === 'hunk') beforeFirstHunk = false;
+		return { text, kind };
 	});
 }

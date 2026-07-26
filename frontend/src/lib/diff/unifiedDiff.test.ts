@@ -67,6 +67,20 @@ describe('parseDiffLines', () => {
 		expect(kindsOf('----\n++++')).toEqual(['del', 'add']);
 	});
 
+	it('reads a del/add line that LOOKS like a file header as del/add once past the hunk', () => {
+		// Body text `-- fence` / `++ added` picks up the diff marker and arrives as
+		// `--- fence` / `+++ added` — space included, indistinguishable from a header
+		// by prefix alone. Position is what separates them: only the two lines before
+		// the `@@` are real headers.
+		expect(kindsOf('--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n--- fence\n+++ added')).toEqual([
+			'meta',
+			'meta',
+			'hunk',
+			'del',
+			'add'
+		]);
+	});
+
 	it('treats a bare - or + as a removed or added empty line', () => {
 		expect(kindsOf('-\n+')).toEqual(['del', 'add']);
 	});

@@ -90,17 +90,18 @@ describe('DiffPreviewModal', () => {
 		expect(screen.getByText('+brand new')).toBeTruthy();
 	});
 
-	it('color-codes added, removed and hunk lines differently', () => {
+	it('color-codes each diff line kind with its OWN class, so a swap cannot pass', () => {
 		render(DiffPreviewModal, { props: props() });
 
-		const added = screen.getByText('+fresh summary').className;
-		const removed = screen.getByText('-stale summary').className;
-		const hunk = screen.getByText('@@ -1,3 +1,3 @@').className;
-
-		expect(removed).toContain('text-danger');
-		expect(added).not.toBe(removed);
-		expect(hunk).not.toBe(added);
-		expect(hunk).not.toBe(removed);
+		// Pinned to the component's real LINE_CLASSES values, not just to pairwise
+		// inequality — swapping two entries has to fail here.
+		expect(screen.getByText('+fresh summary').className).toContain('text-emerald-700');
+		expect(screen.getByText('-stale summary').className).toContain('text-danger');
+		expect(screen.getByText('@@ -1,3 +1,3 @@').className).toContain('text-accent');
+		expect(screen.getByText('--- a/docs/planning/tickets/v2/T69.md').className).toContain(
+			'text-muted'
+		);
+		expect(screen.getByText('# T69').className).toContain('text-text');
 	});
 
 	it('shows a spinner and no diff while the preview is loading, with save gated', () => {
@@ -133,12 +134,14 @@ describe('DiffPreviewModal', () => {
 		expect(screen.queryByText('+fresh summary')).toBeNull();
 	});
 
-	it("dismisses via the error view's button, since the dialog cannot re-run the dry-run", async () => {
+	it("dismisses via the error view's button, labelled for what it actually does", async () => {
 		const onCancel = vi.fn();
 		const error: ApiError = { code: 'network_error', message: 'Request failed.' };
 		render(DiffPreviewModal, { props: props({ error, preview: null, onCancel }) });
 
-		await fireEvent.click(screen.getByRole('button', { name: 'Reload' }));
+		// The dialog cannot re-run the dry-run, so the button must not read "Reload".
+		expect(screen.queryByRole('button', { name: 'Reload' })).toBeNull();
+		await fireEvent.click(screen.getByRole('button', { name: 'Close' }));
 
 		expect(onCancel).toHaveBeenCalledTimes(1);
 	});
@@ -174,6 +177,51 @@ describe('DiffPreviewModal', () => {
 
 		expect(screen.getByText('This write would not change any files.')).toBeTruthy();
 		expect(saveButton().disabled).toBe(true);
+	});
+
+	it('notes a listed file whose diff is empty and keeps save disabled over it', () => {
+		// The server lists a change that differs only in a trailing newline with an
+		// EMPTY diff (`write_diff.preview` compares whole texts but diffs
+		// `splitlines()`), so the panel must say so and Save must stay gated — the
+		// user cannot authorize a write having been shown a blank box.
+		const newlineOnly: WritePreview = {
+			applied: false,
+			ticketId: 'T69',
+			ticket: null,
+			diff: {
+				ticketId: 'T69',
+				files: [{ path: 'docs/planning/notes.md', changeKind: 'modify', diff: '' }]
+			}
+		};
+		render(DiffPreviewModal, { props: props({ preview: newlineOnly }) });
+
+		expect(screen.getByText('docs/planning/notes.md')).toBeTruthy();
+		expect(screen.getByText('No line-level changes (trailing newline only).')).toBeTruthy();
+		expect(saveButton().disabled).toBe(true);
+	});
+
+	it('still allows save when only SOME of the previewed files have an empty diff', () => {
+		const mixed: WritePreview = {
+			applied: false,
+			ticketId: 'T69',
+			ticket: null,
+			diff: {
+				ticketId: 'T69',
+				files: [
+					{ path: 'docs/planning/notes.md', changeKind: 'modify', diff: '' },
+					{
+						path: 'docs/planning/tickets/v2/T69.md',
+						changeKind: 'modify',
+						diff: '@@ -1 +1 @@\n-old\n+new'
+					}
+				]
+			}
+		};
+		render(DiffPreviewModal, { props: props({ preview: mixed }) });
+
+		expect(screen.getByText('No line-level changes (trailing newline only).')).toBeTruthy();
+		expect(screen.getByText('+new')).toBeTruthy();
+		expect(saveButton().disabled).toBe(false);
 	});
 
 	it('fires onConfirm once when save is clicked on a reviewable preview', async () => {
