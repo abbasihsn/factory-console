@@ -20,6 +20,7 @@ from factory_console.domain import Project
 from factory_console.domain.write import TicketDraft, TicketEdit
 from factory_console.errors import to_error_response
 from factory_console.file_adapter.path_safety import PathTraversal
+from factory_console.file_adapter.ticket_md import TicketFileUnreadable
 from factory_console.file_adapter.write_render import (
     PlannedChange,
     TicketAlreadyExists,
@@ -551,3 +552,185 @@ def test_renders_never_write_to_disk(tmp_path: Path) -> None:
     render_delete(project, "TM-015")
 
     assert _snapshot(project) == before
+
+
+# --------------------------------------------------------------------------- #
+# .md front matter vs the manifest entry rendered beside it
+# --------------------------------------------------------------------------- #
+
+# A header shaped like the ones the App Factory actually writes: the manifest fields
+# mirrored into the YAML, two-space-indented block sequences, and a ``provides``
+# scalar past PyYAML's default 80-column fold width.
+_FACTORY_SHAPED_MD = """---
+id: TM-015
+title: Public read API
+status: todo
+track: api
+milestone: v1
+dependsOn:
+  - TM-001
+provides: GET /api/v1/trails/{slug}/status for the signed-in ranger and the public board
+files:
+  - server/trailmark/api/trail_status.py
+owner: ranger-team
+---
+# Old body
+"""
+
+
+def test_edit_refreshes_front_matter_keys_it_also_writes_to_the_manifest(tmp_path: Path) -> None:
+    """A header mirroring the manifest must track the edit, not keep stale values.
+
+    ``_merge_edit`` overwrites ``title``/``track``/``milestone``/``dependsOn``/
+    ``provides``/``files`` in ``tickets.json``, and real ticket headers duplicate
+    exactly those keys. Preserving them verbatim left the ``.md`` contradicting the
+    manifest entry rewritten in the SAME change-set — permanently, since every later
+    edit re-based off the same stale copy.
+    """
+    project = _make_project(tmp_path)
+    _seed(project)
+    (project.ticketsDir / "TM-015.md").write_text(_FACTORY_SHAPED_MD, encoding="utf-8")
+
+    changes = render_edit(project, "TM-015", _edit())
+
+    md = _by_rel(changes, "docs/planning/tickets/TM-015.md")
+    assert "title: Public trail-status REST endpoint (v2)" in md.newText
+    assert "title: Public read API" not in md.newText
+    assert "provides: GET /api/v1/trails/{slug}/status refreshed" in md.newText
+    assert "the public board" not in md.newText  # the stale scalar is gone
+    # Keys the edit does not own are still preserved.
+    assert "id: TM-015" in md.newText
+    assert "status: todo" in md.newText
+    assert "owner: ranger-team" in md.newText
+
+    # And the header now AGREES with the manifest entry rendered alongside it.
+    entry = next(
+        item
+        for item in json.loads(_by_rel(changes, _MANIFEST_REL).newText)["tickets"]
+        if item["id"] == "TM-015"
+    )
+    assert entry["title"] == "Public trail-status REST endpoint (v2)"
+    assert f"title: {entry['title']}" in md.newText
+    assert f"provides: {entry['provides']}" in md.newText
+
+
+def test_edit_does_not_add_mirrored_keys_a_header_never_carried(tmp_path: Path) -> None:
+    """Refreshing is limited to keys already on disk, so a sparse header stays sparse."""
+    project = _make_project(tmp_path)
+    _seed(project)
+    (project.ticketsDir / "TM-015.md").write_text(
+        "---\nid: TM-015\nowner: ranger-team\n---\n# Old body\n", encoding="utf-8"
+    )
+
+    changes = render_edit(project, "TM-015", _edit())
+
+    md = _by_rel(changes, "docs/planning/tickets/TM-015.md")
+    assert "title:" not in md.newText
+    assert "dependsOn:" not in md.newText
+    assert "owner: ranger-team" in md.newText
+
+
+def test_body_only_edit_leaves_the_front_matter_block_byte_identical(tmp_path: Path) -> None:
+    """Editing only the body must not reformat one character of the YAML header.
+
+    The unified diff IS this feature's safety mechanism, so a round-trip through
+    PyYAML that re-indents block sequences or folds an over-80-column scalar would
+    fill the preview with churn on lines the user never touched.
+    """
+    project = _make_project(tmp_path)
+    _seed(project)
+    (project.ticketsDir / "TM-015.md").write_text(_FACTORY_SHAPED_MD, encoding="utf-8")
+
+    # Every manifest-mirrored field left exactly as the header already has it.
+    unchanged = _edit(
+        title="Public read API",
+        track="api",
+        milestone="v1",
+        dependsOn=["TM-001"],
+        provides=("GET /api/v1/trails/{slug}/status for the signed-in ranger and the public board"),
+        files=["server/trailmark/api/trail_status.py"],
+        bodyMarkdown="# Brand new body\n",
+    )
+    changes = render_edit(project, "TM-015", unchanged)
+
+    md = _by_rel(changes, "docs/planning/tickets/TM-015.md")
+    header, _, _ = _FACTORY_SHAPED_MD.partition("# Old body")
+    assert md.newText == header + "# Brand new body\n"
+    assert "  - TM-001" in md.newText  # indentation preserved, not flattened
+    assert "the public board\n" in md.newText  # long scalar not folded
+
+
+def test_edit_refresh_keeps_the_on_disk_yaml_style(tmp_path: Path) -> None:
+    """When the header IS re-dumped, it keeps the factory's indentation and width."""
+    project = _make_project(tmp_path)
+    _seed(project)
+    (project.ticketsDir / "TM-015.md").write_text(_FACTORY_SHAPED_MD, encoding="utf-8")
+
+    changes = render_edit(project, "TM-015", _edit(dependsOn=["TM-001", "TM-002"]))
+
+    md = _by_rel(changes, "docs/planning/tickets/TM-015.md")
+    assert "  - TM-001\n  - TM-002\n" in md.newText
+    # A refreshed long scalar stays on ONE line rather than being folded at 80 cols.
+    long_lines = [line for line in md.newText.splitlines() if line.startswith("provides: ")]
+    assert long_lines == ["provides: GET /api/v1/trails/{slug}/status refreshed"]
+
+
+def test_edit_ignores_factory_owned_keys_sent_in_front_matter(tmp_path: Path) -> None:
+    """``frontMatter`` is an open dict on a public route; reserved keys must not pass.
+
+    ``_merge_edit`` refuses to let a client set ``id``/``status`` in the manifest, so
+    letting them through here would desynchronize the ``.md`` from the entry written
+    beside it — with the todo-only gate unable to notice, since it authorizes off the
+    run-state directory rather than the file.
+    """
+    project = _make_project(tmp_path)
+    _seed(project)
+    (project.ticketsDir / "TM-015.md").write_text(_FACTORY_SHAPED_MD, encoding="utf-8")
+
+    changes = render_edit(
+        project,
+        "TM-015",
+        _edit(frontMatter={"status": "merged", "id": "OTHER-1", "reviewer": "sam"}),
+    )
+
+    md = _by_rel(changes, "docs/planning/tickets/TM-015.md")
+    assert "status: todo" in md.newText
+    assert "status: merged" not in md.newText
+    assert "id: TM-015" in md.newText
+    assert "OTHER-1" not in md.newText
+    assert "reviewer: sam" in md.newText  # a key the client legitimately owns
+
+
+def test_create_ignores_factory_owned_keys_sent_in_front_matter(tmp_path: Path) -> None:
+    """The create path filters ``frontMatter`` the same way the edit path does."""
+    project = _make_project(tmp_path)
+    _seed(project)
+
+    changes = render_create(
+        project, _draft(frontMatter={"status": "merged", "title": "Spoofed", "reviewer": "sam"})
+    )
+
+    md = _by_rel(changes, "docs/planning/tickets/TM-050.md")
+    assert "status: merged" not in md.newText
+    assert "Spoofed" not in md.newText
+    assert "reviewer: sam" in md.newText
+
+
+def test_edit_refuses_a_ticket_md_that_exists_but_cannot_be_read(tmp_path: Path) -> None:
+    """An unreadable ``.md`` must fail closed, not be rebuilt from the request alone.
+
+    Treating "unreadable" like "absent" made the edit proceed and overwrite the file
+    with a header rebuilt from the request — destroying the very front matter the
+    merge exists to preserve, on a file the server could not even read.
+    """
+    project = _make_project(tmp_path)
+    _seed(project)
+    (project.ticketsDir / "TM-015.md").write_bytes(b"---\nid: TM-015\n---\n\xff\xfe not utf-8\n")
+
+    with pytest.raises(TicketFileUnreadable) as excinfo:
+        render_edit(project, "TM-015", _edit())
+
+    assert excinfo.value.status == 500
+    # The envelope names the ticket, never a filesystem path.
+    assert "TM-015" in str(excinfo.value.details)
+    assert str(tmp_path) not in to_error_response(excinfo.value)["error"]["message"]

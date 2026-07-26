@@ -313,6 +313,16 @@ def create_dev_app() -> FastAPI:
     from factory_console.file_adapter.real_writer import RealFileWriter
     from factory_console.file_adapter.watcher_real import RealFileWatcher
 
+    # Same exit-2-style handling the CLI gives this variable. A bare ValueError here
+    # would surface as an unhandled traceback out of uvicorn's factory loader — and
+    # because dev.sh runs with ``--reload``, the factory re-runs on every save, so a
+    # too-short pin left in the shell would crash-loop the dev server instead of
+    # failing once with the message that names the fix.
+    try:
+        write_token = read_write_token()
+    except ValueError as exc:
+        raise SystemExit(f"{exc}\nSet a valid FACTORY_CONSOLE_WRITE_TOKEN or unset it.") from exc
+
     root = discover_project(None, Path.cwd())
     return create_app(
         RealFileAdapter(),
@@ -320,5 +330,5 @@ def create_dev_app() -> FastAPI:
         project_root=root,
         file_watcher=RealFileWatcher(root),
         file_writer=RealFileWriter(),
-        write_token=read_write_token(),
+        write_token=write_token,
     )

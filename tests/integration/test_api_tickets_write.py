@@ -25,16 +25,26 @@ since that code is what the SPA branches on.
 from __future__ import annotations
 
 import logging
-import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
+from _write_support import (
+    AUTH,
+    PINNED_TOKEN,
+    WRONG_TOKEN,
+)
+from _write_support import (
+    client as _client,
+)
+from _write_support import (
+    real_app as _real_app,
+)
 from fastapi import FastAPI
 from fastapi.dependencies.utils import get_flat_dependant
 from fastapi.routing import APIRoute
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
 
 from factory_console.api.v1.tickets_write import _ALLOWED_QUERY_KEYS
 from factory_console.api.v1.tickets_write import router as write_router
@@ -44,16 +54,7 @@ from factory_console.config import WRITE_TOKEN_HEADER
 from factory_console.domain import Project
 from factory_console.file_adapter import FakeFileAdapter
 from factory_console.file_adapter.fake_writer import FakeFileWriter
-from factory_console.file_adapter.real import RealFileAdapter
-from factory_console.file_adapter.real_writer import RealFileWriter
 from factory_console.logging import _LOG_FORMAT
-
-WITH_RUN_STATE = Path(__file__).resolve().parents[1] / "fixtures" / "projects" / "with_run_state"
-
-# Pinned so the request headers can name the exact token create_app bound.
-PINNED_TOKEN = "pinned-write-token-for-tests"
-WRONG_TOKEN = "pinned-write-token-for-tesXX"
-AUTH = {WRITE_TOKEN_HEADER: PINNED_TOKEN}
 
 # The fixture's run-states: only ``todo`` ids are editable (write_gate.MUTABLE_STATES).
 TODO_ID = "CAD-131"
@@ -96,26 +97,6 @@ def _edit_body(**overrides: Any) -> dict[str, Any]:
     return body
 
 
-def _real_app(tmp_path: Path) -> tuple[FastAPI, Path]:
-    """Build the app over the filesystem pair and a throwaway copy of the fixture.
-
-    The copy is what makes a write test safe: the checked-in fixture is shared by the
-    read-side suites and must never be mutated. Both ports are rooted at the same copy,
-    so an adapter read after a writer apply sees the written state — the coupling
-    production has and the in-memory pair does not.
-    """
-    root = tmp_path / "project"
-    shutil.copytree(WITH_RUN_STATE, root)
-    app = create_app(
-        RealFileAdapter(),
-        version="0.0.0",
-        project_root=root,
-        file_writer=RealFileWriter(),
-        write_token=PINNED_TOKEN,
-    )
-    return app, root
-
-
 def _fake_app() -> FastAPI:
     """Build the app over the in-memory pair, for the paths that reach no port."""
     project = Project(
@@ -131,11 +112,6 @@ def _fake_app() -> FastAPI:
         file_writer=FakeFileWriter(manifest=[]),
         write_token=PINNED_TOKEN,
     )
-
-
-def _client(app: FastAPI) -> AsyncClient:
-    """An ``httpx.AsyncClient`` speaking ASGI directly to ``app`` (no socket)."""
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
 def _snapshot(root: Path) -> dict[str, bytes]:

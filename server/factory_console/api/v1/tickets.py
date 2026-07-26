@@ -23,12 +23,10 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
-from fastapi import Path as PathParam
 from pydantic import BaseModel, ConfigDict
 
-from factory_console.api.deps import get_file_adapter
+from factory_console.api.deps import TicketIdPath, get_file_adapter
 from factory_console.domain import DepNeighborhood, Ticket, TicketSummary
-from factory_console.domain.ticket import TICKET_ID_PATTERN
 from factory_console.file_adapter.protocol import FileAdapter
 from factory_console.services.deps_service import DepsService
 from factory_console.services.ticket_service import TicketService
@@ -72,7 +70,7 @@ async def list_tickets(
 
 @router.get("/tickets/{ticket_id}")
 async def get_ticket(
-    ticket_id: Annotated[str, PathParam(pattern=TICKET_ID_PATTERN)],
+    ticket_id: TicketIdPath,
     request: Request,
     adapter: FileAdapter = Depends(get_file_adapter),
 ) -> Ticket:
@@ -91,7 +89,7 @@ async def get_ticket(
 
 @router.get("/tickets/{ticket_id}/deps")
 async def get_ticket_deps(
-    ticket_id: Annotated[str, PathParam(pattern=TICKET_ID_PATTERN)],
+    ticket_id: TicketIdPath,
     request: Request,
     adapter: FileAdapter = Depends(get_file_adapter),
 ) -> DepNeighborhood:

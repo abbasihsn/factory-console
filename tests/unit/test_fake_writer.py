@@ -19,6 +19,7 @@ from factory_console.domain import Project, RunState
 from factory_console.domain.ticket import Ticket
 from factory_console.domain.write import DiffPreview, TicketDraft, TicketEdit, WriteResult
 from factory_console.file_adapter import fake_writer as fake_writer_module
+from factory_console.file_adapter import write_render
 from factory_console.file_adapter.fake_writer import FakeFileWriter
 from factory_console.file_adapter.write_gate import TicketNotMutable
 from factory_console.file_adapter.write_render import TicketAlreadyExists, UnknownTicket
@@ -414,3 +415,84 @@ def test_ticket_carries_seeded_run_state_and_provides_list() -> None:
     assert result.ticket.runState is RunState.todo
     assert result.ticket.provides == ["Nightly importer refreshed"]
     assert isinstance(result, WriteResult)
+
+
+def test_edit_with_default_front_matter_matches_the_real_renderer() -> None:
+    """The fake must render an edit's ``.md`` through the SAME helper as the real writer.
+
+    The parity test above passes ``frontMatter`` explicitly, which is the one case
+    where replacing the header and overlaying it agree — so it stayed green while the
+    two implementations disagreed on the case that actually happens. ``TicketEdit.
+    frontMatter`` defaults to ``{}`` (nothing in the read model or the SPA form can
+    populate it), and there the real writer preserves the on-disk header while the
+    fake used to delete the whole fence. A fake that drifts from the port here makes
+    every fake-backed suite green for the wrong reason.
+    """
+    front = {"id": "TM-001", "status": "todo", "title": "Old title", "owner": "ranger"}
+    writer = FakeFileWriter(
+        manifest=[_entry("TM-001", milestone="MVP")],
+        bodies={"TM-001": "# Old body\n"},
+        front_matter={"TM-001": front},
+        roadmap=None,
+    )
+    project = _make_project(with_roadmap=False)
+    edit = _edit(
+        title="Brand new title",
+        track="file-adapter",
+        milestone="MVP",
+        dependsOn=[],
+        provides="provides TM-001",
+        files=[],
+        bodyMarkdown="# New body\n",
+    )  # frontMatter left at its {} default — the ordinary case
+
+    preview = writer.preview_edit(project, "TM-001", edit)
+
+    md = next(f for f in preview.files if f.path == "docs/planning/tickets/TM-001.md")
+    current = write_render._render_md(front, "# Old body\n")
+    assert md.changeKind == "modify"
+    # Byte-for-byte what the real writer's renderer produces from the same inputs.
+    assert write_render.render_edit_md(current, edit) == write_render._render_md(
+        {**front, "title": "Brand new title"}, "# New body\n"
+    )
+    # The header survives rather than being deleted, and tracks the edited title.
+    assert "-status: todo" not in md.diff
+    assert "-owner: ranger" not in md.diff
+    assert "+title: Brand new title" in md.diff
+    assert "-title: Old title" in md.diff
+
+
+def test_applied_edit_keeps_front_matter_the_edit_did_not_send() -> None:
+    """Applying an edit must OVERLAY the seeded header, not replace it.
+
+    Replacing it made the fake's post-apply reads diverge from production, so a
+    follow-up preview against the same fake compared against the wrong base state.
+    """
+    writer = FakeFileWriter(
+        manifest=[_entry("TM-001", milestone="MVP")],
+        bodies={"TM-001": "# Old body\n"},
+        front_matter={"TM-001": {"id": "TM-001", "status": "todo", "owner": "ranger"}},
+        run_states={"TM-001": RunState.todo},
+        roadmap=None,
+    )
+    project = _make_project(with_roadmap=False)
+
+    writer.edit_ticket(
+        project,
+        "TM-001",
+        _edit(
+            title="Brand new title",
+            track="file-adapter",
+            milestone="MVP",
+            dependsOn=[],
+            provides="provides TM-001",
+            files=[],
+            bodyMarkdown="# New body\n",
+        ),
+    )
+
+    assert writer._front_matter["TM-001"] == {
+        "id": "TM-001",
+        "status": "todo",
+        "owner": "ranger",
+    }

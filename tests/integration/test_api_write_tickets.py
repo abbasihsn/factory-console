@@ -24,14 +24,25 @@ Deterministic and I/O-free except for the durability section, which writes only 
 from __future__ import annotations
 
 import json
-import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
+from _write_support import (
+    AUTH,
+    PINNED_TOKEN,
+    WRONG_TOKEN,
+    app_over,
+)
+from _write_support import (
+    client as _client,
+)
+from _write_support import (
+    real_app as _real_app,
+)
 from fastapi import FastAPI
-from httpx import ASGITransport, AsyncClient, Response
+from httpx import AsyncClient, Response
 
 from factory_console.app import create_app
 from factory_console.config import WRITE_TOKEN_HEADER
@@ -40,17 +51,7 @@ from factory_console.domain.write import DiffPreview, TicketDraft, TicketEdit, W
 from factory_console.file_adapter import FakeFileAdapter
 from factory_console.file_adapter.fake_writer import FakeFileWriter
 from factory_console.file_adapter.manifest import manifest_entry_to_ticket_stub
-from factory_console.file_adapter.real import RealFileAdapter
-from factory_console.file_adapter.real_writer import RealFileWriter
 from factory_console.file_adapter.writer_protocol import FileWriter
-
-WITH_RUN_STATE = Path(__file__).resolve().parents[1] / "fixtures" / "projects" / "with_run_state"
-
-# Pinned so the request headers can name the exact token create_app bound, and so the
-# "no secret in any error body" assertion has a concrete string to search for.
-PINNED_TOKEN = "pinned-write-token-for-tests"
-WRONG_TOKEN = "pinned-write-token-for-tesXX"
-AUTH = {WRITE_TOKEN_HEADER: PINNED_TOKEN}
 
 # Ids as the checked-in fixture stages them, reused verbatim for the in-memory pair so
 # one id means the same thing in both wirings: CAD-131 is ``todo`` (mutable), CAD-118 is
@@ -235,37 +236,6 @@ def _spied_app() -> tuple[FastAPI, _RecordingFileWriter]:
         write_token=PINNED_TOKEN,
     )
     return app, writer
-
-
-def _app_over(root: Path) -> FastAPI:
-    """Build the app over the filesystem pair, rooted at an EXISTING project directory.
-
-    Split out from :func:`_real_app` so the durability tests can build a SECOND,
-    independently constructed app over a root the first one already wrote to.
-    """
-    return create_app(
-        RealFileAdapter(),
-        version="0.0.0",
-        project_root=root,
-        file_writer=RealFileWriter(),
-        write_token=PINNED_TOKEN,
-    )
-
-
-def _real_app(tmp_path: Path) -> tuple[FastAPI, Path]:
-    """Build the filesystem-pair app over a throwaway copy of the checked-in fixture.
-
-    The copy is what makes a write test safe: the fixture is shared by the read-side
-    suites and must never be mutated.
-    """
-    root = tmp_path / "project"
-    shutil.copytree(WITH_RUN_STATE, root)
-    return _app_over(root), root
-
-
-def _client(app: FastAPI) -> AsyncClient:
-    """An ``httpx.AsyncClient`` speaking ASGI directly to ``app`` (no socket)."""
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
 async def _write(
@@ -582,7 +552,7 @@ async def test_an_applied_create_lands_on_disk_and_a_fresh_app_reads_it_back(
     assert "Cohort report body." in md_path.read_text("utf-8")
     assert NEW_ID in _manifest_ids(root)
 
-    async with _client(_app_over(root)) as fresh:
+    async with _client(app_over(root)) as fresh:
         detail = await fresh.get(f"/api/v1/tickets/{NEW_ID}")
     assert detail.status_code == 200
     assert detail.json()["title"] == "Retention cohort report"
@@ -605,7 +575,7 @@ async def test_an_applied_delete_removes_the_files_and_a_fresh_app_no_longer_ser
     assert not md_path.exists()
     assert TODO_ID not in _manifest_ids(root)
 
-    async with _client(_app_over(root)) as fresh:
+    async with _client(app_over(root)) as fresh:
         detail = await fresh.get(f"/api/v1/tickets/{TODO_ID}")
     assert detail.status_code == 404
     assert detail.json()["error"]["code"] == "ticket_not_found"

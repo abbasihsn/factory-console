@@ -47,11 +47,9 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
-from fastapi import Path as PathParam
 
-from factory_console.api.deps import get_file_adapter, get_file_writer
+from factory_console.api.deps import TicketIdPath, get_file_adapter, get_file_writer
 from factory_console.api.write_token import WRITE_TOKEN_SCHEME_NAME, require_write_token
-from factory_console.domain.ticket import TICKET_ID_PATTERN
 from factory_console.domain.write import TicketDraft, TicketEdit, WriteResult
 from factory_console.errors import FactoryConsoleError
 from factory_console.file_adapter.protocol import FileAdapter
@@ -162,11 +160,6 @@ _WRITE_TOKEN_SECURITY: dict[str, Any] = {"security": [{WRITE_TOKEN_SCHEME_NAME: 
 # ``dry_run`` keyword without renaming the concept mid-call.
 _DryRunFlag = Annotated[bool, Query(alias="dryRun")]
 
-# The ticket id in the path, validated against the shared pattern at the FastAPI
-# boundary (mirrors ``api/v1/tickets.py``), so an invalid id becomes the
-# ``invalid_ticket_id`` 400 envelope and never reaches the adapter or the writer.
-_TicketIdPath = Annotated[str, PathParam(pattern=TICKET_ID_PATTERN)]
-
 # A dry-run answers 200 (nothing was created) while an apply answers 201, so the
 # create operation publishes BOTH outcomes against the one ``WriteResult`` shape.
 _DRY_RUN_RESPONSE: dict[int | str, dict[str, Any]] = {
@@ -212,7 +205,7 @@ async def create_ticket(
 
 @router.put("/tickets/{ticket_id}", openapi_extra=_WRITE_TOKEN_SECURITY)
 async def edit_ticket(
-    ticket_id: _TicketIdPath,
+    ticket_id: TicketIdPath,
     payload: TicketEdit,
     request: Request,
     dry_run: _DryRunFlag = False,
@@ -235,7 +228,7 @@ async def edit_ticket(
 
 @router.delete("/tickets/{ticket_id}", openapi_extra=_WRITE_TOKEN_SECURITY)
 async def delete_ticket(
-    ticket_id: _TicketIdPath,
+    ticket_id: TicketIdPath,
     request: Request,
     dry_run: _DryRunFlag = False,
     adapter: FileAdapter = Depends(get_file_adapter),

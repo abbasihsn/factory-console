@@ -240,8 +240,11 @@ def main(
     # then exited 2 (port in use) or 3 (malformed manifest) without ever binding a
     # socket: the operator copies that token, the *running* instance holds a different
     # one, and every write comes back as the deliberately opaque 401 with nothing to
-    # diagnose it by. This also restores the ordering this module's docstring states —
-    # nothing is announced before the port is bound.
+    # diagnose it by. This NARROWS that window rather than closing it: ``_resolve_port``
+    # closes its probe socket before returning, so the token is still announced before
+    # uvicorn actually binds, and a port taken in between fails after the announcement.
+    # Closing it fully would mean holding the listening socket and handing it to
+    # ``Server.run(sockets=[...])``.
     fastapi_app = create_app(
         file_adapter,
         version=factory_console.__version__,

@@ -41,14 +41,27 @@ export type DepNeighborhood = components['schemas']['DepNeighborhood'];
 
 /**
  * Request body for `POST /api/v1/tickets`. The server publishes this schema as
- * `TicketDraft`; `TicketCreate` is the friendly name the client uses. Requires
- * `id`, `title`, and `bodyMarkdown`.
+ * `TicketDraft`; `TicketCreate` is the friendly name the client uses.
+ *
+ * The SERVER requires only `id`, `title`, and `bodyMarkdown` — every other field
+ * has a default. This TYPE additionally requires `provides`, which is a codegen
+ * artifact, not a server rule: `provides` is the one defaulted field whose default
+ * is a non-null literal (`""`), and `openapi-typescript` marks a property with a
+ * default as non-optional. So a call site must pass `provides: ''` to type-check
+ * even though omitting it over the wire is valid.
  */
 export type TicketCreate = components['schemas']['TicketDraft'];
 
 /**
  * Request body for `PUT /api/v1/tickets/{id}`. Published as `TicketEdit` —
- * identical to {@link TicketCreate} minus `id`, which comes from the path.
+ * identical to {@link TicketCreate} minus `id`, which comes from the path
+ * (including the `provides` caveat noted there).
+ *
+ * One edit-only difference from create: `frontMatter` is an OVERLAY on the ticket
+ * `.md`'s existing YAML header, not a replacement. Keys sent here are added or
+ * overridden, keys already on disk are preserved, and there is no way to delete a
+ * key. Factory-owned keys (`id`, `status`, and the fields mirrored from the
+ * manifest entry) are ignored here — they follow the named fields above.
  */
 export type TicketUpdate = components['schemas']['TicketEdit'];
 
