@@ -337,9 +337,10 @@ def test_explicit_host_flag_overrides_a_non_loopback_env_var(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Same precedence for --host, and the boot must not re-read the env behind the
-    # flag's back: the CLI builds ``Settings`` (for the write token) from the values
-    # it already resolved, so a non-loopback FACTORY_CONSOLE_HOST that --host
-    # overrode cannot resurface as an unhandled pydantic ValidationError.
+    # flag's back: the CLI reads the write token via ``read_write_token()``, which
+    # touches FACTORY_CONSOLE_WRITE_TOKEN alone, so a non-loopback
+    # FACTORY_CONSOLE_HOST that --host overrode cannot resurface as an unhandled
+    # pydantic ValidationError and bypass the exit-2 contract.
     monkeypatch.setattr("factory_console.cli.uvicorn.Server", _StubServer)
     monkeypatch.setattr("factory_console.cli.configure_logging", lambda level: None)
 
@@ -351,6 +352,49 @@ def test_explicit_host_flag_overrides_a_non_loopback_env_var(
 
     assert result.exit_code == 0, result.output
     assert "http://127.0.0.1:" in result.output
+
+
+def test_env_var_pins_the_write_token_on_the_built_app(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The pass-through itself: FACTORY_CONSOLE_WRITE_TOKEN must actually reach
+    # app.state.write_token. Without this, dropping the create_app kwarg in a refactor
+    # would leave every test green while the operator's pin silently stopped working.
+    pinned = "cli-pinned-write-token"
+    captured: dict[str, object] = {}
+
+    class _CapturingServer(_StubServer):
+        def __init__(self, config: object) -> None:
+            super().__init__(config)
+            captured["app"] = config.app  # type: ignore[attr-defined]
+
+    monkeypatch.setattr("factory_console.cli.uvicorn.Server", _CapturingServer)
+    monkeypatch.setattr("factory_console.cli.configure_logging", lambda level: None)
+
+    result = runner.invoke(
+        app,
+        [str(_MINIMAL), "--no-browser", "--port", "0"],
+        env={"FACTORY_CONSOLE_WRITE_TOKEN": pinned},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["app"].state.write_token == pinned  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("pin", ["", "too-short"], ids=["blank", "short"])
+def test_unusable_write_token_pin_exits_two(pin: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A pin that is set but unusable is a bad operational input, so it exits 2 with a
+    # message like a bad host or log level — never a raw pydantic traceback, and never
+    # a silent fall back to a generated token that would 401 every write.
+    monkeypatch.setattr("factory_console.cli.uvicorn.Server", _StubServer)
+    monkeypatch.setattr("factory_console.cli.configure_logging", lambda level: None)
+
+    result = runner.invoke(
+        app,
+        [str(_MINIMAL), "--no-browser", "--port", "0"],
+        env={"FACTORY_CONSOLE_WRITE_TOKEN": pin},
+    )
+
+    assert result.exit_code == 2, result.output
+    assert "FACTORY_CONSOLE_WRITE_TOKEN" in result.output
 
 
 def test_full_boot_prints_contract_line_and_configures_logging(

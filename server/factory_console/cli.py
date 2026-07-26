@@ -47,10 +47,10 @@ env var over the default — so the config surface the README advertises is live
 still runs through the same host/log-level/port validation. The write token has no
 flag (an argv secret is readable by every local process): ``create_app`` mints a
 fresh one per boot and prints it to stderr, and ``FACTORY_CONSOLE_WRITE_TOKEN`` —
-read here through :class:`~factory_console.config.Settings` — pins it instead.
+read here through :func:`~factory_console.config.read_write_token` — pins it instead.
 
 Exit codes: ``0`` ok · ``1`` project-not-found · ``2`` bad host / out-of-range port
-/ bad log level / port-in-use · ``3`` malformed manifest.
+/ bad log level / bad write-token pin / port-in-use · ``3`` malformed manifest.
 """
 
 import contextlib
@@ -66,7 +66,7 @@ import uvicorn
 
 import factory_console
 from factory_console.app import create_app
-from factory_console.config import Settings, require_loopback_host
+from factory_console.config import read_write_token, require_loopback_host
 from factory_console.file_adapter.discovery import ProjectNotFound, discover_project
 from factory_console.file_adapter.manifest import MalformedManifest
 from factory_console.file_adapter.real import RealFileAdapter
@@ -147,8 +147,9 @@ def main(
 
     Validation runs cheapest-first so bad input fails before any filesystem or
     network work: ``--version`` prints ``factory-console v{version}`` and exits 0; a
-    non-loopback ``host`` (127.0.0.1 trust boundary) or an unrecognized
-    ``--log-level`` exits 2. Logging is then configured and the project root is
+    non-loopback ``host`` (127.0.0.1 trust boundary), an unrecognized ``--log-level``,
+    or a blank/too-short ``FACTORY_CONSOLE_WRITE_TOKEN`` pin exits 2. Logging is then
+    configured and the project root is
     discovered from ``path`` (an explicit path wins, else an upward walk from the
     cwd) — a missing project exits 1. The concrete
     :class:`~factory_console.file_adapter.real.RealFileAdapter` and a
@@ -188,6 +189,20 @@ def main(
     if normalized_log_level is None:
         typer.echo(f"log level must be one of {list(LOG_LEVELS)}, got {log_level!r}", err=True)
         raise typer.Exit(2)
+
+    # Read the optional write-token pin with the other cheap inputs so a malformed
+    # FACTORY_CONSOLE_WRITE_TOKEN exits 2 with a message like every sibling config
+    # error, rather than a raw traceback. ``read_write_token`` reads that one variable
+    # and does NOT re-validate FACTORY_CONSOLE_HOST, so a non-loopback value there
+    # that ``--host`` legitimately overrode cannot bypass the exit-2 contract above.
+    # None (the variable is unset) is create_app's cue to mint a fresh per-session
+    # token and announce it on stderr.
+    try:
+        write_token = read_write_token()
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+
     configure_logging(normalized_log_level)
 
     try:
@@ -203,22 +218,13 @@ def main(
     root = root.resolve()
 
     file_adapter = RealFileAdapter()
-    # ``Settings`` is consulted for the write token alone, but constructing it
-    # validates EVERY ``FACTORY_CONSOLE_*`` field — so the values Typer already
-    # resolved are handed in explicitly, keeping the flag-beats-envvar rule intact. A
-    # bare ``Settings()`` would re-read FACTORY_CONSOLE_HOST from the environment and
-    # die on a raw pydantic ValidationError when a non-loopback value there had been
-    # legitimately overridden by ``--host``, bypassing the exit-2 contract above. An
-    # unset FACTORY_CONSOLE_WRITE_TOKEN leaves the token None, which is create_app's
-    # cue to mint a fresh per-session one and print it to stderr.
-    settings = Settings(host=host, port=port, log_level=normalized_log_level)
     fastapi_app = create_app(
         file_adapter,
         version=factory_console.__version__,
         project_root=root,
         file_watcher=RealFileWatcher(root),
         file_writer=RealFileWriter(),
-        write_token=settings.write_token,
+        write_token=write_token,
     )
 
     # Discovery only checks the manifest FILE exists; force a real parse now so a

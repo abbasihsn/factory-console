@@ -53,12 +53,40 @@ then the CLI always walks up from the current directory looking for
 authoritative contract see the CLI section of
 [`planning/ARCHITECTURE.md`](planning/ARCHITECTURE.md).
 
+## Environment
+
+- `FACTORY_CONSOLE_HOST` / `FACTORY_CONSOLE_PORT` / `FACTORY_CONSOLE_LOG_LEVEL` — env
+  equivalents of the flags above. An explicit flag wins over the env var, and the env
+  var over the default; all three run through the same validation either way.
+- `FACTORY_CONSOLE_WRITE_TOKEN` — pins the write token below instead of minting a
+  fresh one each boot. Leaving it unset is the normal case. If you do set it, it must
+  be at least 16 characters: a blank or too-short value is rejected with exit `2`
+  rather than silently falling back to a generated token.
+
+### The write token
+
+At startup the server prints a line like this to **stderr**:
+
+```
+X-Factory-Write-Token: 3s9Kv-1QpZ...
+```
+
+Write requests must send that value in the `X-Factory-Write-Token` header; a missing
+or wrong header is rejected with `401` and the error code `write_token_invalid`. Read
+requests need no header at all, so ordinary browsing is unaffected.
+
+The console binds to loopback only, so this token is defence-in-depth *behind* that
+boundary — it stops another process on your machine, or a drive-by request from a page
+in your browser, from mutating the project. A new token is minted on every restart, so
+the one printed by a previous run stops working; there is no flag for it, because
+anything on the command line is readable by every local process.
+
 ## Exit codes
 
 | Code | Meaning                                                       |
 | ---- | ------------------------------------------------------------- |
 | `0`  | ok (`--version`, or a clean run)                              |
-| `2`  | invalid `--host` (non-loopback) or unrecognized `--log-level` |
+| `2`  | invalid `--host` (non-loopback), unrecognized `--log-level`, or a bad `FACTORY_CONSOLE_WRITE_TOKEN` pin |
 
 The richer, purpose-specific codes (`1` project-not-found, port-in-use,
 malformed-manifest) arrive with the full CLI wiring in backend T25.

@@ -276,13 +276,18 @@ def create_dev_app() -> FastAPI:
     the only runtime users of the concrete adapter/watcher/writer are this dev
     shortcut and T25's CLI.
 
-    The write token comes from ``FACTORY_CONSOLE_WRITE_TOKEN`` via :class:`Settings`
-    so a dev loop can pin it across reloads (uvicorn's reloader re-runs this factory,
-    which would otherwise mint a new token and invalidate the one in the operator's
-    clipboard); unset, ``create_app`` generates one per boot.
+    The write token comes from ``FACTORY_CONSOLE_WRITE_TOKEN`` via
+    :func:`~factory_console.config.read_write_token` so a dev loop can pin it across
+    reloads (uvicorn's reloader re-runs this factory, which would otherwise mint a new
+    token and invalidate the one in the operator's clipboard); unset, ``create_app``
+    generates one per boot. Reading it through that helper rather than a bare
+    ``Settings()`` matters here: this factory never chooses a bind host (``dev.sh``
+    passes ``--host`` to uvicorn itself), so a non-loopback ``FACTORY_CONSOLE_HOST``
+    left in the developer's shell must not be validated — and kill the dev server —
+    on the way to fetching a token.
     """
     from factory_console import __version__
-    from factory_console.config import Settings
+    from factory_console.config import read_write_token
     from factory_console.file_adapter.discovery import discover_project
     from factory_console.file_adapter.real import RealFileAdapter
     from factory_console.file_adapter.real_writer import RealFileWriter
@@ -295,5 +300,5 @@ def create_dev_app() -> FastAPI:
         project_root=root,
         file_watcher=RealFileWatcher(root),
         file_writer=RealFileWriter(),
-        write_token=Settings().write_token,
+        write_token=read_write_token(),
     )
