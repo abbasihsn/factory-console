@@ -167,6 +167,16 @@ fi
 # host's user. An empty active still blocks (fail closed). This requires a
 # file-based `gh auth login`: a token-env (GH_TOKEN) CI setup with no `user:` in
 # hosts.yml reads empty and blocks (fail closed).
+#
+# This is deliberately the FAST LABEL CHECK — a local file read, no network. The
+# label is what gh recorded for the credential, and in principle it can disagree
+# with the token's real identity (`gh api /user`); the authoritative check is
+# therefore NOT done here. This hook runs on EVERY gh invocation in every lane,
+# so a `gh api /user` round-trip per command would add latency to the whole run
+# for an answer that cannot change mid-run. bin/factory-doctor verifies the real
+# token identity against the pin ONCE per run, before any lane starts, and hard-
+# fails there — so by the time this hook runs, label == identity == pin has
+# already been established. Keep this path label-only and network-free.
 active="$(awk '
   /^[^[:space:]]/ { in_gh = ($0 ~ /^github\.com:/) }
   in_gh && /^[[:space:]]+user:/ { print $2; exit }
