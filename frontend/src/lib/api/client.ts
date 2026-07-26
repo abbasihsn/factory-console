@@ -6,6 +6,10 @@
  * or on a network failure. All requests are same-origin: wrappers pass a path
  * WITHOUT a leading slash (e.g. `project`, `tickets?status=todo`), and absolute
  * URLs are refused.
+ *
+ * The mutating wrappers at the bottom of the file add this session's write token
+ * in {@link TOKEN_HEADER} and otherwise go through the very same {@link request},
+ * so writes inherit the same guard, timeout, and error envelope as reads.
  */
 import { ApiError } from './errors';
 import type {
