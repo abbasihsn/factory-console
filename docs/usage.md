@@ -53,12 +53,47 @@ then the CLI always walks up from the current directory looking for
 authoritative contract see the CLI section of
 [`planning/ARCHITECTURE.md`](planning/ARCHITECTURE.md).
 
+## Environment
+
+- `FACTORY_CONSOLE_HOST` / `FACTORY_CONSOLE_PORT` / `FACTORY_CONSOLE_LOG_LEVEL` — env
+  equivalents of the flags above. An explicit flag wins over the env var, and the env
+  var over the default; all three run through the same validation either way.
+- `FACTORY_CONSOLE_WRITE_TOKEN` — a **development and testing** override that pins the
+  write token below to a fixed value instead of minting a fresh one. Normal runs leave
+  it unset; the token is per-session by design. If you do set it, it must be at least 16
+  characters — a blank or too-short value is rejected with exit `2` rather than silently
+  falling back to a generated token.
+
+### The write token
+
+The console mints a write token at every start and prints it to **stderr**, so you'll
+see a line like this in the output of any run:
+
+```
+X-Factory-Write-Token: 3s9Kv-1QpZ...
+```
+
+That token is what will authorize v2 write requests, sent in the `X-Factory-Write-Token`
+header. It lasts only as long as the process, so the one printed by a previous run stops
+working. Reads never need it, so browsing the project is unaffected — and today nothing
+else needs it either: **the write endpoints that require this header are not part of
+this release yet.** For now the line is purely informational.
+
+The console binds to loopback only, so the token is defence-in-depth *behind* that
+boundary — it stops another process on your machine, or a drive-by request from a page in
+your browser, from mutating the project once writes exist. There is no command-line flag
+for it, because anything on the command line is readable by every local process.
+
+If you pinned the token with the dev override above, the value is *not* echoed — you
+already have it, and printing it would copy it into whatever captures stderr — so the
+line reads `X-Factory-Write-Token: <pinned, not echoed>`.
+
 ## Exit codes
 
 | Code | Meaning                                                       |
 | ---- | ------------------------------------------------------------- |
 | `0`  | ok (`--version`, or a clean run)                              |
-| `2`  | invalid `--host` (non-loopback) or unrecognized `--log-level` |
+| `2`  | invalid `--host` (non-loopback), unrecognized `--log-level`, or a bad `FACTORY_CONSOLE_WRITE_TOKEN` pin |
 
 The richer, purpose-specific codes (`1` project-not-found, port-in-use,
 malformed-manifest) arrive with the full CLI wiring in backend T25.
