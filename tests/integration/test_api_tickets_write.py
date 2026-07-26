@@ -288,6 +288,60 @@ async def test_a_misspelled_dry_run_flag_is_rejected_and_writes_nothing(
     assert _snapshot(root) == before
 
 
+@pytest.mark.parametrize("query", ["dryRun=true&dryRun=false", "dryRun=false&dryRun=true"])
+async def test_a_repeated_dry_run_flag_is_rejected_and_writes_nothing(
+    query: str, tmp_path: Path
+) -> None:
+    # A repeated key carries the ALLOWED name, so an allow-list over the key SET sees
+    # nothing wrong — while FastAPI binds a scalar bool last-wins. Without this guard
+    # `?dryRun=true&dryRun=false` deletes the ticket the caller asked to preview, so the
+    # duplicate must be rejected exactly like a misspelling.
+    app, root = _real_app(tmp_path)
+    before = _snapshot(root)
+    async with _client(app) as client:
+        resp = await client.delete(f"/api/v1/tickets/{DELETABLE_TODO_ID}?{query}", headers=AUTH)
+        assert resp.status_code == 400, query
+        assert resp.json()["error"]["code"] == "repeated_query_param", query
+        assert resp.json()["error"]["details"]["repeated"] == ["dryRun"], query
+
+        # The ticket is still there — the preview did not become an apply.
+        assert (await client.get(f"/api/v1/tickets/{DELETABLE_TODO_ID}")).status_code == 200
+    assert _snapshot(root) == before
+
+
+async def test_a_repeated_dry_run_flag_is_rejected_on_create_and_edit(tmp_path: Path) -> None:
+    # The guard sits on the router, so all three verbs inherit it — a repeated flag must
+    # not let a POST create or a PUT overwrite while claiming to preview.
+    app, root = _real_app(tmp_path)
+    before = _snapshot(root)
+    async with _client(app) as client:
+        created = await client.post(
+            "/api/v1/tickets?dryRun=true&dryRun=false", json=_draft_body(), headers=AUTH
+        )
+        assert created.status_code == 400
+        assert created.json()["error"]["code"] == "repeated_query_param"
+
+        edited = await client.put(
+            f"/api/v1/tickets/{DELETABLE_TODO_ID}?dryRun=true&dryRun=false",
+            json=_edit_body(),
+            headers=AUTH,
+        )
+        assert edited.status_code == 400
+        assert edited.json()["error"]["code"] == "repeated_query_param"
+    assert _snapshot(root) == before
+
+
+async def test_a_single_dry_run_flag_still_previews(tmp_path: Path) -> None:
+    # The duplicate guard must not reject the ordinary one-flag preview it protects.
+    app, root = _real_app(tmp_path)
+    before = _snapshot(root)
+    async with _client(app) as client:
+        resp = await client.delete(f"/api/v1/tickets/{DELETABLE_TODO_ID}?dryRun=true", headers=AUTH)
+        assert resp.status_code == 200
+        _assert_previewed_with_diff(resp.json(), DELETABLE_TODO_ID)
+    assert _snapshot(root) == before
+
+
 async def test_an_unknown_query_param_does_not_mask_a_missing_token(tmp_path: Path) -> None:
     # The token guard is listed first, so an unauthorized caller still learns only that
     # the token was rejected — the query guard cannot leak that the route exists.

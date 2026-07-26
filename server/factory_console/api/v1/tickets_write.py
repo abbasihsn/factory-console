@@ -30,7 +30,8 @@ registered handler that renders the REST v1 envelope:
 :class:`~factory_console.api.write_token.WriteTokenInvalid` (401),
 ``invalid_ticket_id`` (400, re-mapped from the pattern violation — the ``Path``
 parameter on edit/delete, the ``TicketDraft.id`` body field on create),
-``unknown_query_param`` (400, from :func:`reject_unknown_query_params`),
+``unknown_query_param`` and ``repeated_query_param`` (400, both from
+:func:`reject_unknown_query_params`),
 :class:`~factory_console.services.ticket_service.TicketNotFound` (404),
 :class:`~factory_console.file_adapter.write_gate.TicketNotMutable` and
 :class:`~factory_console.services.write_service.WriteConflict` (409), and
@@ -61,28 +62,53 @@ _ALLOWED_QUERY_KEYS = frozenset({"dryRun"})
 
 
 def reject_unknown_query_params(request: Request) -> None:
-    """Reject any query key these write routes do not declare, as a 400 envelope.
+    """Reject any unrecognized OR repeated query key on these write routes, as a 400.
 
-    Starlette hands undeclared query keys to nobody, so by default ``?dryrun=true`` or
-    ``?dry_run=true`` — a plausible miscasing of the one flag that separates "show me
-    the diff" from "rewrite the manifest, the ticket file, and the roadmap" — would
-    leave ``dry_run`` at its ``False`` default and take the APPLY branch. On routes
-    whose apply path deletes a file, the safety flag must fail CLOSED: an unrecognized
-    key is an error, never a silent apply.
+    Two ways the one flag that separates "show me the diff" from "rewrite the manifest,
+    the ticket file, and the roadmap" can fail OPEN, and this guard closes both:
+
+    * an **unrecognized** key — Starlette hands undeclared keys to nobody, so a
+      plausible miscasing like ``?dryrun=true`` or ``?dry_run=true`` would leave
+      ``dry_run`` at its ``False`` default and take the APPLY branch, and
+    * a **repeated** key — ``?dryRun=true&dryRun=false`` carries the allowed name, but
+      FastAPI binds a scalar ``bool`` through last-wins ``QueryParams.get``, so the
+      request that explicitly asked for a preview APPLIES. Checking the key *set* alone
+      cannot see this: the duplicate collapses before the allow-list is consulted, so
+      the multi-item list is what has to be inspected. Reachable with no malice at all —
+      any caller or proxy that appends ``&dryRun=true`` to a URL already carrying a
+      ``dryRun`` value gets a write while asking for a preview.
+
+    On routes whose apply path deletes a file, the safety flag must fail CLOSED: an
+    unusable query string is an error, never a silent apply.
 
     Attached at the router so it covers all three verbs and cannot be forgotten on a
     fourth. Read routes are unaffected — this lives only on this module's router.
 
     Raises:
-        FactoryConsoleError: One or more query keys are not recognized (400).
+        FactoryConsoleError: A query key is unrecognized (``unknown_query_param``) or
+            given more than once (``repeated_query_param``); both 400.
     """
-    unknown = sorted(set(request.query_params) - _ALLOWED_QUERY_KEYS)
+    params = request.query_params
+    unknown = sorted({key for key, _ in params.multi_items()} - _ALLOWED_QUERY_KEYS)
     if unknown:
         raise FactoryConsoleError(
             code="unknown_query_param",
             message=f"Unrecognized query parameter(s): {', '.join(unknown)}",
             status=400,
             details={"unknown": unknown, "allowed": sorted(_ALLOWED_QUERY_KEYS)},
+        )
+
+    # Only allowed keys remain, so any duplicate here is a repeated `dryRun`.
+    repeated = sorted({key for key, _ in params.multi_items() if len(params.getlist(key)) > 1})
+    if repeated:
+        raise FactoryConsoleError(
+            code="repeated_query_param",
+            message=(
+                f"Query parameter(s) given more than once: {', '.join(repeated)}. "
+                "Send each at most once."
+            ),
+            status=400,
+            details={"repeated": repeated},
         )
 
 
