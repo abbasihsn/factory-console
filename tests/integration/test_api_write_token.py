@@ -239,6 +239,18 @@ def test_openapi_publishes_the_write_token_security_scheme() -> None:
     assert scheme["name"] == WRITE_TOKEN_HEADER
 
 
+def test_openapi_scheme_description_covers_both_provenances() -> None:
+    # This description ships in openapi.json and renders in /docs, so it must be true
+    # for a pinned token as well as a generated one. Wording that promised regeneration
+    # on every restart would be flatly wrong for anyone using the env var, which is the
+    # one place such a claim could survive unnoticed by the stderr-announcement tests.
+    client = TestClient(_make_app())
+    schema = client.get("/api/v1/openapi.json").json()
+    description = schema["components"]["securitySchemes"][WRITE_TOKEN_SCHEME_NAME]["description"]
+    assert "FACTORY_CONSOLE_WRITE_TOKEN" in description
+    assert "regenerated on every restart" not in description
+
+
 def test_openapi_declares_no_global_or_read_route_security() -> None:
     # Publishing the scheme must not make the whole API — or any read endpoint —
     # look authenticated to the SPA's generated client.

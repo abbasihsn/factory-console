@@ -43,9 +43,14 @@ WRITE_TOKEN_SCHEME_NAME = "FactoryWriteToken"
 _WRITE_TOKEN_SCHEME = APIKeyHeader(
     name=WRITE_TOKEN_HEADER,
     scheme_name=WRITE_TOKEN_SCHEME_NAME,
+    # Must hold for BOTH provenances, since this text ships in openapi.json and renders
+    # in /docs: a generated token is printed and lasts one process, a pinned one is
+    # neither printed nor regenerated. Wording that named only the generated case would
+    # be false for every operator who sets FACTORY_CONSOLE_WRITE_TOKEN.
     description=(
-        "Per-session write token, printed to the server's stderr at startup and "
-        "regenerated on every restart. Required on write routes only."
+        "Write token for this server session: minted at startup and printed to the "
+        "server's stderr, or pinned via FACTORY_CONSOLE_WRITE_TOKEN. Required on "
+        "write routes only."
     ),
     auto_error=False,
 )
