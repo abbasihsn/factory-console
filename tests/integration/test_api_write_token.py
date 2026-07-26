@@ -1,8 +1,10 @@
 """Integration tests for the per-session loopback write token (T64).
 
-T64 ships the MECHANISM only — the write endpoints that attach it land in T65 — so
-the guarded route here is a test-local probe registered on a real ``create_app``
-app, standing in for the write routes to come. The suite pins the whole contract:
+Covers the MECHANISM in isolation: the guarded route here is a test-local probe
+registered on a real ``create_app`` app, so a failure points at the dependency rather
+than at a handler. The real write routes that attach it live in
+``api/v1/tickets_write.py`` and are covered end-to-end by
+``test_api_tickets_write.py``. The suite pins the whole contract:
 ``create_app`` mints a fresh token per boot and announces it on stderr (never
 stdout, never a log), the probe passes only with the exact header, every failing
 shape yields the same ``write_token_invalid`` 401 envelope with NO token echoed,
@@ -33,7 +35,7 @@ from factory_console.file_adapter import FakeFileAdapter
 PINNED_TOKEN = "pinned-write-token-for-tests"
 WRONG_TOKEN = "pinned-write-token-for-tesXX"
 
-# The test-local stand-in for a T65 write route: a POST guarded by the dependency
+# The test-local stand-in for a real write route: a POST guarded by the dependency
 # under test and nothing else, so a 200 means the token check (not a handler) passed.
 PROBE_WRITE_PATH = "/probe-write"
 
