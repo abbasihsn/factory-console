@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from fastapi import Path as PathParam
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
+from pydantic import Field as PydanticField
 
 from factory_console.api.error_handlers import register_error_handlers
 from factory_console.domain import TICKET_ID_PATTERN
@@ -28,6 +29,12 @@ class _Body(BaseModel):
     """Minimal request body used to trigger a non-ticket-id validation error."""
 
     count: int
+
+
+class _DraftBody(BaseModel):
+    """Stand-in for ``TicketDraft``: a create carries its id in the body, not the path."""
+
+    id: str = PydanticField(pattern=TICKET_ID_PATTERN)
 
 
 def _client() -> TestClient:
@@ -58,6 +65,10 @@ def _client() -> TestClient:
     @app.post("/probe-body")
     def _probe_body(body: _Body) -> dict[str, int]:
         return {"count": body.count}
+
+    @app.post("/probe-draft")
+    def _probe_draft(body: _DraftBody) -> dict[str, str]:
+        return {"ticketId": body.id}
 
     return TestClient(app)
 
@@ -98,6 +109,18 @@ def test_invalid_ticket_id_path_param_maps_to_400_not_422() -> None:
     # A space violates TICKET_ID_PATTERN; the Path boundary must yield the SAME
     # invalid_ticket_id envelope a deep PathTraversal would, not a 422.
     resp = _client().get("/probe/bad id")
+    assert resp.status_code == 400
+    error = resp.json()["error"]
+    assert error["code"] == "invalid_ticket_id"
+    assert error["message"] == "Ticket id must match ^[A-Za-z0-9_.-]+$"
+    assert error["details"] == {"ticketId": "bad id"}
+
+
+def test_invalid_ticket_id_body_field_maps_to_400_not_422() -> None:
+    # A create carries its id in the body, so the violation arrives as ('body', 'id')
+    # rather than a path loc. It must still yield the SAME invalid_ticket_id envelope,
+    # or one user mistake would answer 400 on edit/delete but 422 on create.
+    resp = _client().post("/probe-draft", json={"id": "bad id"})
     assert resp.status_code == 400
     error = resp.json()["error"]
     assert error["code"] == "invalid_ticket_id"

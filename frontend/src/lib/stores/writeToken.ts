@@ -1,4 +1,4 @@
-import { writable, type Writable } from 'svelte/store';
+import { writable, type Readable, type Writable } from 'svelte/store';
 
 /**
  * The per-session write token every mutating API call must carry.
@@ -35,12 +35,18 @@ function readStoredToken(): string | null {
 	return withSessionStorage((storage) => storage.getItem(STORAGE_KEY), null);
 }
 
+// The only handle that can mutate the token. Kept module-private so the storage
+// mirror cannot be bypassed: a caller's `.set()` would update memory and leave
+// sessionStorage holding the old value, which the next reload would hydrate back.
+const tokenStore: Writable<string | null> = writable(readStoredToken());
+
 /**
  * The current write token, or `null` when none is held. Hydrated once at import
- * from `sessionStorage`; use {@link setToken} / {@link clearToken} to change it so
- * the mirror stays in step (a direct `.set()` would drift from storage).
+ * from `sessionStorage`. Read-only by design — {@link setToken} / {@link clearToken}
+ * are the only ways to change it, so the mirror always stays in step. (Same shape as
+ * the sibling `live` store, which likewise exposes `Readable`s plus named mutators.)
  */
-export const writeToken: Writable<string | null> = writable(readStoredToken());
+export const writeToken: Readable<string | null> = { subscribe: tokenStore.subscribe };
 
 /**
  * Hold `token` for the rest of this tab's session.
@@ -56,7 +62,7 @@ export function setToken(token: string): void {
 		clearToken();
 		return;
 	}
-	writeToken.set(trimmed);
+	tokenStore.set(trimmed);
 	withSessionStorage<void>((storage) => storage.setItem(STORAGE_KEY, trimmed), undefined);
 }
 
@@ -66,6 +72,6 @@ export function setToken(token: string): void {
  * or `"null"` value, so the next load hydrates to `null`.
  */
 export function clearToken(): void {
-	writeToken.set(null);
+	tokenStore.set(null);
 	withSessionStorage<void>((storage) => storage.removeItem(STORAGE_KEY), undefined);
 }

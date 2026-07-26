@@ -269,6 +269,35 @@ async def test_delete_dry_run_previews_and_writes_nothing(tmp_path: Path) -> Non
     assert _snapshot(root) == before
 
 
+@pytest.mark.parametrize("misspelling", ["dryrun", "dry_run", "dryRunn", "DRYRUN"])
+async def test_a_misspelled_dry_run_flag_is_rejected_and_writes_nothing(
+    misspelling: str, tmp_path: Path
+) -> None:
+    # The flag that separates a preview from an irreversible delete must fail CLOSED:
+    # an unrecognized query key is a 400, never a silent apply of the real thing.
+    app, root = _real_app(tmp_path)
+    before = _snapshot(root)
+    async with _client(app) as client:
+        resp = await client.delete(
+            f"/api/v1/tickets/{DELETABLE_TODO_ID}", params={misspelling: "true"}, headers=AUTH
+        )
+        assert resp.status_code == 400, misspelling
+        assert resp.json()["error"]["code"] == "unknown_query_param", misspelling
+
+        assert (await client.get(f"/api/v1/tickets/{DELETABLE_TODO_ID}")).status_code == 200
+    assert _snapshot(root) == before
+
+
+async def test_an_unknown_query_param_does_not_mask_a_missing_token(tmp_path: Path) -> None:
+    # The token guard is listed first, so an unauthorized caller still learns only that
+    # the token was rejected — the query guard cannot leak that the route exists.
+    app, _ = _real_app(tmp_path)
+    async with _client(app) as client:
+        resp = await client.post("/api/v1/tickets", params={"dryrun": "true"}, json=_draft_body())
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "write_token_invalid"
+
+
 # --------------------------------------------------------------------------- #
 # The todo-only editing gate + the create-collision guard (409s)
 # --------------------------------------------------------------------------- #
@@ -396,19 +425,25 @@ async def test_every_write_verb_rejects_a_bad_token_as_401(
     assert WRONG_TOKEN not in resp.text
 
 
-@pytest.mark.parametrize("verb", ["PUT", "DELETE"])
+@pytest.mark.parametrize("verb", ["POST", "PUT", "DELETE"])
 async def test_invalid_ticket_id_is_rejected_as_400(verb: str) -> None:
-    # A valid token, so the 400 is the Path-boundary pattern rejection and not a 401 —
-    # the id never reaches the adapter or the writer.
+    # A valid token, so the 400 is the pattern rejection and not a 401 — the id never
+    # reaches the adapter or the writer. POST is here because a create carries its id in
+    # the BODY, not the path: one user mistake must yield one envelope across all three
+    # verbs, or the SPA cannot branch on error.code alone.
     async with _client(_fake_app()) as client:
-        if verb == "PUT":
+        if verb == "POST":
+            resp = await client.post(
+                "/api/v1/tickets", json=_draft_body(ticket_id=INVALID_ID), headers=AUTH
+            )
+        elif verb == "PUT":
             resp = await client.put(
                 f"/api/v1/tickets/{INVALID_ID}", json=_edit_body(), headers=AUTH
             )
         else:
             resp = await client.delete(f"/api/v1/tickets/{INVALID_ID}", headers=AUTH)
-    assert resp.status_code == 400
-    assert resp.json()["error"]["code"] == "invalid_ticket_id"
+    assert resp.status_code == 400, verb
+    assert resp.json()["error"]["code"] == "invalid_ticket_id", verb
 
 
 @pytest.mark.parametrize(
