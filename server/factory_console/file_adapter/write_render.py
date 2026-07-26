@@ -38,6 +38,11 @@ from factory_console.errors import FactoryConsoleError
 from factory_console.file_adapter.manifest import load_manifest
 from factory_console.file_adapter.path_safety import PathTraversal
 from factory_console.file_adapter.roadmap_parse import _LIST_ITEM_RE, _extract_ticket_id
+from factory_console.file_adapter.ticket_md import (
+    TicketFileMissing,
+    TicketFileUnreadable,
+    read_ticket_md,
+)
 
 _TICKET_ID_RE = re.compile(TICKET_ID_PATTERN)
 """The canonical ticket-id pattern compiled once at import for re-validation."""
@@ -234,6 +239,31 @@ def _merge_edit(existing: Mapping[str, Any], edit: TicketEdit) -> dict[str, Any]
 # --------------------------------------------------------------------------- #
 # Ticket .md rendering
 # --------------------------------------------------------------------------- #
+
+
+def _merge_front_matter(project: Project, ticket_id: str, edit: TicketEdit) -> dict[str, Any]:
+    """Overlay an edit's ``frontMatter`` onto the ``.md``'s EXISTING front matter.
+
+    The ``.md`` counterpart of :func:`_merge_edit`, and for the same reason: a
+    ticket's front matter carries factory-owned keys (``id``, ``status``, ``track``,
+    ``milestone``, ``dependsOn``, ``provides``, ``files``) that no client can send
+    back, because neither the read model
+    (:class:`~factory_console.domain.ticket.Ticket`) nor the SPA's form surfaces
+    them. Rendering from ``edit.frontMatter`` alone — which defaults to ``{}`` —
+    therefore deleted the whole YAML header on every ordinary edit. Starting from
+    what is on disk means an edit can add or override keys but never silently drop
+    the ones it was never given.
+
+    A missing or unreadable ``.md`` yields ``{}`` rather than raising: the manifest
+    entry is what makes the ticket editable, so an absent body file is a create-like
+    edit, not a failure — and the caller already records the same file as a change
+    whose ``currentText`` is ``None``.
+    """
+    try:
+        current, _body = read_ticket_md(project, ticket_id)
+    except (TicketFileMissing, TicketFileUnreadable):
+        return dict(edit.frontMatter)
+    return {**current, **edit.frontMatter}
 
 
 def _render_md(front_matter: Mapping[str, Any], body_markdown: str) -> str:
@@ -510,9 +540,12 @@ def render_edit(project: Project, ticket_id: str, edit: TicketEdit) -> list[Plan
     """Compute the planned changes for editing ticket ``ticket_id``.
 
     Raises :class:`PathTraversal` if the id is unsafe and :class:`UnknownTicket`
-    (404) if it is absent. MERGES the edit onto the existing raw manifest entry so
-    unknown fields survive, re-renders the ``.md`` against its current on-disk
-    text, and — when a roadmap item carries the id — relabels that item in place.
+    (404) if it is absent. MERGES on both coupled files so unknown fields survive —
+    the edit onto the existing raw manifest entry (:func:`_merge_edit`), and its
+    ``frontMatter`` onto the ``.md``'s existing YAML header
+    (:func:`_merge_front_matter`) — replaces the ``.md`` body with
+    ``edit.bodyMarkdown``, and — when a roadmap item carries the id — relabels that
+    item in place.
     """
     md_path = _safe_resolve(project, ticket_id)
     manifest_path = project.ticketsManifestPath
@@ -535,7 +568,7 @@ def render_edit(project: Project, ticket_id: str, edit: TicketEdit) -> list[Plan
             path=md_path,
             relPath=_rel_posix(md_path, project.rootPath),
             currentText=_read_text_or_none(md_path),
-            newText=_render_md(edit.frontMatter, edit.bodyMarkdown),
+            newText=_render_md(_merge_front_matter(project, ticket_id, edit), edit.bodyMarkdown),
         ),
     ]
     roadmap_change = _roadmap_change(

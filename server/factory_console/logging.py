@@ -54,3 +54,26 @@ def request_log_line(method: str, path: str, status: int, dur_ms: float) -> str:
     ``'GET /health 200 1.5ms'``.
     """
     return f"{method} {path} {status} {dur_ms:.1f}ms"
+
+
+def write_log_line(verb: str, ticket_id: str, applied: bool, changed_files: list[str]) -> str:
+    """Return a single greppable ticket-write audit line; this does not emit it.
+
+    The write-side sibling of :func:`request_log_line`, and folded into the message
+    for the same reason: :func:`configure_logging` installs one message-only
+    formatter (:data:`_LOG_FORMAT`), so anything passed via ``extra=`` is never
+    rendered and an audit line built that way reaches the operator as a bare
+    ``ticket write``.
+
+    ``applied`` is what the access log physically cannot supply: it formats
+    ``request.url.path``, which drops the query string, and edit/delete answer
+    ``200`` whether they wrote or previewed — so an applied ``DELETE`` and a
+    ``?dryRun=true`` preview of it are otherwise byte-identical. ``changed_files``
+    names the paths actually touched, so a bad write can be traced to them.
+
+    Example: ``write_log_line('delete', 'T64', True, ['docs/planning/tickets.json'])``
+    yields ``'delete T64 applied files=docs/planning/tickets.json'``.
+    """
+    outcome = "applied" if applied else "dry-run"
+    files = ",".join(changed_files) if changed_files else "-"
+    return f"{verb} {ticket_id} {outcome} files={files}"

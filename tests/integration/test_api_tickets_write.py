@@ -24,6 +24,7 @@ since that code is what the SPA branches on.
 
 from __future__ import annotations
 
+import logging
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -45,6 +46,7 @@ from factory_console.file_adapter import FakeFileAdapter
 from factory_console.file_adapter.fake_writer import FakeFileWriter
 from factory_console.file_adapter.real import RealFileAdapter
 from factory_console.file_adapter.real_writer import RealFileWriter
+from factory_console.logging import _LOG_FORMAT
 
 WITH_RUN_STATE = Path(__file__).resolve().parents[1] / "fixtures" / "projects" / "with_run_state"
 
@@ -288,17 +290,32 @@ async def test_the_audit_line_separates_an_applied_write_from_a_dry_run(
             )
             await client.delete(f"/api/v1/tickets/{DELETABLE_TODO_ID}", headers=AUTH)
 
-    records = [record for record in caplog.records if record.getMessage() == "ticket write"]
+    records = [
+        record for record in caplog.records if record.name == "factory_console.api.v1.tickets_write"
+    ]
     assert len(records) == 2
     previewed, applied = records
-    # Static message; the variable data rides in structured ``extra`` fields.
-    assert (previewed.applied, applied.applied) == (False, True)
-    assert previewed.verb == applied.verb == "delete"
-    assert previewed.ticketId == applied.ticketId == DELETABLE_TODO_ID
+
+    # Assert on the RENDERED message, not on ``LogRecord`` attributes: the app installs
+    # one message-only formatter, so attributes attached via ``extra=`` exist on the
+    # record (and would satisfy an attribute assertion) while never reaching the
+    # operator. Only what ``format()`` emits is real.
+    formatter = logging.Formatter(_LOG_FORMAT)
+    previewed_line = formatter.format(previewed)
+    applied_line = formatter.format(applied)
+
+    # The two lines must not be byte-identical — that is the whole point of the record.
+    assert previewed_line != applied_line
+    assert "dry-run" in previewed_line
+    assert "applied" in applied_line
+    for line in (previewed_line, applied_line):
+        assert "delete" in line
+        assert DELETABLE_TODO_ID in line
     # The apply names the files it actually wrote — the point of keeping the record.
-    assert applied.changedFiles
+    assert "docs/planning/tickets.json" in applied_line
     # An audit trail records what changed, never the secret that authorized it.
     assert PINNED_TOKEN not in caplog.text
+    assert PINNED_TOKEN not in applied_line
 
 
 @pytest.mark.parametrize("misspelling", ["dryrun", "dry_run", "dryRunn", "DRYRUN"])

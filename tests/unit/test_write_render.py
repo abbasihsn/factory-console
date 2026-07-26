@@ -324,6 +324,63 @@ def test_edit_md_renders_against_current_on_disk_text(tmp_path: Path) -> None:
     assert md.newText == "# Endpoint\n\nUpdated body.\n"
 
 
+def test_edit_preserves_existing_front_matter_when_edit_sends_none(tmp_path: Path) -> None:
+    """An edit with no ``frontMatter`` must KEEP the ``.md``'s YAML header.
+
+    The regression guard for the destructive default: ``TicketEdit.frontMatter``
+    defaults to ``{}``, and no client can populate it (the read model and the SPA
+    form both lack the field), so rendering from the edit alone silently deleted
+    every factory-owned key on the very first ordinary edit.
+    """
+    project = _make_project(tmp_path)
+    _seed(project)
+    md_path = project.ticketsDir / "TM-015.md"
+    md_path.write_text(
+        "---\nid: TM-015\nstatus: todo\nowner: ranger-team\n---\n# Old body\n",
+        encoding="utf-8",
+    )
+
+    changes = render_edit(project, "TM-015", _edit())
+
+    md = _by_rel(changes, "docs/planning/tickets/TM-015.md")
+    assert md.newText.startswith("---\n")
+    assert "id: TM-015" in md.newText
+    assert "status: todo" in md.newText
+    assert "owner: ranger-team" in md.newText
+    assert md.newText.endswith("# Endpoint\n\nUpdated body.\n")
+
+
+def test_edit_front_matter_overrides_disk_and_adds_new_keys(tmp_path: Path) -> None:
+    """A supplied ``frontMatter`` overlays the on-disk header rather than replacing it."""
+    project = _make_project(tmp_path)
+    _seed(project)
+    md_path = project.ticketsDir / "TM-015.md"
+    md_path.write_text("---\nid: TM-015\nowner: ranger-team\n---\n# Old body\n", encoding="utf-8")
+
+    changes = render_edit(
+        project, "TM-015", _edit(frontMatter={"owner": "api-team", "priority": "high"})
+    )
+
+    md = _by_rel(changes, "docs/planning/tickets/TM-015.md")
+    assert "id: TM-015" in md.newText  # untouched key survives
+    assert "owner: api-team" in md.newText  # supplied key wins
+    assert "ranger-team" not in md.newText
+    assert "priority: high" in md.newText  # new key added
+
+
+def test_edit_without_an_md_file_renders_only_the_supplied_front_matter(tmp_path: Path) -> None:
+    """A manifest entry whose ``.md`` is absent renders from the edit alone, not an error."""
+    project = _make_project(tmp_path)
+    _seed(project)  # no TM-015.md written
+
+    changes = render_edit(project, "TM-015", _edit(frontMatter={"owner": "api-team"}))
+
+    md = _by_rel(changes, "docs/planning/tickets/TM-015.md")
+    assert md.currentText is None
+    assert "owner: api-team" in md.newText
+    assert md.newText.endswith("# Endpoint\n\nUpdated body.\n")
+
+
 def test_edit_relabels_roadmap_line_in_place(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     _seed(project)

@@ -56,6 +56,7 @@ from factory_console.domain.write import TicketDraft, TicketEdit, WriteResult
 from factory_console.errors import FactoryConsoleError
 from factory_console.file_adapter.protocol import FileAdapter
 from factory_console.file_adapter.writer_protocol import FileWriter
+from factory_console.logging import write_log_line
 from factory_console.services.write_service import WriteService
 
 # Every query key these routes understand. ``dryRun`` is the only one; the guard below
@@ -76,18 +77,17 @@ def _log_write(verb: str, result: WriteResult) -> None:
     one bit that separates them (``applied``) plus the paths actually written, so a bad
     write can be traced to the files it modified.
 
-    Values go in ``extra=`` behind a static message per the repo's logging rule. The
-    write token is never among them — the audit records what changed, not who proved
-    they could.
+    The values are folded INTO the message by
+    :func:`~factory_console.logging.write_log_line` rather than passed via ``extra=``,
+    exactly as :class:`~factory_console.app.AccessLogMiddleware` does with
+    :func:`~factory_console.logging.request_log_line`: the app installs a single
+    message-only formatter, which renders no record attribute it does not name, so an
+    ``extra=`` payload would reach the operator as a bare ``ticket write`` — the very
+    gap this line exists to close. The write token is never among the values; the audit
+    records what changed, not who proved they could.
     """
     _LOGGER.info(
-        "ticket write",
-        extra={
-            "verb": verb,
-            "ticketId": result.ticketId,
-            "applied": result.applied,
-            "changedFiles": result.changedFiles,
-        },
+        write_log_line(verb, result.ticketId, result.applied, result.changedFiles),
     )
 
 
