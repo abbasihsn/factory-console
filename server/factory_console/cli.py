@@ -203,17 +203,22 @@ def main(
     root = root.resolve()
 
     file_adapter = RealFileAdapter()
-    # ``Settings`` is consulted for the write token alone: host/port/log-level are
-    # already resolved above through Typer's own envvar= plumbing. An unset
-    # FACTORY_CONSOLE_WRITE_TOKEN leaves this None, which is create_app's cue to mint
-    # a fresh per-session token and print it to stderr.
+    # ``Settings`` is consulted for the write token alone, but constructing it
+    # validates EVERY ``FACTORY_CONSOLE_*`` field — so the values Typer already
+    # resolved are handed in explicitly, keeping the flag-beats-envvar rule intact. A
+    # bare ``Settings()`` would re-read FACTORY_CONSOLE_HOST from the environment and
+    # die on a raw pydantic ValidationError when a non-loopback value there had been
+    # legitimately overridden by ``--host``, bypassing the exit-2 contract above. An
+    # unset FACTORY_CONSOLE_WRITE_TOKEN leaves the token None, which is create_app's
+    # cue to mint a fresh per-session one and print it to stderr.
+    settings = Settings(host=host, port=port, log_level=normalized_log_level)
     fastapi_app = create_app(
         file_adapter,
         version=factory_console.__version__,
         project_root=root,
         file_watcher=RealFileWatcher(root),
         file_writer=RealFileWriter(),
-        write_token=Settings().write_token,
+        write_token=settings.write_token,
     )
 
     # Discovery only checks the manifest FILE exists; force a real parse now so a

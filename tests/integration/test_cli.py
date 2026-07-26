@@ -333,6 +333,26 @@ def test_explicit_log_level_flag_overrides_env_var(monkeypatch: pytest.MonkeyPat
     assert captured["level"] == "WARNING"
 
 
+def test_explicit_host_flag_overrides_a_non_loopback_env_var(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Same precedence for --host, and the boot must not re-read the env behind the
+    # flag's back: the CLI builds ``Settings`` (for the write token) from the values
+    # it already resolved, so a non-loopback FACTORY_CONSOLE_HOST that --host
+    # overrode cannot resurface as an unhandled pydantic ValidationError.
+    monkeypatch.setattr("factory_console.cli.uvicorn.Server", _StubServer)
+    monkeypatch.setattr("factory_console.cli.configure_logging", lambda level: None)
+
+    result = runner.invoke(
+        app,
+        [str(_MINIMAL), "--no-browser", "--port", "0", "--host", "127.0.0.1"],
+        env={"FACTORY_CONSOLE_HOST": "0.0.0.0"},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "http://127.0.0.1:" in result.output
+
+
 def test_full_boot_prints_contract_line_and_configures_logging(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
