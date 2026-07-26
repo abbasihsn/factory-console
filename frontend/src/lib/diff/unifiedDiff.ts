@@ -21,9 +21,13 @@ export interface DiffLine {
 /** `@@ -1,4 +1,6 @@` — a hunk header. */
 const HUNK_PREFIX = '@@';
 
-/** `--- a/path` / `+++ b/path` — the two file headers. */
-const OLD_FILE_PREFIX = '---';
-const NEW_FILE_PREFIX = '+++';
+/**
+ * `--- a/path` / `+++ b/path` — the two file headers. The TRAILING SPACE is part
+ * of the prefix: `difflib.unified_diff` always emits the marker, a space, then
+ * the filename, so requiring it keeps content lines out of these constants.
+ */
+const OLD_FILE_PREFIX = '--- ';
+const NEW_FILE_PREFIX = '+++ ';
 
 /** `\ No newline at end of file` — a note about the file, not file content. */
 const NOTE_PREFIX = '\\';
@@ -31,10 +35,10 @@ const NOTE_PREFIX = '\\';
 /**
  * Classify one already-newline-stripped diff line.
  *
- * PRECEDENCE MATTERS: the file headers `---`/`+++` start with the same character
- * as a del/add line, so they are tested FIRST. That makes a header win over
- * content whenever a real removed line happens to read `---`; unified diff is
- * genuinely ambiguous there and header-wins is the conventional reading.
+ * The file headers share a first character with a del/add line, so they are
+ * tested FIRST — but their prefixes include the space that follows the marker in
+ * a real header, so they no longer swallow ordinary content. A removed `---`
+ * front-matter fence (diff line `----`) reads as `del`, and an added one `add`.
  */
 function classifyLine(text: string): DiffLineKind {
 	if (text.startsWith(HUNK_PREFIX)) return 'hunk';

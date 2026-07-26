@@ -13,6 +13,20 @@ const MODIFY_DIFF = [
 	' trailing context'
 ].join('\n');
 
+/**
+ * A whole-file delete of a ticket. Ticket markdown opens with a `---` YAML
+ * front-matter fence, so removing that line puts `----` in the diff body.
+ */
+const DELETE_DIFF = [
+	'--- a/docs/planning/tickets/v2/T69.md',
+	'+++ b/docs/planning/tickets/v2/T69.md',
+	'@@ -1,4 +0,0 @@',
+	'----',
+	'-id: T69',
+	'----',
+	'-# T69'
+].join('\n');
+
 /** Just the kinds, in order — the shape most assertions care about. */
 function kindsOf(diff: string): DiffLineKind[] {
 	return parseDiffLines(diff).map((line) => line.kind);
@@ -43,6 +57,14 @@ describe('parseDiffLines', () => {
 	it('reads the file headers as meta, NOT as add/del content', () => {
 		// `+++`/`---` share a first character with add/del, so precedence decides.
 		expect(kindsOf('--- a/x\n+++ b/x')).toEqual(['meta', 'meta']);
+	});
+
+	it('classifies every removed line of a delete diff as del, front-matter fence included', () => {
+		expect(kindsOf(DELETE_DIFF)).toEqual(['meta', 'meta', 'hunk', 'del', 'del', 'del', 'del']);
+	});
+
+	it('reads a removed --- fence as del and an added one as add, not as file headers', () => {
+		expect(kindsOf('----\n++++')).toEqual(['del', 'add']);
 	});
 
 	it('treats a bare - or + as a removed or added empty line', () => {
