@@ -1,9 +1,12 @@
 name: Release
 
 # Tag-driven publish: pushing a semver tag builds the wheel + sdist, publishes to
-# PyPI via trusted publishing, and cuts a GitHub Release. The tag is the source of
-# truth — it must equal factory_console.__version__ (guarded below) or the run
-# fails fast before anything is published.
+# PyPI via trusted publishing, signs the artifacts with a keyless sigstore build-
+# provenance attestation (verified in-run), and cuts a GitHub Release with the
+# attestation bundle attached. The tag is the source of truth — it must equal
+# factory_console.__version__ (guarded below) or the run fails fast before anything
+# is published. The signing/verify steps are purely additive: they run after the
+# irreversible PyPI upload and never touch the dist/ contents it publishes.
 on:
   push:
     tags: ['v*.*.*']
@@ -93,8 +96,9 @@ jobs:
     # environment. A maintainer can point `pypi` at TestPyPI to rehearse a release.
     environment: pypi
     permissions:
-      id-token: write # PyPI trusted publishing (OIDC); no PYPI_API_TOKEN secret
+      id-token: write # PyPI trusted publishing (OIDC) + keyless sigstore signing
       contents: write # create the GitHub Release
+      attestations: write # actions/attest-build-provenance records the provenance attestation
     steps:
       - name: Download dist artifact
         uses: actions/download-artifact@v4
@@ -108,9 +112,39 @@ jobs:
         # the trailing comment tracks the human-readable ref. Bump both together.
         uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # release/v1
 
+      - name: Attest build provenance (keyless, sigstore/OIDC)
+        id: attest
+        # Additive supply-chain hardening that runs AFTER the irreversible PyPI
+        # upload and never mutates dist/ — the wheel + sdist PyPI received are
+        # byte-for-byte what get attested here. Keyless: the job's OIDC id-token is
+        # exchanged for a short-lived Fulcio signing certificate and the provenance
+        # is recorded in the Rekor transparency log — no long-lived signing key or
+        # secret. First-party actions/* action, so pinned by tag (@v2) to match the
+        # other actions/* pins in this file, not by SHA. Consumers verify with:
+        #   gh attestation verify <wheel|sdist> --repo abbasihsn/factory-console
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'dist/*'
+
+      - name: Verify the provenance attestation
+        # Fail fast if signing produced nothing verifiable: check each wheel/sdist
+        # against the attestation just recorded, so a missing/invalid attestation
+        # fails the run instead of shipping unverifiable artifacts. Uses the runner's
+        # preinstalled gh CLI — no extra action (hence no SHA to resolve).
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for f in dist/*; do
+            gh attestation verify "$f" --repo "${{ github.repository }}"
+          done
+
       - name: Create GitHub Release
         # SHA-pinned; trailing comment tracks the human-readable ref (bump together).
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          files: dist/*
+          # Attach the dist artifacts plus the sigstore attestation bundle (kept out
+          # of dist/ so the PyPI upload above stays pristine) for consumer verification.
+          files: |
+            dist/*
+            ${{ steps.attest.outputs.bundle-path }}
           generate_release_notes: true
