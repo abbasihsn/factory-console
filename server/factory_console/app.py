@@ -14,7 +14,12 @@ watcher backbone the SSE endpoint (T45) builds on. It also accepts an optional
 write-core :class:`~factory_console.file_adapter.writer_protocol.FileWriter` (T60/T61's
 port), stashed on ``app.state.file_writer`` for the ``Depends(get_file_writer)`` seam
 the v2 write endpoints consume; the writer is stateless, so it drives no lifespan.
-It wires the two cross-cutting
+It mints the per-session write token (T64) — the defence-in-depth secret every v2
+mutation must present in the
+:data:`~factory_console.config.WRITE_TOKEN_HEADER` header — stashing it on
+``app.state.write_token`` for
+:func:`~factory_console.api.write_token.require_write_token` and announcing it on
+stderr for the human operator. It wires the two cross-cutting
 concerns every endpoint relies on: the domain/validation exception handlers
 (:func:`~factory_console.api.error_handlers.register_error_handlers`) and a single
 access-log line per request (:class:`AccessLogMiddleware`). The packaged SPA is
@@ -33,6 +38,8 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import secrets
+import sys
 import time
 from collections.abc import AsyncIterator
 from importlib import resources
@@ -49,6 +56,8 @@ from starlette.types import Scope
 from factory_console.api.error_handlers import register_error_handlers
 from factory_console.api.v1 import API_V1_PREFIX
 from factory_console.api.v1 import router as v1_router
+from factory_console.api.write_token import publish_write_token_scheme
+from factory_console.config import WRITE_TOKEN_HEADER
 from factory_console.file_adapter.protocol import FileAdapter
 from factory_console.file_adapter.watcher import FileWatcher
 from factory_console.file_adapter.writer_protocol import FileWriter
@@ -166,6 +175,28 @@ async def _watcher_lifespan(app: FastAPI) -> AsyncIterator[None]:
             file_watcher.stop()
 
 
+# Entropy (in bytes) of a generated write token. 32 bytes is the ``secrets`` module's
+# own recommendation for a value that must resist brute force, and yields a ~43-char
+# URL-safe string — short enough for an operator to copy out of the terminal.
+_WRITE_TOKEN_BYTES = 32
+
+
+def _announce_write_token(token: str) -> None:
+    """Print the session's write token to stderr for the human operator.
+
+    Deliberately a ``print`` to ``sys.stderr`` rather than a log call: the token is
+    a secret, and the write-path NFR is that it never reaches a log line, so it must
+    NOT flow through the configured logging handlers (files, aggregation, the access
+    log). stderr also keeps it off stdout, whose only content is the CLI's
+    machine-parsable contract line.
+    """
+    print(f"{WRITE_TOKEN_HEADER}: {token}", file=sys.stderr)
+    print(
+        "  send this header on write requests; a new token is minted at every start",
+        file=sys.stderr,
+    )
+
+
 def create_app(
     file_adapter: FileAdapter,
     *,
@@ -173,6 +204,7 @@ def create_app(
     project_root: Path,
     file_watcher: FileWatcher | None = None,
     file_writer: FileWriter | None = None,
+    write_token: str | None = None,
 ) -> FastAPI:
     """Build the Factory Console app around an injected ``FileAdapter``.
 
@@ -187,7 +219,20 @@ def create_app(
     ``app.state.file_writer`` for the ``Depends(get_file_writer)`` seam; it is
     stateless, so it drives no lifespan, and leaving it ``None`` keeps the app
     write-free until a write route asks for it (then a missing writer is a wiring
-    bug the seam raises on). Registers the domain/validation exception handlers and
+    bug the seam raises on).
+
+    ``write_token`` pins the per-session write secret every v2 mutation must present
+    in the :data:`~factory_console.config.WRITE_TOKEN_HEADER` header (an operator
+    override from ``FACTORY_CONSOLE_WRITE_TOKEN``, or a fixed value in tests);
+    leaving it ``None`` — the normal case — mints a fresh random one, so the token
+    never outlives the process. Either way it is stashed on
+    ``app.state.write_token`` for
+    :func:`~factory_console.api.write_token.require_write_token` and announced on
+    stderr, and its ``apiKey`` security scheme is published in the OpenAPI document
+    for the SPA's codegen. Read routes are untouched: nothing here attaches a global
+    dependency, so viewing the project needs no header.
+
+    Registers the domain/validation exception handlers and
     the access-log middleware, includes the v1 router, and mounts the packaged SPA
     last. ``project_root`` is non-optional: the CLI always discovers a root before
     boot and tests always pass a fixture root.
@@ -205,8 +250,12 @@ def create_app(
     app.state.version = version
     app.state.file_watcher = file_watcher
     app.state.file_writer = file_writer
+    token = write_token or secrets.token_urlsafe(_WRITE_TOKEN_BYTES)
+    app.state.write_token = token
+    _announce_write_token(token)
 
     register_error_handlers(app)
+    publish_write_token_scheme(app)
     app.add_middleware(AccessLogMiddleware)
     app.include_router(v1_router)
     _mount_static(app)
@@ -226,8 +275,14 @@ def create_dev_app() -> FastAPI:
     ``watcher_real.py``, or ``real_writer.py`` (and never imports ``watchdog``) —
     the only runtime users of the concrete adapter/watcher/writer are this dev
     shortcut and T25's CLI.
+
+    The write token comes from ``FACTORY_CONSOLE_WRITE_TOKEN`` via :class:`Settings`
+    so a dev loop can pin it across reloads (uvicorn's reloader re-runs this factory,
+    which would otherwise mint a new token and invalidate the one in the operator's
+    clipboard); unset, ``create_app`` generates one per boot.
     """
     from factory_console import __version__
+    from factory_console.config import Settings
     from factory_console.file_adapter.discovery import discover_project
     from factory_console.file_adapter.real import RealFileAdapter
     from factory_console.file_adapter.real_writer import RealFileWriter
@@ -240,4 +295,5 @@ def create_dev_app() -> FastAPI:
         project_root=root,
         file_watcher=RealFileWatcher(root),
         file_writer=RealFileWriter(),
+        write_token=Settings().write_token,
     )

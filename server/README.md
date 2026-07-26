@@ -8,7 +8,7 @@ The Python package `factory_console` (imported as `factory_console`, package roo
 - FastAPI (Uvicorn ASGI) — HTTP handlers
 - Typer — CLI entrypoint (`factory-console`)
 - Pydantic v2 — domain models (source of truth for the OpenAPI schema the SPA consumes)
-- pydantic-settings — config (`FACTORY_CONSOLE_HOST/PORT/LOG_LEVEL`), 127.0.0.1 validator-pinned
+- pydantic-settings — config (`FACTORY_CONSOLE_HOST/PORT/LOG_LEVEL/WRITE_TOKEN`), 127.0.0.1 validator-pinned
 - markdown-it-py + mdit-py-plugins + bleach — server-side markdown rendering + sanitization
 
 ## Layout (populated by MVP tickets)

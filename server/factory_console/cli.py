@@ -44,7 +44,10 @@ swallows so Ctrl-C still exits 0 rather than 130.
 ``FACTORY_CONSOLE_HOST``/``FACTORY_CONSOLE_PORT``/``FACTORY_CONSOLE_LOG_LEVEL`` env
 vars (Typer ``envvar=``), with an explicit flag winning over the env var and the
 env var over the default — so the config surface the README advertises is live and
-still runs through the same host/log-level/port validation.
+still runs through the same host/log-level/port validation. The write token has no
+flag (an argv secret is readable by every local process): ``create_app`` mints a
+fresh one per boot and prints it to stderr, and ``FACTORY_CONSOLE_WRITE_TOKEN`` —
+read here through :class:`~factory_console.config.Settings` — pins it instead.
 
 Exit codes: ``0`` ok · ``1`` project-not-found · ``2`` bad host / out-of-range port
 / bad log level / port-in-use · ``3`` malformed manifest.
@@ -63,7 +66,7 @@ import uvicorn
 
 import factory_console
 from factory_console.app import create_app
-from factory_console.config import require_loopback_host
+from factory_console.config import Settings, require_loopback_host
 from factory_console.file_adapter.discovery import ProjectNotFound, discover_project
 from factory_console.file_adapter.manifest import MalformedManifest
 from factory_console.file_adapter.real import RealFileAdapter
@@ -200,12 +203,22 @@ def main(
     root = root.resolve()
 
     file_adapter = RealFileAdapter()
+    # ``Settings`` is consulted for the write token alone, but constructing it
+    # validates EVERY ``FACTORY_CONSOLE_*`` field — so the values Typer already
+    # resolved are handed in explicitly, keeping the flag-beats-envvar rule intact. A
+    # bare ``Settings()`` would re-read FACTORY_CONSOLE_HOST from the environment and
+    # die on a raw pydantic ValidationError when a non-loopback value there had been
+    # legitimately overridden by ``--host``, bypassing the exit-2 contract above. An
+    # unset FACTORY_CONSOLE_WRITE_TOKEN leaves the token None, which is create_app's
+    # cue to mint a fresh per-session one and print it to stderr.
+    settings = Settings(host=host, port=port, log_level=normalized_log_level)
     fastapi_app = create_app(
         file_adapter,
         version=factory_console.__version__,
         project_root=root,
         file_watcher=RealFileWatcher(root),
         file_writer=RealFileWriter(),
+        write_token=settings.write_token,
     )
 
     # Discovery only checks the manifest FILE exists; force a real parse now so a
