@@ -85,11 +85,17 @@ require it on every request:
 | `DELETE /api/v1/tickets/{id}` | delete a ticket (`200`)                        |
 
 Each returns the same `WriteResult` body carrying the unified diff of what changed, and
-each accepts `?dryRun=true` to get that diff back **without** writing anything. Only
-tickets whose factory run-state is `todo` (or `unknown`, when the project has no
-run-state directory) may be edited or deleted — anything `in-flight`, `ready`, or
-`merged` is refused with `409 ticket_not_mutable`. A missing or wrong token is
-`401 write_token_invalid`.
+each accepts `?dryRun=true` to get that diff back **without** writing anything.
+
+Only tickets whose factory run-state is `todo` (or `unknown`, when the project has no
+run-state directory) may be edited or deleted — an `in-flight`, `ready`, or `merged`
+ticket is refused with `409 ticket_not_mutable`. That gate guards the **write**, so it
+fires on an apply; `?dryRun=true` still returns the preview diff for such a ticket, and
+the refusal comes when you apply it. Creating an id that already exists, by contrast, is
+refused with `409 write_conflict` on **both** paths, because previewing a create that
+could never succeed would be a misleading preview. A missing or wrong token is
+`401 write_token_invalid`, and an id outside the ticket-id pattern is
+`400 invalid_ticket_id`.
 
 The console binds to loopback only, so the token is defence-in-depth *behind* that
 boundary — it stops another process on your machine, or a drive-by request from a page in

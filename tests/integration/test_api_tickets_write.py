@@ -301,6 +301,35 @@ async def test_delete_on_non_todo_ticket_is_ticket_not_mutable_409(
     assert _snapshot(root) == before
 
 
+@pytest.mark.parametrize("ticket_id", NON_TODO_IDS)
+async def test_dry_run_still_previews_a_non_todo_ticket_and_writes_nothing(
+    ticket_id: str, tmp_path: Path
+) -> None:
+    # The asymmetry the two tests above and the one below make it easy to assume away:
+    # the mutability gate lives in the WRITER, so it guards the apply only. A dry-run
+    # never reaches the writer's gated methods, so previewing an in-flight/ready/merged
+    # ticket answers 200 with the diff — the 409 arrives when the SPA applies it. Pinned
+    # here (unlike write_conflict, which rejects both paths) so a change in either
+    # direction is a deliberate contract change, not a silent one.
+    app, root = _real_app(tmp_path)
+    before = _snapshot(root)
+    async with _client(app) as client:
+        edit = await client.put(
+            f"/api/v1/tickets/{ticket_id}",
+            params={"dryRun": "true"},
+            json=_edit_body(),
+            headers=AUTH,
+        )
+        delete = await client.delete(
+            f"/api/v1/tickets/{ticket_id}", params={"dryRun": "true"}, headers=AUTH
+        )
+    for resp in (edit, delete):
+        assert resp.status_code == 200
+        _assert_previewed_with_diff(resp.json(), ticket_id)
+    # Whatever the run-state, a preview writes nothing.
+    assert _snapshot(root) == before
+
+
 @pytest.mark.parametrize("dry_run", ["false", "true"])
 async def test_create_on_an_existing_id_is_write_conflict_409(dry_run: str, tmp_path: Path) -> None:
     # Both paths reject: previewing a create for an id that already exists would be a

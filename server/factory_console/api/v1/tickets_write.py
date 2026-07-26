@@ -18,9 +18,12 @@ The handlers mirror :mod:`factory_console.api.v1.tickets`: resolve the project r
 ``app.state``, load the :class:`~factory_console.domain.project.Project` through the
 read adapter, construct a request-scoped
 :class:`~factory_console.services.write_service.WriteService` over the two injected
-ports, and delegate. All request logic — the create-collision guard, the existence
-check, and the todo-only mutability gate — lives in that service, so the handlers are
-wiring only.
+ports, and delegate. All request logic lives below this layer, so the handlers are
+wiring only: the service owns the create-collision guard and the existence check (both
+on the dry-run path too), and the todo-only mutability gate lives one layer further
+down, inside the writer's ``edit_ticket``/``delete_ticket``
+(:func:`~factory_console.file_adapter.write_gate.ensure_mutable`) — so it guards an
+apply, and a dry-run previews a non-mutable ticket rather than refusing it.
 
 They also do no error handling of their own; every failure mode already has a
 registered handler that renders the REST v1 envelope:
