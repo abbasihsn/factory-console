@@ -14,7 +14,7 @@
 	import EditTicketModal from '$lib/components/EditTicketModal.svelte';
 	import WriteTokenPrompt from '$lib/components/WriteTokenPrompt.svelte';
 	import { isEditable } from '$lib/forms/editability';
-	import { writeToken } from '$lib/stores/writeToken';
+	import { clearToken, WRITE_TOKEN_INVALID_CODE, writeToken } from '$lib/stores/writeToken';
 
 	let { data }: { data: PageData } = $props();
 
@@ -43,6 +43,26 @@
 	// client-side MIRROR of the server write-gate, never the only gate.
 	const canWrite = $derived(!data.notFound && isEditable(data.ticket.runState) && !deleting);
 
+	// SvelteKit REUSES this component instance for a params-only navigation, replacing
+	// only `data` — and the "Depends on" chips below link to exactly that (`/tickets/<id>`).
+	// The write state above is per-TICKET, so it has to be dropped when the rendered
+	// ticket changes: otherwise one ticket's delete error stays on screen attributed to
+	// the next, and a left-over token prompt would re-enter `startDelete` and offer to
+	// delete a ticket the user never chose.
+	let shownId: string | null = null; // plain: written by the effect, never read reactively
+	$effect(() => {
+		const id = data.notFound ? data.id : data.ticket.id;
+		if (id === shownId) {
+			return;
+		}
+		shownId = id;
+		editOpen = false;
+		confirmDeleteOpen = false;
+		deleteTokenNeeded = false;
+		deleting = false;
+		deleteError = null;
+	});
+
 	const ACTION_CLASS =
 		'rounded border border-slate-300 px-3 py-1 text-sm text-text hover:bg-bg disabled:cursor-not-allowed disabled:opacity-60';
 	const DANGER_CLASS =
@@ -65,6 +85,12 @@
 	// the user nothing they can act on. An edit is the case where the diff IS the
 	// decision, which is why only that flow goes through `DiffPreviewModal`.
 	async function confirmDelete(id: string): Promise<void> {
+		// One confirmation is one DELETE. The dialog stays mounted for the whole
+		// round-trip, so this guard — not `canWrite`, which only gates the buttons
+		// behind the backdrop — is what stops a double-click sending two.
+		if (deleting) {
+			return;
+		}
 		const token = get(writeToken);
 		if (token === null) {
 			// The token was dropped between the prompt and the confirmation.
@@ -77,14 +103,25 @@
 		try {
 			await deleteTicket(id, token);
 		} catch (err) {
-			deleteError = normalizeError(err);
+			const apiError = normalizeError(err);
+			if (apiError.code === WRITE_TOKEN_INVALID_CODE) {
+				// The held token is known bad — the case `clearToken` exists for. Drop it
+				// so the prompt comes back; keeping it would leave every retry failing
+				// against a rejected credential with no way in the app to replace it.
+				clearToken();
+				deleteTokenNeeded = true;
+			} else {
+				deleteError = apiError;
+			}
+			deleting = false;
 			return;
 		} finally {
-			deleting = false;
 			confirmDeleteOpen = false;
 		}
 		// The ticket this route renders is gone, so there is nothing to refresh —
 		// leave for the list, forcing its load to re-run so the deleted row is gone.
+		// `deleting` is deliberately NOT cleared: the buttons must not re-enable for a
+		// ticket that no longer exists while this navigation is still in flight.
 		await goto('/', { invalidateAll: true });
 	}
 
@@ -211,6 +248,7 @@
 			message="This removes {ticket.id} from the manifest and deletes its markdown file. It cannot be undone from here."
 			confirmLabel="Delete ticket"
 			danger
+			busy={deleting}
 			onConfirm={() => void confirmDelete(ticket.id)}
 			onCancel={() => (confirmDeleteOpen = false)}
 		/>

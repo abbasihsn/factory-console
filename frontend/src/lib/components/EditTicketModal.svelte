@@ -7,8 +7,8 @@
 	import ModalShell from '$lib/components/ModalShell.svelte';
 	import TicketForm from '$lib/components/TicketForm.svelte';
 	import WriteTokenPrompt from '$lib/components/WriteTokenPrompt.svelte';
-	import { parseList, serializeList, type TicketFormValues } from '$lib/forms/ticketForm';
-	import { writeToken } from '$lib/stores/writeToken';
+	import { serializeList, toTicketUpdate, type TicketFormValues } from '$lib/forms/ticketForm';
+	import { clearToken, WRITE_TOKEN_INVALID_CODE, writeToken } from '$lib/stores/writeToken';
 
 	// The edit ORCHESTRATOR: it owns the whole form → dry-run → confirm → apply
 	// sequence (and the missing-token detour) so the detail route only has to mount
@@ -63,27 +63,6 @@
 	});
 
 	/**
-	 * The PUT body for one set of form values.
-	 *
-	 * `track` / `milestone` have no form field, but a PUT REPLACES every field the
-	 * server treats as editable: omitting them writes `null` over the manifest
-	 * entry's real values. Echoing what was loaded makes an ordinary edit preserve
-	 * them, and a ticket that genuinely has neither still sends the explicit `null`
-	 * that means "none".
-	 */
-	function toUpdate(values: TicketFormValues): TicketUpdate {
-		return {
-			title: values.title.trim(),
-			track: ticket.track ?? null,
-			milestone: ticket.milestone ?? null,
-			dependsOn: parseList(values.dependsOn),
-			provides: values.provides.trim(),
-			files: parseList(values.files),
-			bodyMarkdown: values.body ?? ''
-		};
-	}
-
-	/**
 	 * Run `action` with this session's write token, or park it behind the prompt.
 	 *
 	 * The token is read imperatively at click time via `get` rather than through a
@@ -108,9 +87,37 @@
 	}
 
 	function handleSubmit(values: TicketFormValues): void {
-		const body = toUpdate(values);
+		const body = toTicketUpdate(values, ticket);
 		pendingBody = body;
 		withToken((token) => void runPreview(body, token));
+	}
+
+	/**
+	 * Route a failed write: a REJECTED TOKEN is not a terminal error.
+	 *
+	 * A 401 means the token we hold is known bad — it is the case
+	 * {@link clearToken} exists for. Dropping it and re-parking `retry` behind the
+	 * prompt is what lets the user paste the current token and have the write
+	 * resume; leaving it stored would make every further attempt fail against a
+	 * credential already rejected, with nothing in the app to replace it (the
+	 * prompts only appear when NO token is held).
+	 *
+	 * The review dialog is closed first because the prompt renders inside the form
+	 * dialog, which sits behind that dialog's backdrop and outside its focus trap —
+	 * leaving it open would show a prompt nobody can click or tab to.
+	 */
+	function handleWriteFailure(err: unknown, retry: (token: string) => void): void {
+		const apiError = normalizeError(err);
+		if (apiError.code !== WRITE_TOKEN_INVALID_CODE) {
+			writeError = apiError;
+			return;
+		}
+		clearToken();
+		previewOpen = false;
+		preview = null;
+		writeError = null;
+		// The token is null now, so this parks `retry` and raises the prompt.
+		withToken(retry);
 	}
 
 	async function runPreview(body: TicketUpdate, token: string): Promise<void> {
@@ -123,7 +130,7 @@
 		try {
 			preview = await previewWrite({ verb: 'update', id: ticket.id, body }, token);
 		} catch (err) {
-			writeError = normalizeError(err);
+			handleWriteFailure(err, (retryToken) => void runPreview(body, retryToken));
 		} finally {
 			busy = false;
 		}
@@ -142,8 +149,11 @@
 		try {
 			await updateTicket(ticket.id, body, token);
 		} catch (err) {
-			// Stay open on the reviewed diff: the edit is intact and retryable.
-			writeError = normalizeError(err);
+			// Nothing was written, so the dialog stays open on the failure rather than
+			// closing over it. A rejected token re-raises the prompt and resumes THIS
+			// body once a good one is pasted; any other failure is reported on the
+			// review dialog, from which Cancel returns to the form with the edits intact.
+			handleWriteFailure(err, (retryToken) => void applyEdit(body, retryToken));
 			return;
 		} finally {
 			busy = false;
@@ -159,6 +169,24 @@
 		pendingAction = null;
 		writeError = null;
 	}
+
+	// The `ticket` being edited can be REPLACED under this component: the detail route
+	// reuses its instance across a params-only navigation, and it closes the dialog by
+	// flipping `open` — which does NOT run `handleClose`, the only other caller of
+	// `resetWriteState`. Everything that reset clears is per-ticket, and `DiffPreviewModal`
+	// below is gated on `previewOpen` alone, so without this a diff reviewed for one
+	// ticket could survive and be applied to ANOTHER (`applyEdit` sends the current
+	// `ticket.id`). Dropping the in-progress edit is the only safe answer: the body was
+	// built from a ticket that is no longer on screen.
+	let editingId: string | null = null; // plain: written by the effect, never read reactively
+	$effect(() => {
+		const id = ticket.id;
+		if (id === editingId) {
+			return;
+		}
+		editingId = id;
+		resetWriteState();
+	});
 
 	// Cancelling the review returns to the form with the edits intact — the form
 	// stays mounted underneath precisely so nothing typed is lost here.

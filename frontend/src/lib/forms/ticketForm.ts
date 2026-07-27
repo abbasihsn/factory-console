@@ -8,6 +8,10 @@
  * validator.
  */
 
+// Type-only, so this module stays free of any runtime dependency on `$lib/api`
+// (which does fetch) and remains importable from a plain unit test.
+import type { Ticket, TicketUpdate } from '$lib/api';
+
 /**
  * Allowed characters for a ticket id.
  *
@@ -76,6 +80,30 @@ export function parseList(raw: string): string[] {
  */
 export function serializeList(items: string[]): string {
 	return items.join('\n');
+}
+
+/**
+ * Build the PUT body for one set of form values, for `ticket` as it was loaded.
+ *
+ * `track` / `milestone` have no form field, but a PUT REPLACES every field the
+ * server treats as editable: omitting them writes `null` over the manifest
+ * entry's real values. Echoing what was loaded makes an ordinary edit preserve
+ * them, and a ticket that genuinely has neither still sends the explicit `null`
+ * that means "none".
+ *
+ * `provides` is sent as the trimmed scalar the write DTO declares — see
+ * {@link TicketFormValues} for why it is NOT {@link parseList}ed.
+ */
+export function toTicketUpdate(values: TicketFormValues, ticket: Ticket): TicketUpdate {
+	return {
+		title: values.title.trim(),
+		track: ticket.track ?? null,
+		milestone: ticket.milestone ?? null,
+		dependsOn: parseList(values.dependsOn),
+		provides: values.provides.trim(),
+		files: parseList(values.files),
+		bodyMarkdown: values.body ?? ''
+	};
 }
 
 /**
