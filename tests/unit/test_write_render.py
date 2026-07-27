@@ -630,6 +630,62 @@ def test_edit_does_not_add_mirrored_keys_a_header_never_carried(tmp_path: Path) 
     assert "owner: ranger-team" in md.newText
 
 
+def test_edit_omitting_track_and_milestone_keeps_the_headers_values(tmp_path: Path) -> None:
+    """A not-sent field must not null a real on-disk value.
+
+    ``track`` and ``milestone`` are ``str | None = None`` and the SPA's edit form has
+    no input for either, so on an ordinary edit they arrive as defaults rather than as
+    intent. Refreshing them unconditionally did not merely let the header drift — it
+    wrote ``track: null`` over the last correct copy, and every later edit then
+    re-based off the nulled value, so the real one was unrecoverable.
+
+    Constructed WITHOUT the ``_edit()`` helper on purpose: that helper supplies every
+    field, which is exactly the case this bug hides behind.
+    """
+    project = _make_project(tmp_path)
+    _seed(project)
+    (project.ticketsDir / "TM-015.md").write_text(_FACTORY_SHAPED_MD, encoding="utf-8")
+
+    changes = render_edit(
+        project,
+        "TM-015",
+        TicketEdit(title="Renamed by the form", bodyMarkdown="# New body\n"),
+    )
+
+    md = _by_rel(changes, "docs/planning/tickets/TM-015.md")
+    # The field the form DID send is refreshed...
+    assert "title: Renamed by the form" in md.newText
+    # ...and the ones it never sent keep their real values, not None.
+    assert "track: api" in md.newText
+    assert "milestone: v1" in md.newText
+    assert "track: null" not in md.newText
+    assert "milestone: null" not in md.newText
+    assert "track:\n" not in md.newText
+
+
+def test_edit_sending_track_null_still_clears_it(tmp_path: Path) -> None:
+    """An EXPLICIT null is intent and must still be honored.
+
+    The guard keys off ``model_fields_set``, not off the value, so "sent as null"
+    (clear it) stays distinguishable from "not sent" (leave it) — otherwise the fix
+    for the bug above would have made a field impossible to clear.
+    """
+    project = _make_project(tmp_path)
+    _seed(project)
+    (project.ticketsDir / "TM-015.md").write_text(_FACTORY_SHAPED_MD, encoding="utf-8")
+
+    changes = render_edit(
+        project,
+        "TM-015",
+        TicketEdit.model_validate({"title": "Kept", "track": None, "bodyMarkdown": "# New body\n"}),
+    )
+
+    md = _by_rel(changes, "docs/planning/tickets/TM-015.md")
+    assert "track: api" not in md.newText
+    # ...while a field that was still merely omitted is untouched.
+    assert "milestone: v1" in md.newText
+
+
 def test_body_only_edit_leaves_the_front_matter_block_byte_identical(tmp_path: Path) -> None:
     """Editing only the body must not reformat one character of the YAML header.
 
