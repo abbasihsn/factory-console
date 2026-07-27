@@ -59,7 +59,13 @@
 		</p>
 	</div>
 
-	<div class="flex-1 overflow-y-auto px-4 py-3">
+	<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+	<div
+		class="flex-1 overflow-y-auto px-4 py-3"
+		tabindex="0"
+		role="region"
+		aria-labelledby="diff-preview-title"
+	>
 		{#if loading}
 			<div class="flex items-center gap-2 py-6 text-sm text-muted" role="status">
 				<span

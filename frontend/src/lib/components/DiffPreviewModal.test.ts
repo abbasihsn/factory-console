@@ -96,6 +96,14 @@ describe('DiffPreviewModal', () => {
 		expect(byText.get(' context')).toContain('text-text');
 	});
 
+	it('makes the diff region focusable and reachable by keyboard', () => {
+		render(DiffPreviewModal, { props: baseProps() });
+
+		const region = screen.getByRole('region');
+		expect(region.getAttribute('tabindex')).toBe('0');
+		expect(region.getAttribute('aria-labelledby')).toBe('diff-preview-title');
+	});
+
 	it('says so instead of rendering an empty diff when the preview has no files', () => {
 		const preview: WritePreview = { applied: false, ticketId: 'T42', diff: { ticketId: 'T42' } };
 		const { container } = render(DiffPreviewModal, { props: { ...baseProps(), preview } });
