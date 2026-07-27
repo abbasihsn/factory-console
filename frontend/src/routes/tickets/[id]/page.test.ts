@@ -1,12 +1,21 @@
-import { render, screen } from '@testing-library/svelte';
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Fully mock the API barrel so `load` never touches the network. The load imports
-// the real `ApiError` CLASS from `$lib/api/errors` (NOT the barrel), so mocking the
-// barrel down to just `{ getTicket }` still leaves `instanceof ApiError` working.
-vi.mock('$lib/api', () => ({ getTicket: vi.fn() }));
+// Fully mock the API barrel so neither `load` nor the write flows touch the
+// network. The load imports the real `ApiError` CLASS from `$lib/api/errors` (NOT
+// the barrel), so mocking the barrel still leaves `instanceof ApiError` working.
+// The write wrappers are here because the page mounts `EditTicketModal`.
+vi.mock('$lib/api', () => ({
+	getTicket: vi.fn(),
+	deleteTicket: vi.fn(),
+	previewWrite: vi.fn(),
+	updateTicket: vi.fn()
+}));
+vi.mock('$app/navigation', () => ({ goto: vi.fn(), invalidateAll: vi.fn() }));
 
-import { getTicket } from '$lib/api';
+import { goto } from '$app/navigation';
+import { deleteTicket, getTicket } from '$lib/api';
+import { clearToken, setToken } from '$lib/stores/writeToken';
 import { ApiError } from '$lib/api/errors';
 import type { Ticket } from '$lib/api';
 import type { PageData } from './$types';
@@ -14,6 +23,8 @@ import { load } from './+page';
 import Page from './+page.svelte';
 
 const getTicketMock = vi.mocked(getTicket);
+const deleteTicketMock = vi.mocked(deleteTicket);
+const gotoMock = vi.mocked(goto);
 
 // `+page.svelte`'s `PageData` merges the root layout's `project`, so the rendered
 // `data` prop must carry it too (the page itself only reads the ticket / id).
@@ -171,6 +182,118 @@ describe('ticket detail page (found)', () => {
 		// The server-sanitized HTML is injected as-is (the single `@html` boundary).
 		expect(container.innerHTML).toContain('<h2>Rendered heading</h2>');
 		expect(screen.getByText('Rendered body paragraph.')).toBeTruthy();
+	});
+});
+
+describe('ticket detail page (edit/delete gating)', () => {
+	function editButton(): HTMLElement {
+		return screen.getByRole('button', { name: 'Edit' });
+	}
+	function deleteButton(): HTMLElement {
+		return screen.getByRole('button', { name: 'Delete' });
+	}
+
+	it.each(['in-flight', 'ready', 'merged'] as const)(
+		'disables both actions and shows the gate banner for %s',
+		(runState) => {
+			render(Page, { props: { data: foundData({ ...fullTicket, runState }) } });
+
+			expect(editButton().hasAttribute('disabled')).toBe(true);
+			expect(deleteButton().hasAttribute('disabled')).toBe(true);
+			expect(screen.getByRole('status').textContent).toContain('Read-only');
+		}
+	);
+
+	it.each(['todo', 'unknown'] as const)(
+		'enables both actions and hides the gate banner for %s',
+		(runState) => {
+			render(Page, { props: { data: foundData({ ...fullTicket, runState }) } });
+
+			expect(editButton().hasAttribute('disabled')).toBe(false);
+			expect(deleteButton().hasAttribute('disabled')).toBe(false);
+			expect(screen.queryByRole('status')).toBeNull();
+		}
+	);
+
+	it('opens the edit modal seeded with the ticket', async () => {
+		render(Page, { props: { data: foundData({ ...fullTicket, runState: 'todo' }) } });
+
+		expect(screen.queryByRole('button', { name: 'Save changes' })).toBeNull();
+		await fireEvent.click(editButton());
+
+		expect(screen.getByRole('button', { name: 'Save changes' })).toBeTruthy();
+		expect((screen.getByLabelText('Ticket id') as HTMLInputElement).value).toBe('T31');
+	});
+});
+
+describe('ticket detail page (delete)', () => {
+	beforeEach(() => {
+		clearToken();
+		deleteTicketMock.mockReset();
+		gotoMock.mockReset();
+	});
+
+	/** Click the dialog's own confirm — it carries the same label as the opener. */
+	async function clickDialogDelete(): Promise<void> {
+		const confirm = Array.from(screen.getByRole('dialog').querySelectorAll('button')).find(
+			(button) => button.textContent?.trim() === 'Delete'
+		);
+		await fireEvent.click(confirm!);
+	}
+
+	async function confirmDelete(): Promise<void> {
+		await fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+		await clickDialogDelete();
+	}
+
+	it('deletes behind the confirm dialog and returns to the list', async () => {
+		setToken('tok-abc');
+		deleteTicketMock.mockResolvedValue({
+			applied: true,
+			ticketId: 'T31',
+			diff: { ticketId: 'T31' }
+		});
+		render(Page, { props: { data: foundData({ ...fullTicket, runState: 'todo' }) } });
+
+		// Opening the dialog alone must not delete anything.
+		await fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+		expect(deleteTicketMock).not.toHaveBeenCalled();
+
+		await clickDialogDelete();
+
+		await waitFor(() => expect(deleteTicketMock).toHaveBeenCalledWith('T31', 'tok-abc'));
+		await waitFor(() => expect(gotoMock).toHaveBeenCalledWith('/'));
+	});
+
+	it('asks for a token first when none is held, then completes the delete', async () => {
+		deleteTicketMock.mockResolvedValue({
+			applied: true,
+			ticketId: 'T31',
+			diff: { ticketId: 'T31' }
+		});
+		render(Page, { props: { data: foundData({ ...fullTicket, runState: 'todo' }) } });
+
+		await confirmDelete();
+
+		expect(deleteTicketMock).not.toHaveBeenCalled();
+		await fireEvent.input(screen.getByLabelText('Write token'), { target: { value: 'tok-xyz' } });
+		await fireEvent.click(screen.getByRole('button', { name: 'Save token' }));
+
+		await waitFor(() => expect(deleteTicketMock).toHaveBeenCalledWith('T31', 'tok-xyz'));
+	});
+
+	it('shows a failed delete inline and stays on the ticket', async () => {
+		setToken('tok-abc');
+		deleteTicketMock.mockRejectedValue(
+			new ApiError({ code: 'run_state_locked', message: 'Lane owns it.', status: 409 })
+		);
+		render(Page, { props: { data: foundData({ ...fullTicket, runState: 'todo' }) } });
+
+		await confirmDelete();
+
+		expect(await screen.findByText('run_state_locked')).toBeTruthy();
+		expect(screen.getByText('Lane owns it.')).toBeTruthy();
+		expect(gotoMock).not.toHaveBeenCalled();
 	});
 });
 
