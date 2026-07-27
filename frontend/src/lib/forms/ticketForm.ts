@@ -85,11 +85,21 @@ export function serializeList(items: string[]): string {
 /**
  * Build the PUT body for one set of form values, for `ticket` as it was loaded.
  *
- * `track` / `milestone` have no form field, but a PUT REPLACES every field the
- * server treats as editable: omitting them writes `null` over the manifest
- * entry's real values. Echoing what was loaded makes an ordinary edit preserve
- * them, and a ticket that genuinely has neither still sends the explicit `null`
- * that means "none".
+ * `track` / `milestone` have no form field, so the form has no user intent to send
+ * for either. The server distinguishes the two ways of saying nothing (see
+ * `_merge_front_matter` in `server/factory_console/file_adapter/write_render.py`):
+ * an **omitted** key changes nothing, while an explicit `null` MEANS "clear it".
+ * So they are echoed only when the loaded ticket actually carries a value, and
+ * OMITTED otherwise — never sent as `null`.
+ *
+ * Sending `null` for an absent value would be destructive, not merely redundant.
+ * `Ticket.track` / `Ticket.milestone` come from the MANIFEST entry alone
+ * (`manifest.py`'s `entry.get("track")`), while the `.md` front-matter header is a
+ * separate copy. For a ticket whose manifest entry lacks the field but whose header
+ * carries a value, `?? null` would send the explicit clear and wipe the header's
+ * only correct copy — permanently, since every later edit re-bases off the nulled
+ * value. That is the same class as the `bug/ticket-edit-nulls-front-matter` fix,
+ * which is what made omission safe on the server side in the first place.
  *
  * `provides` is sent as the trimmed scalar the write DTO declares — see
  * {@link TicketFormValues} for why it is NOT {@link parseList}ed.
@@ -97,8 +107,8 @@ export function serializeList(items: string[]): string {
 export function toTicketUpdate(values: TicketFormValues, ticket: Ticket): TicketUpdate {
 	return {
 		title: values.title.trim(),
-		track: ticket.track ?? null,
-		milestone: ticket.milestone ?? null,
+		...(ticket.track == null ? {} : { track: ticket.track }),
+		...(ticket.milestone == null ? {} : { milestone: ticket.milestone }),
 		dependsOn: parseList(values.dependsOn),
 		provides: values.provides.trim(),
 		files: parseList(values.files),
