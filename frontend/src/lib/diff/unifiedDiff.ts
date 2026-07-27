@@ -16,23 +16,30 @@ export interface DiffLine {
 }
 
 /**
- * Matches the `---` / `+++` file headers, and only those.
+ * Shape of the `---` / `+++` file headers.
  *
  * The marker must be followed by whitespace or end-of-line, because a *content*
  * line beginning with `--` or `++` carries its own add/del marker on top and so
  * starts with the same three characters: deleting a ticket's `---` front-matter
  * delimiter emits `----`, which is a deleted line, not a header.
+ *
+ * Shape alone is not enough to identify a header, because a content line can
+ * also carry the whitespace — removing `-- note` emits `--- note`. See
+ * `classifyLine`, which pairs this with the header's *position*.
  */
 const FILE_HEADER = /^(?:\+\+\+|---)(?:\s|$)/;
 
 /**
- * Classify one line by its leading marker.
+ * Classify one line by its leading marker and its position in the diff.
  *
- * File headers are checked before the single-character `+` / `-` markers,
- * otherwise they would read as an added / deleted line.
+ * `inHunk` is what disambiguates a header from a content line that merely looks
+ * like one: file headers only ever precede the first `@@`, so once a hunk has
+ * started every `---`/`+++` line is a removed/added line whose own text begins
+ * with `--`/`++`. Headers are still checked before the single-character
+ * `+` / `-` markers, otherwise they would read as an added / deleted line.
  */
-function classifyLine(text: string): DiffLineKind {
-	if (FILE_HEADER.test(text)) return 'meta';
+function classifyLine(text: string, inHunk: boolean): DiffLineKind {
+	if (!inHunk && FILE_HEADER.test(text)) return 'meta';
 	if (text.startsWith('@@')) return 'hunk';
 	if (text.startsWith('+')) return 'add';
 	if (text.startsWith('-')) return 'del';
@@ -50,5 +57,12 @@ export function parseDiffLines(diff: string): DiffLine[] {
 	if (diff === '') return [];
 	const lines = diff.split(/\r?\n/);
 	if (lines[lines.length - 1] === '') lines.pop();
-	return lines.map((text) => ({ text, kind: classifyLine(text) }));
+	// Latches on the first `@@`: everything after it is hunk body, where a
+	// `---`/`+++` line is content, not a header.
+	let inHunk = false;
+	return lines.map((text) => {
+		const kind = classifyLine(text, inHunk);
+		if (kind === 'hunk') inHunk = true;
+		return { text, kind };
+	});
 }

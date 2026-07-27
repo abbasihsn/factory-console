@@ -74,6 +74,51 @@ describe('ConfirmDialog', () => {
 		expect(props.onCancel).not.toHaveBeenCalled();
 	});
 
+	it('moves focus into the dialog when it opens', () => {
+		render(ConfirmDialog, { props: baseProps() });
+
+		expect(document.activeElement).toBe(screen.getByRole('dialog'));
+	});
+
+	// Without this, focus falls to `<body>` on close and the next Tab restarts
+	// from the top of the document instead of the control that opened the dialog.
+	it('returns focus to the opener when it closes', async () => {
+		const opener = document.createElement('button');
+		document.body.appendChild(opener);
+		opener.focus();
+
+		const { rerender } = render(ConfirmDialog, { props: baseProps() });
+		expect(document.activeElement).not.toBe(opener);
+
+		await rerender({ ...baseProps(), open: false });
+
+		expect(document.activeElement).toBe(opener);
+		opener.remove();
+	});
+
+	// `aria-modal="true"` claims the page behind is unavailable; nothing marks it
+	// inert, so Tab has to be cycled for that claim to hold.
+	it('cycles Tab within the dialog instead of letting it escape', async () => {
+		const outside = document.createElement('button');
+		document.body.appendChild(outside);
+
+		render(ConfirmDialog, { props: baseProps() });
+		const confirm = screen.getByRole('button', { name: 'Delete' });
+		const backdrop = screen.getByRole('button', { name: 'Dismiss dialog' });
+
+		// Forward past the last control wraps to the first, never to `outside`.
+		confirm.focus();
+		await fireEvent.keyDown(confirm, { key: 'Tab' });
+		expect(document.activeElement).toBe(backdrop);
+
+		// Backward from the first control wraps to the last.
+		await fireEvent.keyDown(backdrop, { key: 'Tab', shiftKey: true });
+		expect(document.activeElement).toBe(confirm);
+
+		expect(document.activeElement).not.toBe(outside);
+		outside.remove();
+	});
+
 	it('styles the confirm button as destructive only when danger is set', () => {
 		const { unmount } = render(ConfirmDialog, { props: baseProps() });
 		expect(screen.getByRole('button', { name: 'Delete' }).className).toContain('bg-accent');

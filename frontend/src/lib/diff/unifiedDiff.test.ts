@@ -47,6 +47,31 @@ describe('parseDiffLines', () => {
 		]);
 	});
 
+	// Inside a hunk the `---`/`+++` shape is content, not a header: removing a
+	// line whose own text starts with `-- ` emits `--- `, and adding one that
+	// starts with `++ ` emits `+++ `. Only position tells them apart.
+	it('reads --- / +++ inside a hunk as deleted and added content lines', () => {
+		const diff = [
+			'--- a/T1.md',
+			'+++ b/T1.md',
+			'@@ -1,2 +1,2 @@',
+			'--- note',
+			'+++ counter',
+			'--',
+			'++'
+		].join('\n');
+
+		expect(parseDiffLines(diff).map((line) => line.kind)).toEqual([
+			'meta',
+			'meta',
+			'hunk',
+			'del',
+			'add',
+			'del',
+			'add'
+		]);
+	});
+
 	it('treats a bare +/- as add/del even with no following text', () => {
 		expect(parseDiffLines('+\n-')).toEqual([
 			{ text: '+', kind: 'add' },

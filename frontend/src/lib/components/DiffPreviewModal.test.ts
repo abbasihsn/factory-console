@@ -157,13 +157,68 @@ describe('DiffPreviewModal', () => {
 		expect(props.onConfirm).not.toHaveBeenCalled();
 	});
 
-	it("routes the error view's only recovery affordance to cancel", async () => {
+	// The error view's action closes the dialog rather than reloading, so it is
+	// labelled for what it does — a button reading "Reload" that only closes
+	// would misdescribe the one screen that gates a write.
+	it("labels the error view's only recovery affordance for what it does", async () => {
 		const props = { ...baseProps(), preview: null, error: ERROR };
 		render(DiffPreviewModal, { props });
 
-		await fireEvent.click(screen.getByRole('button', { name: 'Reload' }));
+		expect(screen.queryByRole('button', { name: 'Reload' })).toBeNull();
+		await fireEvent.click(screen.getByRole('button', { name: 'Close' }));
 
 		expect(props.onCancel).toHaveBeenCalledTimes(1);
+	});
+
+	// Inside a dialog already labelled by its own heading, the error message is
+	// a section heading — an `<h1>` here would outrank that label.
+	it('renders the nested error message below the dialog heading, not as an h1', () => {
+		render(DiffPreviewModal, { props: { ...baseProps(), preview: null, error: ERROR } });
+
+		expect(screen.queryByRole('heading', { level: 1 })).toBeNull();
+		expect(screen.getByRole('heading', { name: 'The ticket changed on disk.' })).toBeTruthy();
+	});
+
+	it('wires the "nothing is written yet" line as the dialog description', () => {
+		render(DiffPreviewModal, { props: baseProps() });
+
+		const dialog = screen.getByRole('dialog');
+		const describedBy = dialog.getAttribute('aria-describedby');
+		expect(describedBy).toBe('diff-preview-description');
+		expect(document.getElementById(describedBy!)?.textContent).toContain(
+			'Nothing is written until you save.'
+		);
+	});
+
+	it('cycles Tab within the dialog instead of letting it escape', async () => {
+		const outside = document.createElement('button');
+		document.body.appendChild(outside);
+
+		render(DiffPreviewModal, { props: baseProps() });
+		const backdrop = screen.getByRole('button', { name: 'Dismiss dialog' });
+
+		saveButton().focus();
+		await fireEvent.keyDown(saveButton(), { key: 'Tab' });
+		expect(document.activeElement).toBe(backdrop);
+
+		await fireEvent.keyDown(backdrop, { key: 'Tab', shiftKey: true });
+		expect(document.activeElement).toBe(saveButton());
+
+		expect(document.activeElement).not.toBe(outside);
+		outside.remove();
+	});
+
+	// A disabled Save is out of the tab order, so Cancel becomes the last stop —
+	// the cycle has to close there rather than walking out of the dialog.
+	it('cycles Tab past the disabled save button while loading', async () => {
+		render(DiffPreviewModal, { props: { ...baseProps(), preview: null, loading: true } });
+		const cancel = screen.getByRole('button', { name: 'Cancel' });
+		const backdrop = screen.getByRole('button', { name: 'Dismiss dialog' });
+
+		cancel.focus();
+		await fireEvent.keyDown(cancel, { key: 'Tab' });
+
+		expect(document.activeElement).toBe(backdrop);
 	});
 
 	it('ignores Escape while closed', async () => {

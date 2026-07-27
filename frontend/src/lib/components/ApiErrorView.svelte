@@ -3,20 +3,45 @@
 
 	// Presentational only: no `$app/*` imports, so it renders deterministically
 	// under vitest/jsdom with a supplied error. `+error.svelte` wires `onReload`.
-	let { error, onReload }: { error: ApiError; onReload?: () => void } = $props();
+	//
+	// Defaults describe the original call site — this as a whole page. `compact`
+	// and `actionLabel` exist for nested call sites (a dialog body), where
+	// page-level chrome would be wrong: an `<h1>` would outrank the container's
+	// own heading, and the recovery action is rarely a reload. Both default to
+	// the page behaviour, so `+error.svelte` is unaffected.
+	let {
+		error,
+		onReload,
+		compact = false,
+		actionLabel = 'Reload'
+	}: {
+		error: ApiError;
+		onReload?: () => void;
+		compact?: boolean;
+		actionLabel?: string;
+	} = $props();
 </script>
 
-<div class="mx-auto max-w-lg px-4 py-16 text-center">
+<div class="mx-auto max-w-lg text-center {compact ? 'px-2 py-6' : 'px-4 py-16'}">
 	<p class="font-mono text-sm text-danger">{error.code}</p>
-	<h1 class="mt-2 text-xl font-semibold text-text">{error.message}</h1>
+	<!-- Nested in another labelled container, the message is a section heading,
+	     not the page title — an `<h1>` there would invert the heading order. -->
+	<svelte:element
+		this={compact ? 'h2' : 'h1'}
+		class="mt-2 font-semibold text-text {compact ? 'text-base' : 'text-xl'}"
+	>
+		{error.message}
+	</svelte:element>
 	{#if error.hint}
 		<p class="mt-2 text-sm text-muted">{error.hint}</p>
 	{/if}
 	<button
 		type="button"
-		class="mt-6 rounded bg-accent px-4 py-2 text-sm text-white hover:opacity-90"
+		class="rounded bg-accent text-sm text-white hover:opacity-90 {compact
+			? 'mt-4 px-3 py-1'
+			: 'mt-6 px-4 py-2'}"
 		onclick={() => onReload?.()}
 	>
-		Reload
+		{actionLabel}
 	</button>
 </div>
