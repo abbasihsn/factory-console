@@ -16,13 +16,23 @@ export interface DiffLine {
 }
 
 /**
+ * Matches the `---` / `+++` file headers, and only those.
+ *
+ * The marker must be followed by whitespace or end-of-line, because a *content*
+ * line beginning with `--` or `++` carries its own add/del marker on top and so
+ * starts with the same three characters: deleting a ticket's `---` front-matter
+ * delimiter emits `----`, which is a deleted line, not a header.
+ */
+const FILE_HEADER = /^(?:\+\+\+|---)(?:\s|$)/;
+
+/**
  * Classify one line by its leading marker.
  *
- * File headers (`+++` / `---`) are checked before the single-character `+` / `-`
- * markers, otherwise they would read as an added / deleted line.
+ * File headers are checked before the single-character `+` / `-` markers,
+ * otherwise they would read as an added / deleted line.
  */
 function classifyLine(text: string): DiffLineKind {
-	if (text.startsWith('+++') || text.startsWith('---')) return 'meta';
+	if (FILE_HEADER.test(text)) return 'meta';
 	if (text.startsWith('@@')) return 'hunk';
 	if (text.startsWith('+')) return 'add';
 	if (text.startsWith('-')) return 'del';

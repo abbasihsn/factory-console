@@ -30,6 +30,23 @@ describe('parseDiffLines', () => {
 		expect(kinds).toEqual(['meta', 'meta']);
 	});
 
+	// A ticket .md opens and closes its YAML front matter with `---`, so removing
+	// one emits `----` — the marker plus the content, not a file header.
+	it('reads a removed --- front-matter delimiter as a deleted line', () => {
+		const diff = ['--- a/T1.md', '+++ b/T1.md', '@@ -1,2 +1 @@', '----', '-id: T1', '++++'].join(
+			'\n'
+		);
+
+		expect(parseDiffLines(diff).map((line) => line.kind)).toEqual([
+			'meta',
+			'meta',
+			'hunk',
+			'del',
+			'del',
+			'add'
+		]);
+	});
+
 	it('treats a bare +/- as add/del even with no following text', () => {
 		expect(parseDiffLines('+\n-')).toEqual([
 			{ text: '+', kind: 'add' },
