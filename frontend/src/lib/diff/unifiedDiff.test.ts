@@ -1,0 +1,114 @@
+import { describe, expect, it } from 'vitest';
+import { parseDiffLines, type DiffLineKind } from '$lib/diff/unifiedDiff';
+
+/** A realistic unified diff for one modified file, as the server emits it. */
+const MODIFY_DIFF = [
+	'--- a/docs/planning/tickets/v2/T69.md',
+	'+++ b/docs/planning/tickets/v2/T69.md',
+	'@@ -1,4 +1,5 @@',
+	' # T69',
+	'-old title',
+	'+new title',
+	'+extra line',
+	' trailing context'
+].join('\n');
+
+/**
+ * A whole-file delete of a ticket. Ticket markdown opens with a `---` YAML
+ * front-matter fence, so removing that line puts `----` in the diff body.
+ */
+const DELETE_DIFF = [
+	'--- a/docs/planning/tickets/v2/T69.md',
+	'+++ b/docs/planning/tickets/v2/T69.md',
+	'@@ -1,4 +0,0 @@',
+	'----',
+	'-id: T69',
+	'----',
+	'-# T69'
+].join('\n');
+
+/** Just the kinds, in order — the shape most assertions care about. */
+function kindsOf(diff: string): DiffLineKind[] {
+	return parseDiffLines(diff).map((line) => line.kind);
+}
+
+describe('parseDiffLines', () => {
+	it('classifies meta, hunk, context, del and add lines of a real diff in order', () => {
+		expect(kindsOf(MODIFY_DIFF)).toEqual([
+			'meta',
+			'meta',
+			'hunk',
+			'context',
+			'del',
+			'add',
+			'add',
+			'context'
+		]);
+	});
+
+	it('keeps each line verbatim, marker included', () => {
+		const lines = parseDiffLines(MODIFY_DIFF);
+
+		expect(lines[0].text).toBe('--- a/docs/planning/tickets/v2/T69.md');
+		expect(lines[4].text).toBe('-old title');
+		expect(lines[5].text).toBe('+new title');
+	});
+
+	it('reads the file headers as meta, NOT as add/del content', () => {
+		// `+++`/`---` share a first character with add/del, so precedence decides.
+		expect(kindsOf('--- a/x\n+++ b/x')).toEqual(['meta', 'meta']);
+	});
+
+	it('classifies every removed line of a delete diff as del, front-matter fence included', () => {
+		expect(kindsOf(DELETE_DIFF)).toEqual(['meta', 'meta', 'hunk', 'del', 'del', 'del', 'del']);
+	});
+
+	it('reads a removed --- fence as del and an added one as add, not as file headers', () => {
+		expect(kindsOf('----\n++++')).toEqual(['del', 'add']);
+	});
+
+	it('reads a del/add line that LOOKS like a file header as del/add once past the hunk', () => {
+		// Body text `-- fence` / `++ added` picks up the diff marker and arrives as
+		// `--- fence` / `+++ added` — space included, indistinguishable from a header
+		// by prefix alone. Position is what separates them: only the two lines before
+		// the `@@` are real headers.
+		expect(kindsOf('--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n--- fence\n+++ added')).toEqual([
+			'meta',
+			'meta',
+			'hunk',
+			'del',
+			'add'
+		]);
+	});
+
+	it('treats a bare - or + as a removed or added empty line', () => {
+		expect(kindsOf('-\n+')).toEqual(['del', 'add']);
+	});
+
+	it('classifies the no-newline-at-eof note as meta', () => {
+		expect(kindsOf('+last line\n\\ No newline at end of file')).toEqual(['add', 'meta']);
+	});
+
+	it('returns no lines for an empty diff', () => {
+		expect(parseDiffLines('')).toEqual([]);
+	});
+
+	it('drops the terminating newline instead of reporting a trailing blank line', () => {
+		expect(parseDiffLines('@@ -1 +1 @@\n')).toEqual([{ text: '@@ -1 +1 @@', kind: 'hunk' }]);
+	});
+
+	it('keeps interior blank lines as context', () => {
+		expect(kindsOf(' a\n\n b\n')).toEqual(['context', 'context', 'context']);
+	});
+
+	it('strips the CR of a CRLF diff so it classifies and renders like LF', () => {
+		expect(parseDiffLines('@@ -1 +1 @@\r\n+added\r\n')).toEqual([
+			{ text: '@@ -1 +1 @@', kind: 'hunk' },
+			{ text: '+added', kind: 'add' }
+		]);
+	});
+
+	it('classifies an unmarked line (a create-diff banner) as context', () => {
+		expect(kindsOf('diff --git a/x b/x')).toEqual(['context']);
+	});
+});
