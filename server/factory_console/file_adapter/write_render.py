@@ -343,15 +343,34 @@ def _overlay_front_matter(existing: Mapping[str, Any], edit: TicketEdit) -> dict
     later edit re-based off the same stale copy).
 
     A mirrored key is refreshed only where the header ALREADY carries it, so a
-    ``.md`` that never had one does not gain it. ``frontMatter`` is applied last but
-    filtered through :func:`_client_front_matter`, so a client can add or override
-    its own keys and nothing else.
+    ``.md`` that never had one does not gain it — AND only where the request actually
+    supplied it. ``track`` and ``milestone`` are ``str | None = None`` and the SPA's
+    edit form has no field for either, so on an ordinary edit they arrive as
+    not-sent defaults. Refreshing unconditionally stamped a real on-disk value with
+    ``None``, which did not merely let the header drift from the manifest — it
+    destroyed the header's last correct copy, permanently, since every later edit
+    re-based off the nulled value.
+
+    ``model_fields_set`` is what separates the two cases: a client that explicitly
+    sends ``"track": null`` MEANS clear it, and that still works, because the key is
+    in the supplied set. A client that omits the key changes nothing.
+
+    ``frontMatter`` is applied last but filtered through
+    :func:`_client_front_matter`, so a client can add or override its own keys and
+    nothing else.
 
     Kept pure and free of disk access so both :class:`FileWriter` implementations
     can share it and cannot drift on what an edit does to a header.
     """
+    supplied = edit.model_fields_set
     merged = dict(existing)
-    merged.update({key: value for key, value in _edit_mirror(edit).items() if key in existing})
+    merged.update(
+        {
+            key: value
+            for key, value in _edit_mirror(edit).items()
+            if key in existing and key in supplied
+        }
+    )
     merged.update(_client_front_matter(edit.frontMatter))
     return merged
 
