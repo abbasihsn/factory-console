@@ -1,4 +1,5 @@
-import { writable, type Readable, type Writable } from 'svelte/store';
+import { get, writable, type Readable, type Writable } from 'svelte/store';
+import type { ApiError } from '$lib/api/contracts';
 
 /**
  * The per-session write token every mutating API call must carry.
@@ -76,4 +77,43 @@ export function setToken(token: string): void {
 export function clearToken(): void {
 	tokenStore.set(null);
 	withSessionStorage<void>((storage) => storage.removeItem(STORAGE_KEY), undefined);
+}
+
+/**
+ * The envelope code the server answers a wrong or expired token with — source of
+ * truth: `server/factory_console/api/write_token.py`. It lives here because it is
+ * the one error code that invalidates what THIS module holds.
+ */
+const REJECTED_TOKEN_CODE = 'write_token_invalid';
+
+/**
+ * Run `action` with the held token, or call `onMissing` when none is held.
+ *
+ * Every write verb needs a token and every call site gates on it the same way:
+ * raise its own prompt and resume the action from `WriteTokenPrompt`'s `onSaved`.
+ * One helper so a change to the gate lands once instead of at each call site.
+ */
+export function withWriteToken(action: (token: string) => void, onMissing: () => void): void {
+	const token = get(writeToken);
+	if (!token) {
+		onMissing();
+		return;
+	}
+	action(token);
+}
+
+/**
+ * Forget the held token when `error` is the server rejecting it, reporting whether
+ * it did.
+ *
+ * Without this a wrong or expired token is a dead end: the prompts only mount
+ * while NO token is held, so every retry would re-send the same rejected
+ * credential and the user could never paste a new one — and a known-bad secret
+ * would stay at rest in `sessionStorage`. Callers use the return value to re-raise
+ * their prompt, which is the only failure here the user can fix in place.
+ */
+export function clearTokenIfRejected(error: ApiError): boolean {
+	if (error.code !== REJECTED_TOKEN_CODE) return false;
+	clearToken();
+	return true;
 }

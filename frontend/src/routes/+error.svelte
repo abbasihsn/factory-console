@@ -14,5 +14,5 @@
 </script>
 
 <div class="min-h-screen bg-bg text-text">
-	<ApiErrorView error={apiError} onReload={invalidateAll} />
+	<ApiErrorView error={apiError} onAction={invalidateAll} />
 </div>

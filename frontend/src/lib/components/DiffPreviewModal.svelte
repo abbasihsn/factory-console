@@ -13,13 +13,19 @@
 		open,
 		preview,
 		loading,
+		saving = false,
 		error,
 		onConfirm,
 		onCancel
 	}: {
 		open: boolean;
 		preview: WritePreview | null;
+		/** The dry-run is in flight — there is nothing to review yet. */
 		loading: boolean;
+		/** The REAL write is in flight. Distinct from `loading`: the diff below is
+		 *  valid and still shown; only the action is spent. Defaults to the
+		 *  never-saving case so a purely presentational call site can omit it. */
+		saving?: boolean;
 		error: ApiError | null;
 		onConfirm: () => void;
 		onCancel: () => void;
@@ -30,8 +36,10 @@
 	const files = $derived(preview?.diff.files ?? []);
 
 	// Saving is only meaningful once a preview has actually arrived: nothing to
-	// confirm while the dry-run is in flight, failed, or was never made.
-	const canConfirm = $derived(!loading && error === null && preview !== null);
+	// confirm while the dry-run is in flight, failed, or was never made — and
+	// nothing left to confirm once the write itself is away, or a second click
+	// would send it twice.
+	const canConfirm = $derived(!loading && !saving && error === null && preview !== null);
 
 	const LINE_CLASSES: Record<DiffLineKind, string> = {
 		add: 'bg-emerald-50 text-emerald-700',
@@ -79,7 +87,7 @@
 			     action is labelled for what it does: this call site has no retry
 			     hook, so it closes the dialog and the caller re-runs the dry-run
 			     when the action is retried. -->
-			<ApiErrorView {error} compact actionLabel="Close" onReload={onCancel} />
+			<ApiErrorView {error} compact actionLabel="Close" onAction={onCancel} />
 		{:else if preview === null}
 			<p class="py-6 text-sm text-muted">No preview to review yet.</p>
 		{:else}
@@ -118,7 +126,7 @@
 			disabled={!canConfirm}
 			onclick={onConfirm}
 		>
-			Save
+			{saving ? 'Saving…' : 'Save'}
 		</button>
 	</div>
 </ModalShell>

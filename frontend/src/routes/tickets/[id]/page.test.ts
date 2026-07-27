@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import { get } from 'svelte/store';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Fully mock the API barrel so neither `load` nor the write flows touch the
@@ -15,7 +16,7 @@ vi.mock('$app/navigation', () => ({ goto: vi.fn(), invalidateAll: vi.fn() }));
 
 import { goto } from '$app/navigation';
 import { deleteTicket, getTicket } from '$lib/api';
-import { clearToken, setToken } from '$lib/stores/writeToken';
+import { clearToken, setToken, writeToken } from '$lib/stores/writeToken';
 import { ApiError } from '$lib/api/errors';
 import type { Ticket } from '$lib/api';
 import type { PageData } from './$types';
@@ -294,6 +295,63 @@ describe('ticket detail page (delete)', () => {
 		expect(await screen.findByText('run_state_locked')).toBeTruthy();
 		expect(screen.getByText('Lane owns it.')).toBeTruthy();
 		expect(gotoMock).not.toHaveBeenCalled();
+	});
+
+	// SvelteKit reuses this component when only `[id]` changes, and the page links
+	// straight to other tickets. Without a reset, the prompt raised for one ticket
+	// would still be on screen for the next — and resuming it would delete THAT
+	// one, with no confirmation ever shown for it.
+	it('clears a pending delete when the route swaps in another ticket', async () => {
+		deleteTicketMock.mockResolvedValue({
+			applied: true,
+			ticketId: 'T31',
+			diff: { ticketId: 'T31' }
+		});
+		const { rerender } = render(Page, {
+			props: { data: foundData({ ...fullTicket, runState: 'todo' }) }
+		});
+
+		await confirmDelete();
+		expect(screen.getByLabelText('Write token')).toBeTruthy();
+
+		await rerender({ data: foundData({ ...fullTicket, id: 'T99', runState: 'todo' }) });
+
+		// The prompt is gone, so nothing can resume against the ticket now shown.
+		expect(screen.queryByLabelText('Write token')).toBeNull();
+		expect(deleteTicketMock).not.toHaveBeenCalled();
+	});
+
+	it('clears a delete error when the route swaps in another ticket', async () => {
+		setToken('tok-abc');
+		deleteTicketMock.mockRejectedValue(
+			new ApiError({ code: 'run_state_locked', message: 'Lane owns it.', status: 409 })
+		);
+		const { rerender } = render(Page, {
+			props: { data: foundData({ ...fullTicket, runState: 'todo' }) }
+		});
+
+		await confirmDelete();
+		expect(await screen.findByText('run_state_locked')).toBeTruthy();
+
+		await rerender({ data: foundData({ ...fullTicket, id: 'T99', runState: 'todo' }) });
+
+		expect(screen.queryByText('run_state_locked')).toBeNull();
+	});
+
+	// A rejected token is dropped so the prompt can come back; anything else is
+	// left alone.
+	it('drops a rejected token and re-prompts', async () => {
+		setToken('tok-bad');
+		deleteTicketMock.mockRejectedValue(
+			new ApiError({ code: 'write_token_invalid', message: 'Bad token.', status: 401 })
+		);
+		render(Page, { props: { data: foundData({ ...fullTicket, runState: 'todo' }) } });
+
+		await confirmDelete();
+
+		expect(await screen.findByText('write_token_invalid')).toBeTruthy();
+		expect(get(writeToken)).toBeNull();
+		expect(screen.getByLabelText('Write token')).toBeTruthy();
 	});
 });
 

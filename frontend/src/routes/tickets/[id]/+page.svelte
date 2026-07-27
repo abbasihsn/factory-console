@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { get } from 'svelte/store';
+	import { untrack } from 'svelte';
 	import { goto, invalidateAll } from '$app/navigation';
 	import type { PageData } from './$types';
 	import { deleteTicket } from '$lib/api';
@@ -14,7 +14,7 @@
 	import EditTicketModal from '$lib/components/EditTicketModal.svelte';
 	import WriteTokenPrompt from '$lib/components/WriteTokenPrompt.svelte';
 	import { isEditable } from '$lib/forms/editability';
-	import { writeToken } from '$lib/stores/writeToken';
+	import { clearTokenIfRejected, withWriteToken } from '$lib/stores/writeToken';
 
 	let { data }: { data: PageData } = $props();
 
@@ -25,6 +25,29 @@
 	let confirmDeleteOpen = $state(false);
 	let deleteNeedsToken = $state(false);
 	let deleteError = $state<ApiError | null>(null);
+	// The ticket the user actually confirmed deleting. Held rather than re-read
+	// from `ticket` at resume time: the two can differ (see the reset below).
+	let deleteTargetId = $state<string | null>(null);
+	// The ticket the flow above belongs to, so a change of route can be detected.
+	let flowTicketId = $state<string | null>(null);
+
+	// SvelteKit reuses this component when only `[id]` changes, so none of the
+	// state above resets on its own — and the page links straight to other tickets
+	// (the dependency chips, the deps view). Without this, a token prompt raised
+	// for one ticket stays on screen for the next, and resuming it would delete a
+	// ticket the user never confirmed. Tie the whole flow to the ticket rendered.
+	$effect(() => {
+		const shownId = data.notFound ? null : data.ticket.id;
+		untrack(() => {
+			if (shownId === flowTicketId) return;
+			flowTicketId = shownId;
+			editOpen = false;
+			confirmDeleteOpen = false;
+			deleteNeedsToken = false;
+			deleteError = null;
+			deleteTargetId = null;
+		});
+	});
 
 	async function runDelete(id: string, token: string): Promise<void> {
 		try {
@@ -33,28 +56,35 @@
 			// than re-fetching a 404.
 			await goto('/');
 		} catch (err) {
-			deleteError = normalizeError(err);
+			const error = normalizeError(err);
+			// A rejected token is the one failure the user can fix without leaving:
+			// drop it and re-prompt, or every retry re-sends the same bad credential.
+			if (clearTokenIfRejected(error)) deleteNeedsToken = true;
+			deleteError = error;
 		}
 	}
 
 	function handleDeleteConfirm(id: string): void {
 		confirmDeleteOpen = false;
 		deleteError = null;
-		const token = get(writeToken);
-		if (!token) {
+		deleteTargetId = id;
+		withWriteToken(
+			(token) => void runDelete(id, token),
 			// No token, no write: ask for one and resume the already-confirmed
 			// delete from `handleDeleteTokenSaved`.
-			deleteNeedsToken = true;
-			return;
-		}
-		void runDelete(id, token);
+			() => (deleteNeedsToken = true)
+		);
 	}
 
-	function handleDeleteTokenSaved(id: string): void {
+	function handleDeleteTokenSaved(): void {
 		deleteNeedsToken = false;
-		const token = get(writeToken);
-		if (token === null) return;
-		void runDelete(id, token);
+		// Resume the confirmed delete, never whatever is on screen now.
+		const id = deleteTargetId;
+		if (id === null) return;
+		withWriteToken(
+			(token) => void runDelete(id, token),
+			() => (deleteNeedsToken = true)
+		);
 	}
 
 	// Plain chip styling for the track/milestone row — mirrors TicketRow's
@@ -117,7 +147,7 @@
 		{#if deleteNeedsToken}
 			<div class="rounded border border-slate-300 bg-bg p-3">
 				<p class="mb-2 text-sm text-text">A write token is required before deleting.</p>
-				<WriteTokenPrompt onSaved={() => handleDeleteTokenSaved(ticket.id)} />
+				<WriteTokenPrompt onSaved={handleDeleteTokenSaved} />
 			</div>
 		{/if}
 
@@ -128,7 +158,7 @@
 				error={deleteError}
 				compact
 				actionLabel="Dismiss"
-				onReload={() => (deleteError = null)}
+				onAction={() => (deleteError = null)}
 			/>
 		{/if}
 

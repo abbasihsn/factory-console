@@ -29,9 +29,13 @@ export const TICKET_ID_PATTERN = /^[A-Za-z0-9_.-]+$/;
  * `provides` is neither: the write DTOs type it as a scalar `string` (see
  * `TicketDraft.provides` in `$lib/api/types.ts`, from `domain/write.py`'s
  * `provides: str = ""`), so it is edited in a single-line input and its value is sent
- * through as-is. Do not {@link parseList} it — the server stores the string verbatim
- * and the read model hands it back as a SINGLE-ELEMENT `Ticket.provides` list, so
- * anything that looks like a multi-entry list here collapses on the next round-trip.
+ * through as-is. Do not {@link parseList} it — the server stores the string verbatim.
+ *
+ * The read model does NOT guarantee the inverse. A tolerant App-Factory manifest may
+ * already hold a LIST there, and `_provides_to_list` (`file_adapter/manifest.py`)
+ * passes it through untouched, so `Ticket.provides` can carry several entries that
+ * this scalar field cannot represent. Writing such a ticket back collapses it to one
+ * value; a form seeding from it must say so rather than drop the rest silently.
  */
 export interface TicketFormValues {
 	/** Ticket id — required in `create` mode, fixed by the route in `edit` mode. */

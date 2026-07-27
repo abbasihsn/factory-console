@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import { get } from 'svelte/store';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock the barrel so no write ever leaves the test. The modal imports the write
@@ -12,7 +13,7 @@ import { previewWrite, updateTicket } from '$lib/api';
 import { ApiError } from '$lib/api/errors';
 import type { Ticket, TicketUpdate, WritePreview } from '$lib/api/models';
 import EditTicketModal from '$lib/components/EditTicketModal.svelte';
-import { clearToken, setToken } from '$lib/stores/writeToken';
+import { clearToken, setToken, writeToken } from '$lib/stores/writeToken';
 
 const previewWriteMock = vi.mocked(previewWrite);
 const updateTicketMock = vi.mocked(updateTicket);
@@ -182,6 +183,140 @@ describe('EditTicketModal', () => {
 		expect(props.onSaved).not.toHaveBeenCalled();
 		// The diff closed, so the form is back and the edit can be retried.
 		expect(screen.getByRole('button', { name: 'Save changes' })).toBeTruthy();
+		// A rejected token is dropped, not kept: the prompt only mounts while none
+		// is held, so keeping it would make every retry re-send the bad one.
+		expect(get(writeToken)).toBeNull();
+		expect(screen.getByLabelText('Write token')).toBeTruthy();
+	});
+
+	// Only the token is dropped on a 401 — any other failure leaves it alone, or a
+	// transient conflict would cost the user their credential.
+	it('keeps the token when the write fails for a reason other than the token', async () => {
+		setToken(TOKEN);
+		previewWriteMock.mockResolvedValue(PREVIEW);
+		updateTicketMock.mockRejectedValue(
+			new ApiError({ code: 'run_state_locked', message: 'Lane owns it.', status: 409 })
+		);
+		render(EditTicketModal, { props: baseProps() });
+
+		await submitForm();
+		await fireEvent.click(await screen.findByRole('button', { name: 'Save' }));
+
+		expect(await screen.findByText('run_state_locked')).toBeTruthy();
+		expect(get(writeToken)).toBe(TOKEN);
+		expect(screen.queryByLabelText('Write token')).toBeNull();
+	});
+
+	it('re-prompts when the token disappears between the preview and the save', async () => {
+		setToken(TOKEN);
+		previewWriteMock.mockResolvedValue(PREVIEW);
+		updateTicketMock.mockResolvedValue({ ...PREVIEW, applied: true });
+		const props = baseProps();
+		render(EditTicketModal, { props });
+
+		await submitForm();
+		await screen.findByRole('button', { name: 'Save' });
+
+		// The token can be cleared (or rejected on a 401 elsewhere) while the diff
+		// is on screen; confirming then must ask rather than write untokenized.
+		clearToken();
+		await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+		expect(updateTicketMock).not.toHaveBeenCalled();
+		expect(screen.getByLabelText('Write token')).toBeTruthy();
+		expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+
+		// Re-entering it resumes the same edit: a fresh dry-run, then the write.
+		await fireEvent.input(screen.getByLabelText('Write token'), { target: { value: TOKEN } });
+		await fireEvent.click(screen.getByRole('button', { name: 'Save token' }));
+
+		await fireEvent.click(await screen.findByRole('button', { name: 'Save' }));
+		await waitFor(() =>
+			expect(updateTicketMock).toHaveBeenCalledWith('T42', EXPECTED_UPDATE, TOKEN)
+		);
+		expect(updateTicketMock).toHaveBeenCalledTimes(1);
+	});
+
+	// The write is not idempotent on the server, so the button must not survive
+	// its own click: two clicks would issue two PUTs and two `onSaved`s.
+	it('does not issue a second write while the first is still in flight', async () => {
+		setToken(TOKEN);
+		previewWriteMock.mockResolvedValue(PREVIEW);
+		let finishWrite: () => void = () => {};
+		updateTicketMock.mockReturnValue(
+			new Promise((resolve) => {
+				finishWrite = () => resolve({ ...PREVIEW, applied: true });
+			})
+		);
+		const props = baseProps();
+		render(EditTicketModal, { props });
+
+		await submitForm();
+		const save = await screen.findByRole('button', { name: 'Save' });
+		await fireEvent.click(save);
+
+		const saving = await screen.findByRole('button', { name: 'Saving…' });
+		expect(saving.hasAttribute('disabled')).toBe(true);
+		// Even forced past the disabled button, the handler refuses to re-enter.
+		await fireEvent.click(saving);
+
+		finishWrite();
+		await waitFor(() => expect(props.onSaved).toHaveBeenCalledTimes(1));
+		expect(updateTicketMock).toHaveBeenCalledTimes(1);
+	});
+
+	// Cancelling keeps the edits, so re-submitting while the first dry-run is still
+	// out is ordinary — and its late response must not repaint the newer diff.
+	it('ignores a dry-run response that a newer submission has superseded', async () => {
+		setToken(TOKEN);
+		const stale: WritePreview = {
+			...PREVIEW,
+			diff: {
+				ticketId: 'T42',
+				files: [{ path: 'docs/planning/tickets/v2/STALE.md', changeKind: 'modify', diff: '-a\n' }]
+			}
+		};
+		let finishFirst: () => void = () => {};
+		previewWriteMock.mockReturnValueOnce(
+			new Promise((resolve) => {
+				finishFirst = () => resolve(stale);
+			})
+		);
+		previewWriteMock.mockResolvedValue(PREVIEW);
+		render(EditTicketModal, { props: baseProps() });
+
+		await submitForm();
+		// Back out of the still-pending first dry-run and submit a different edit.
+		const cancels = screen.getAllByRole('button', { name: 'Cancel' });
+		await fireEvent.click(cancels[cancels.length - 1]);
+		await fireEvent.input(screen.getByLabelText('Title'), { target: { value: 'New title' } });
+		await submitForm();
+		await screen.findByText('docs/planning/tickets/v2/T42.md');
+
+		finishFirst();
+		await waitFor(() => expect(previewWriteMock).toHaveBeenCalledTimes(2));
+
+		// The superseded diff never reaches the dialog that gates the write.
+		expect(screen.queryByText('docs/planning/tickets/v2/STALE.md')).toBeNull();
+		expect(screen.getByText('docs/planning/tickets/v2/T42.md')).toBeTruthy();
+	});
+
+	// The wire shape carries ONE capability, so a multi-entry ticket loses the
+	// rest on save. Say so up front instead of leaving it to be found in the diff.
+	it('warns before saving a ticket that declares more capabilities than it can keep', () => {
+		render(EditTicketModal, {
+			props: { ...baseProps(), ticket: { ...ticket, provides: ['Kept', 'Dropped', 'Also'] } }
+		});
+
+		const warning = screen.getByText(/Saving will drop/);
+		expect(warning.textContent).toContain('3 capabilities');
+		expect(warning.textContent).toContain('Dropped, Also');
+	});
+
+	it('says nothing about dropped capabilities when there is only one', () => {
+		render(EditTicketModal, { props: baseProps() });
+
+		expect(screen.queryByText(/Saving will drop/)).toBeNull();
 	});
 
 	it('closes without writing anything when cancelled', async () => {
