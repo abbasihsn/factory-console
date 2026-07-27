@@ -158,7 +158,7 @@ describe('DiffPreviewModal', () => {
 		render(DiffPreviewModal, { props });
 
 		await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-		await fireEvent.click(screen.getByRole('button', { name: 'Dismiss dialog' }));
+		await fireEvent.click(screen.getByRole('dialog').parentElement!.querySelector('button')!);
 		await fireEvent.keyDown(window, { key: 'Escape' });
 
 		expect(props.onCancel).toHaveBeenCalledTimes(3);
@@ -203,30 +203,30 @@ describe('DiffPreviewModal', () => {
 		document.body.appendChild(outside);
 
 		render(DiffPreviewModal, { props: baseProps() });
-		const backdrop = screen.getByRole('button', { name: 'Dismiss dialog' });
+		const region = screen.getByRole('region');
 
 		saveButton().focus();
 		await fireEvent.keyDown(saveButton(), { key: 'Tab' });
-		expect(document.activeElement).toBe(backdrop);
+		expect(document.activeElement).toBe(region);
 
-		await fireEvent.keyDown(backdrop, { key: 'Tab', shiftKey: true });
+		await fireEvent.keyDown(region, { key: 'Tab', shiftKey: true });
 		expect(document.activeElement).toBe(saveButton());
 
 		expect(document.activeElement).not.toBe(outside);
 		outside.remove();
 	});
 
-	// A disabled Save is out of the tab order, so Cancel becomes the last stop —
-	// the cycle has to close there rather than walking out of the dialog.
+	// A disabled Save is out of the tab order, so the cycle has to close back
+	// on the diff region — the first control — rather than walking out of the dialog.
 	it('cycles Tab past the disabled save button while loading', async () => {
 		render(DiffPreviewModal, { props: { ...baseProps(), preview: null, loading: true } });
 		const cancel = screen.getByRole('button', { name: 'Cancel' });
-		const backdrop = screen.getByRole('button', { name: 'Dismiss dialog' });
+		const region = screen.getByRole('region');
 
 		cancel.focus();
 		await fireEvent.keyDown(cancel, { key: 'Tab' });
 
-		expect(document.activeElement).toBe(backdrop);
+		expect(document.activeElement).toBe(region);
 	});
 
 	it('ignores Escape while closed', async () => {

@@ -36,7 +36,7 @@
 		'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 	function focusableItems(): HTMLElement[] {
-		return Array.from(wrapper?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []);
+		return Array.from(panel?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []);
 	}
 
 	// Move focus into the dialog when it opens so Escape and the buttons are
@@ -114,12 +114,16 @@
 
 {#if open}
 	<div bind:this={wrapper} class="fixed inset-0 z-50 flex items-center justify-center p-4">
-		<!-- A real button, not a click-handling div: the backdrop stays keyboard
-		     reachable and needs no a11y escape hatch. -->
+		<!-- A real button so click dismissal needs no a11y escape hatch, but kept
+		     out of the tab order and hidden from AT: `aria-modal` on the panel
+		     below promises everything outside it is unavailable, so the backdrop
+		     must not be a Tab stop or show up in the accessibility tree. -->
 		<button
 			type="button"
 			class="absolute inset-0 bg-slate-900/40"
 			aria-label="Dismiss dialog"
+			aria-hidden="true"
+			tabindex="-1"
 			onclick={onCancel}
 		></button>
 		<div

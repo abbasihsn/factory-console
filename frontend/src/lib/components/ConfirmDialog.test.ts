@@ -47,7 +47,7 @@ describe('ConfirmDialog', () => {
 		render(ConfirmDialog, { props });
 
 		await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-		await fireEvent.click(screen.getByRole('button', { name: 'Dismiss dialog' }));
+		await fireEvent.click(screen.getByRole('dialog').parentElement!.querySelector('button')!);
 
 		expect(props.onCancel).toHaveBeenCalledTimes(2);
 		expect(props.onConfirm).not.toHaveBeenCalled();
@@ -103,16 +103,16 @@ describe('ConfirmDialog', () => {
 		document.body.appendChild(outside);
 
 		render(ConfirmDialog, { props: baseProps() });
+		const cancel = screen.getByRole('button', { name: 'Cancel' });
 		const confirm = screen.getByRole('button', { name: 'Delete' });
-		const backdrop = screen.getByRole('button', { name: 'Dismiss dialog' });
 
 		// Forward past the last control wraps to the first, never to `outside`.
 		confirm.focus();
 		await fireEvent.keyDown(confirm, { key: 'Tab' });
-		expect(document.activeElement).toBe(backdrop);
+		expect(document.activeElement).toBe(cancel);
 
 		// Backward from the first control wraps to the last.
-		await fireEvent.keyDown(backdrop, { key: 'Tab', shiftKey: true });
+		await fireEvent.keyDown(cancel, { key: 'Tab', shiftKey: true });
 		expect(document.activeElement).toBe(confirm);
 
 		expect(document.activeElement).not.toBe(outside);
