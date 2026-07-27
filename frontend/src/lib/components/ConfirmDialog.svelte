@@ -12,6 +12,7 @@
 		message,
 		confirmLabel,
 		danger = false,
+		busy = false,
 		onConfirm,
 		onCancel
 	}: {
@@ -20,6 +21,12 @@
 		message: string;
 		confirmLabel: string;
 		danger?: boolean;
+		/**
+		 * The confirmed action is in flight. This dialog stays mounted for the whole
+		 * round-trip, so without it a second click on confirm would run the action
+		 * again — one confirmation must never become two writes.
+		 */
+		busy?: boolean;
 		onConfirm: () => void;
 		onCancel: () => void;
 	} = $props();
@@ -44,9 +51,10 @@
 		</button>
 		<button
 			type="button"
-			class="rounded px-3 py-1 text-sm text-white hover:opacity-90 {danger
+			class="rounded px-3 py-1 text-sm text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 {danger
 				? 'bg-danger'
 				: 'bg-accent'}"
+			disabled={busy}
 			onclick={onConfirm}
 		>
 			{confirmLabel}

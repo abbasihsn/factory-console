@@ -18,6 +18,17 @@ import { writable, type Readable, type Writable } from 'svelte/store';
 const STORAGE_KEY = 'factory-console:writeToken';
 
 /**
+ * The error envelope `code` a write route returns when the token is not accepted.
+ *
+ * MIRRORS `factory_console.api.write_token.WriteTokenInvalid.code` — source of
+ * truth: `server/factory_console/api/write_token.py`. The server answers 401 with
+ * this single code for every failing shape (header absent, empty, or wrong), so it
+ * is the one signal a caller has that the token it holds is KNOWN BAD and should be
+ * dropped via {@link clearToken} rather than retried.
+ */
+export const WRITE_TOKEN_INVALID_CODE = 'write_token_invalid';
+
+/**
  * Run `use` against this tab's `sessionStorage`, or return `fallback` when storage
  * is unreachable. One place owns both failure modes: no DOM storage at all (SSR /
  * prerender, where there is no `window` either) and a storage object that throws on

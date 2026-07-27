@@ -1,19 +1,36 @@
-import { render, screen } from '@testing-library/svelte';
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Fully mock the API barrel so `load` never touches the network. The load imports
 // the real `ApiError` CLASS from `$lib/api/errors` (NOT the barrel), so mocking the
-// barrel down to just `{ getTicket }` still leaves `instanceof ApiError` working.
-vi.mock('$lib/api', () => ({ getTicket: vi.fn() }));
+// barrel down to these wrappers still leaves `instanceof ApiError` working. The
+// write wrappers are here because the page's edit/delete affordances (and the
+// `EditTicketModal` it mounts) import them from the same barrel.
+vi.mock('$lib/api', () => ({
+	getTicket: vi.fn(),
+	deleteTicket: vi.fn(),
+	previewWrite: vi.fn(),
+	updateTicket: vi.fn()
+}));
 
-import { getTicket } from '$lib/api';
+// The delete flow leaves for the list, so navigation is stubbed like every other
+// route test that owns a `goto`.
+vi.mock('$app/navigation', () => ({ goto: vi.fn(), invalidateAll: vi.fn() }));
+
+import { goto } from '$app/navigation';
+import { deleteTicket, getTicket } from '$lib/api';
 import { ApiError } from '$lib/api/errors';
-import type { Ticket } from '$lib/api';
+import type { RunState, Ticket } from '$lib/api';
+import { clearToken, setToken } from '$lib/stores/writeToken';
 import type { PageData } from './$types';
 import { load } from './+page';
 import Page from './+page.svelte';
 
 const getTicketMock = vi.mocked(getTicket);
+const deleteTicketMock = vi.mocked(deleteTicket);
+const gotoMock = vi.mocked(goto);
+
+const TOKEN = 'test-write-token';
 
 // `+page.svelte`'s `PageData` merges the root layout's `project`, so the rendered
 // `data` prop must carry it too (the page itself only reads the ticket / id).
@@ -180,5 +197,134 @@ describe('ticket detail page (not found)', () => {
 
 		expect(screen.getByText(/Ticket "nope" not found/)).toBeTruthy();
 		expect(screen.getByRole('link', { name: 'back to list' }).getAttribute('href')).toBe('/');
+	});
+
+	it('offers no write affordances at all when there is no ticket', () => {
+		render(Page, { props: { data: notFoundData('nope') } });
+
+		expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+		expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
+		expect(screen.queryByRole('note')).toBeNull();
+	});
+});
+
+function editButton(): HTMLElement {
+	return screen.getByRole('button', { name: 'Edit' });
+}
+
+function deleteButton(): HTMLElement {
+	return screen.getByRole('button', { name: 'Delete' });
+}
+
+function ticketInState(runState: RunState): Ticket {
+	return { ...fullTicket, runState };
+}
+
+describe('ticket detail write affordances', () => {
+	beforeEach(() => {
+		deleteTicketMock.mockReset();
+		gotoMock.mockReset();
+		clearToken();
+	});
+
+	// The client-side mirror of the server write-gate: only `todo`/`unknown` are
+	// writable, and the banner explains exactly what the buttons refuse.
+	for (const runState of ['in-flight', 'ready', 'merged'] as RunState[]) {
+		it(`disables edit + delete and explains the gate for ${runState}`, () => {
+			render(Page, { props: { data: foundData(ticketInState(runState)) } });
+
+			expect(editButton().hasAttribute('disabled')).toBe(true);
+			expect(deleteButton().hasAttribute('disabled')).toBe(true);
+			expect(screen.getByRole('note').textContent).toContain(runState);
+		});
+	}
+
+	for (const runState of ['todo', 'unknown'] as RunState[]) {
+		it(`enables edit + delete with no gate banner for ${runState}`, () => {
+			render(Page, { props: { data: foundData(ticketInState(runState)) } });
+
+			expect(editButton().hasAttribute('disabled')).toBe(false);
+			expect(deleteButton().hasAttribute('disabled')).toBe(false);
+			expect(screen.queryByRole('note')).toBeNull();
+		});
+	}
+
+	it('opens the edit dialog seeded from the ticket', async () => {
+		setToken(TOKEN);
+		render(Page, { props: { data: foundData(ticketInState('todo')) } });
+
+		expect(screen.queryByRole('dialog')).toBeNull();
+		await fireEvent.click(editButton());
+
+		expect(screen.getByRole('dialog')).toBeTruthy();
+		expect((screen.getByLabelText('Title') as HTMLInputElement).value).toBe(fullTicket.title);
+	});
+
+	it('confirms before deleting, then deletes with the token and leaves for the list', async () => {
+		setToken(TOKEN);
+		deleteTicketMock.mockResolvedValue({
+			applied: true,
+			ticketId: 'T31',
+			diff: { ticketId: 'T31' },
+			ticket: null
+		});
+		render(Page, { props: { data: foundData(ticketInState('todo')) } });
+
+		await fireEvent.click(deleteButton());
+
+		// The click alone writes nothing — the confirmation gates it.
+		expect(deleteTicketMock).not.toHaveBeenCalled();
+		expect(screen.getByText('Delete ticket?')).toBeTruthy();
+
+		await fireEvent.click(screen.getByRole('button', { name: 'Delete ticket' }));
+
+		await waitFor(() => expect(deleteTicketMock).toHaveBeenCalledWith('T31', TOKEN));
+		expect(gotoMock).toHaveBeenCalledWith('/', { invalidateAll: true });
+	});
+
+	it('abandons the delete when the confirmation is cancelled', async () => {
+		setToken(TOKEN);
+		render(Page, { props: { data: foundData(ticketInState('todo')) } });
+
+		await fireEvent.click(deleteButton());
+		await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+		expect(deleteTicketMock).not.toHaveBeenCalled();
+		expect(screen.queryByText('Delete ticket?')).toBeNull();
+	});
+
+	it('asks for a missing token before it asks for confirmation', async () => {
+		render(Page, { props: { data: foundData(ticketInState('todo')) } });
+
+		await fireEvent.click(deleteButton());
+
+		expect(screen.getByText('Write token required')).toBeTruthy();
+		expect(screen.queryByText('Delete ticket?')).toBeNull();
+		expect(deleteTicketMock).not.toHaveBeenCalled();
+
+		// Storing the token resumes into the confirmation — not into the delete.
+		await fireEvent.input(screen.getByLabelText('Write token'), { target: { value: TOKEN } });
+		await fireEvent.click(screen.getByRole('button', { name: 'Save token' }));
+
+		expect(screen.getByText('Delete ticket?')).toBeTruthy();
+		expect(deleteTicketMock).not.toHaveBeenCalled();
+	});
+
+	it('renders a failed delete inline and keeps the ticket on screen', async () => {
+		setToken(TOKEN);
+		deleteTicketMock.mockRejectedValue(
+			new ApiError({ code: 'ticket_not_editable', message: 'The lane owns it.', status: 409 })
+		);
+		render(Page, { props: { data: foundData(ticketInState('todo')) } });
+
+		await fireEvent.click(deleteButton());
+		await fireEvent.click(screen.getByRole('button', { name: 'Delete ticket' }));
+
+		expect(await screen.findByText('ticket_not_editable')).toBeTruthy();
+		expect(screen.getByText('The lane owns it.')).toBeTruthy();
+		expect(gotoMock).not.toHaveBeenCalled();
+		// Dismissing clears the error without touching the ticket.
+		await fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+		expect(screen.queryByText('ticket_not_editable')).toBeNull();
 	});
 });
