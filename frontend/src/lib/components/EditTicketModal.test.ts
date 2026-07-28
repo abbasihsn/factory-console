@@ -184,13 +184,13 @@ describe('EditTicketModal', () => {
 	it('renders a failed dry-run as an ApiErrorView with save inert', async () => {
 		setToken(TOKEN);
 		previewWriteMock.mockRejectedValue(
-			new ApiError({ code: 'ticket_not_editable', message: 'The lane owns it.', status: 409 })
+			new ApiError({ code: 'ticket_not_mutable', message: 'The lane owns it.', status: 409 })
 		);
 		render(EditTicketModal, { props: baseProps() });
 
 		await fireEvent.click(saveChangesButton());
 
-		expect(await screen.findByText('ticket_not_editable')).toBeTruthy();
+		expect(await screen.findByText('ticket_not_mutable')).toBeTruthy();
 		expect(screen.getByText('The lane owns it.')).toBeTruthy();
 		expect(confirmSaveButton().hasAttribute('disabled')).toBe(true);
 	});
@@ -354,6 +354,58 @@ describe('EditTicketModal', () => {
 		// The heading follows the new ticket, so the dialog is not still claiming to
 		// edit the one whose diff was just discarded.
 		expect(screen.getByRole('heading', { name: /T71/ })).toBeTruthy();
+		// …and so do the FIELDS: `TicketForm` snapshots `initial` once, so without the
+		// `{#key}` these would still hold T70's values while the dialog applies as T71.
+		expect((screen.getByLabelText('Ticket id') as HTMLInputElement).value).toBe('T71');
+		expect((screen.getByLabelText('Title') as HTMLInputElement).value).toBe(
+			'A different ticket'
+		);
+	});
+
+	// An id-only guard misses this: the layout `invalidateAll()`s on every SSE bump,
+	// replacing `ticket` in place with the SAME id. A diff reviewed against the old
+	// content would otherwise survive and overwrite the concurrent change.
+	it('drops a reviewed diff when the same ticket changes underneath it', async () => {
+		setToken(TOKEN);
+		previewWriteMock.mockResolvedValue(PREVIEW);
+		const props = baseProps();
+		const { rerender } = render(EditTicketModal, { props });
+
+		await fireEvent.click(saveChangesButton());
+		await waitFor(() => expect(previewWriteMock).toHaveBeenCalledTimes(1));
+		expect(screen.getByText('+new title')).toBeTruthy();
+
+		// Same id, different content on disk.
+		await rerender({
+			...props,
+			ticket: { ...ticket, bodyMarkdown: '## Context\n\nRewritten by someone else.' }
+		});
+
+		expect(screen.queryByText('+new title')).toBeNull();
+		expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+		expect(updateTicketMock).not.toHaveBeenCalled();
+	});
+
+	// The route raises its own prompt for delete, and that one's `onSaved` knows
+	// nothing about an edit parked here — so resumption watches the store, not one
+	// prompt's callback.
+	it('resumes a parked edit when the token arrives from elsewhere', async () => {
+		previewWriteMock.mockResolvedValue(PREVIEW);
+		render(EditTicketModal, { props: baseProps() });
+
+		await fireEvent.click(saveChangesButton());
+		expect(screen.getByText('Write token required')).toBeTruthy();
+		expect(previewWriteMock).not.toHaveBeenCalled();
+
+		// Stored by something other than this dialog's prompt.
+		setToken(TOKEN);
+
+		await waitFor(() => expect(previewWriteMock).toHaveBeenCalledTimes(1));
+		expect(previewWriteMock).toHaveBeenCalledWith(
+			{ verb: 'update', id: 'T70', body: UNCHANGED_BODY },
+			TOKEN
+		);
+		expect(screen.queryByText('Write token required')).toBeNull();
 	});
 
 	it('closing writes nothing and reports the close', async () => {

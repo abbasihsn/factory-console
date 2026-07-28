@@ -168,6 +168,34 @@ describe('DiffPreviewModal', () => {
 	// The error view's action closes the dialog rather than reloading, so it is
 	// labelled for what it does — a button reading "Reload" that only closes
 	// would misdescribe the one screen that gates a write.
+	// `busy` is the APPLY in flight, narrower than `loading` (which also covers the
+	// dry-run). A dry-run writes nothing and stays cancellable; the write does not.
+	it('refuses every dismissal while the write is in flight', async () => {
+		const props = baseProps();
+		render(DiffPreviewModal, { props: { ...props, loading: true, busy: true } });
+
+		const cancel = screen.getByRole('button', { name: 'Cancel' });
+		expect(cancel.hasAttribute('disabled')).toBe(true);
+
+		await fireEvent.click(cancel);
+		await fireEvent.click(screen.getByRole('dialog').parentElement!.querySelector('button')!);
+		await fireEvent.keyDown(window, { key: 'Escape' });
+
+		// Dismissing would claim to stop a write that still lands.
+		expect(props.onCancel).not.toHaveBeenCalled();
+	});
+
+	it('still allows cancelling a dry-run, which writes nothing', async () => {
+		const props = baseProps();
+		render(DiffPreviewModal, { props: { ...props, loading: true, busy: false } });
+
+		expect(screen.getByRole('button', { name: 'Cancel' }).hasAttribute('disabled')).toBe(false);
+
+		await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+		expect(props.onCancel).toHaveBeenCalledTimes(1);
+	});
+
 	it("labels the error view's only recovery affordance for what it does", async () => {
 		const props = { ...baseProps(), preview: null, error: ERROR };
 		render(DiffPreviewModal, { props });

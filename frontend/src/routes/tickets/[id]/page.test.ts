@@ -18,8 +18,8 @@ vi.mock('$lib/api', () => ({
 // route test that owns a `goto`.
 vi.mock('$app/navigation', () => ({ goto: vi.fn(), invalidateAll: vi.fn() }));
 
-import { goto } from '$app/navigation';
-import { deleteTicket, getTicket } from '$lib/api';
+import { goto, invalidateAll } from '$app/navigation';
+import { deleteTicket, getTicket, previewWrite, updateTicket } from '$lib/api';
 import { ApiError } from '$lib/api/errors';
 import type { RunState, Ticket } from '$lib/api';
 import { clearToken, setToken, writeToken } from '$lib/stores/writeToken';
@@ -29,7 +29,10 @@ import Page from './+page.svelte';
 
 const getTicketMock = vi.mocked(getTicket);
 const deleteTicketMock = vi.mocked(deleteTicket);
+const previewWriteMock = vi.mocked(previewWrite);
+const updateTicketMock = vi.mocked(updateTicket);
 const gotoMock = vi.mocked(goto);
+const invalidateAllMock = vi.mocked(invalidateAll);
 
 const TOKEN = 'test-write-token';
 
@@ -224,7 +227,10 @@ function ticketInState(runState: RunState): Ticket {
 describe('ticket detail write affordances', () => {
 	beforeEach(() => {
 		deleteTicketMock.mockReset();
+		previewWriteMock.mockReset();
+		updateTicketMock.mockReset();
 		gotoMock.mockReset();
+		invalidateAllMock.mockReset();
 		clearToken();
 	});
 
@@ -259,6 +265,47 @@ describe('ticket detail write affordances', () => {
 
 		expect(screen.getByRole('dialog')).toBeTruthy();
 		expect((screen.getByLabelText('Title') as HTMLInputElement).value).toBe(fullTicket.title);
+	});
+
+	// The route's half of the edit flow: what "saved" means for the view it shows.
+	// The write landed on disk, so the loaded ticket is stale — the page must close
+	// the dialog and re-run its load rather than keep rendering the old ticket.
+	it('closes the edit dialog and reloads the ticket after a successful save', async () => {
+		setToken(TOKEN);
+		previewWriteMock.mockResolvedValue({
+			applied: false,
+			ticketId: 'T31',
+			diff: {
+				ticketId: 'T31',
+				files: [
+					{
+						path: 'docs/planning/tickets/mvp/T31-ticket-detail-route.md',
+						changeKind: 'modify',
+						diff: '@@ -1 +1 @@\n-old\n+new\n'
+					}
+				]
+			},
+			ticket: null
+		});
+		updateTicketMock.mockResolvedValue({
+			applied: true,
+			ticketId: 'T31',
+			diff: { ticketId: 'T31' },
+			ticket: ticketInState('todo')
+		});
+		render(Page, { props: { data: foundData(ticketInState('todo')) } });
+
+		await fireEvent.click(editButton());
+		await fireEvent.input(screen.getByLabelText('Title'), { target: { value: 'Renamed' } });
+		await fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+		await waitFor(() => expect(previewWriteMock).toHaveBeenCalledTimes(1));
+		await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+		await waitFor(() => expect(updateTicketMock).toHaveBeenCalledTimes(1));
+		// Without this wiring the page would sit on the pre-write ticket.
+		await waitFor(() => expect(invalidateAllMock).toHaveBeenCalledTimes(1));
+		await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 	});
 
 	it('confirms before deleting, then deletes with the token and leaves for the list', async () => {
@@ -358,19 +405,19 @@ describe('ticket detail write affordances', () => {
 	it('clears the write state when the rendered ticket is replaced', async () => {
 		setToken(TOKEN);
 		deleteTicketMock.mockRejectedValue(
-			new ApiError({ code: 'ticket_not_editable', message: 'The lane owns it.', status: 409 })
+			new ApiError({ code: 'ticket_not_mutable', message: 'The lane owns it.', status: 409 })
 		);
 		const { rerender } = render(Page, { props: { data: foundData(ticketInState('todo')) } });
 
 		await fireEvent.click(deleteButton());
 		await fireEvent.click(screen.getByRole('button', { name: 'Delete ticket' }));
-		expect(await screen.findByText('ticket_not_editable')).toBeTruthy();
+		expect(await screen.findByText('ticket_not_mutable')).toBeTruthy();
 
 		const nextTicket = { ...ticketInState('todo'), id: 'T32', title: 'A different ticket' };
 		await rerender({ data: foundData(nextTicket) });
 
 		// The previous ticket's failure does not carry over onto this one.
-		expect(screen.queryByText('ticket_not_editable')).toBeNull();
+		expect(screen.queryByText('ticket_not_mutable')).toBeNull();
 		expect(screen.queryByText('Delete ticket?')).toBeNull();
 		expect(screen.getByRole('heading', { level: 1, name: 'A different ticket' })).toBeTruthy();
 		// The buttons are live again for the ticket now on screen.
@@ -398,18 +445,18 @@ describe('ticket detail write affordances', () => {
 	it('renders a failed delete inline and keeps the ticket on screen', async () => {
 		setToken(TOKEN);
 		deleteTicketMock.mockRejectedValue(
-			new ApiError({ code: 'ticket_not_editable', message: 'The lane owns it.', status: 409 })
+			new ApiError({ code: 'ticket_not_mutable', message: 'The lane owns it.', status: 409 })
 		);
 		render(Page, { props: { data: foundData(ticketInState('todo')) } });
 
 		await fireEvent.click(deleteButton());
 		await fireEvent.click(screen.getByRole('button', { name: 'Delete ticket' }));
 
-		expect(await screen.findByText('ticket_not_editable')).toBeTruthy();
+		expect(await screen.findByText('ticket_not_mutable')).toBeTruthy();
 		expect(screen.getByText('The lane owns it.')).toBeTruthy();
 		expect(gotoMock).not.toHaveBeenCalled();
 		// Dismissing clears the error without touching the ticket.
 		await fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
-		expect(screen.queryByText('ticket_not_editable')).toBeNull();
+		expect(screen.queryByText('ticket_not_mutable')).toBeNull();
 	});
 });

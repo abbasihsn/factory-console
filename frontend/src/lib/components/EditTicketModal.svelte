@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { get } from 'svelte/store';
 	import { previewWrite, updateTicket } from '$lib/api';
 	import type { Ticket, TicketUpdate, WritePreview } from '$lib/api';
@@ -38,6 +39,12 @@
 	let busy = $state(false);
 	let writeError = $state<ApiError | null>(null);
 
+	// The APPLY specifically, where `busy` covers the dry-run too. Only a write in
+	// flight makes the review dialog undismissable: a dry-run writes nothing, so
+	// cancelling one is free, while cancelling the PUT would claim to stop something
+	// that still lands.
+	let applying = $state(false);
+
 	// The body the preview was built from. The apply MUST reuse it verbatim —
 	// re-reading the form would let a post-preview keystroke write something the
 	// user never reviewed.
@@ -46,7 +53,12 @@
 	// What to do once a token exists. Holding the ACTION (not a token we don't have)
 	// is what lets one detour serve both the dry-run and the apply.
 	let pendingAction = $state<(() => void) | null>(null);
-	const tokenNeeded = $derived(pendingAction !== null);
+
+	// Gated on the STORE as well as the parked action, like the detail route's
+	// sibling panel: both prompts can be on screen at once, and a token pasted into
+	// the other one satisfies this action too. Without the store in the predicate
+	// this dialog would go on demanding a token it already has.
+	const tokenNeeded = $derived(pendingAction !== null && $writeToken === null);
 
 	// Why the prompt is up. Raising it silently after a 401 is indistinguishable from
 	// never having held a token, so the user re-pastes the SAME rejected value and
@@ -87,11 +99,17 @@
 		action(token);
 	}
 
-	function handleTokenSaved(): void {
-		// `withToken` re-parks itself if the stored token is somehow still absent, so
-		// this cannot fall through into an unauthenticated request.
-		pendingAction?.();
-	}
+	// Resumption is driven off the STORE, not off one prompt's `onSaved`, because the
+	// token can arrive from the OTHER prompt on the page — the route raises its own
+	// for delete, and it knows nothing about the edit parked here. Watching the store
+	// is the one mechanism that covers both. `withToken` clears `pendingAction` before
+	// it runs the action, so a resumed action cannot be resumed twice.
+	$effect(() => {
+		if ($writeToken === null) return;
+		const resume = pendingAction;
+		if (resume === null) return;
+		untrack(resume);
+	});
 
 	function handleSubmit(values: TicketFormValues): void {
 		// A fresh submit is a fresh attempt: whatever a previous one was rejected for
@@ -164,6 +182,7 @@
 	async function applyEdit(body: TicketUpdate, token: string): Promise<void> {
 		writeError = null;
 		busy = true;
+		applying = true;
 		try {
 			await updateTicket(ticket.id, body, token);
 		} catch (err) {
@@ -175,6 +194,7 @@
 			return;
 		} finally {
 			busy = false;
+			applying = false;
 		}
 		resetWriteState();
 		onSaved();
@@ -189,27 +209,55 @@
 		tokenRejected = false;
 	}
 
+	// What the reviewed diff is BASED on — every field that feeds `toTicketUpdate`,
+	// plus the body. The reset below keys on this rather than on `ticket.id` alone.
+	//
+	// An id-only guard misses the more dangerous case: the root layout `invalidateAll()`s
+	// on every SSE bump, which re-runs the detail load and replaces `ticket` IN PLACE
+	// with the SAME id. `preview` then still shows a diff computed against content that
+	// has since changed on disk, and `pendingBody` was built from that stale content —
+	// so confirming overwrites the concurrent change with a body whose effect the user
+	// was never shown. Nothing downstream catches it: the server's edit path checks
+	// existence only, with no version or mtime check.
+	const editBasis = $derived(
+		JSON.stringify([
+			ticket.id,
+			ticket.title,
+			ticket.track,
+			ticket.milestone,
+			ticket.dependsOn ?? [],
+			ticket.provides ?? [],
+			ticket.files ?? [],
+			ticket.bodyMarkdown
+		])
+	);
+
 	// The `ticket` being edited can be REPLACED under this component: the detail route
 	// reuses its instance across a params-only navigation, and it closes the dialog by
 	// flipping `open` — which does NOT run `handleClose`, the only other caller of
 	// `resetWriteState`. Everything that reset clears is per-ticket, and `DiffPreviewModal`
 	// below is gated on `previewOpen` alone, so without this a diff reviewed for one
 	// ticket could survive and be applied to ANOTHER (`applyEdit` sends the current
-	// `ticket.id`). Dropping the in-progress edit is the only safe answer: the body was
-	// built from a ticket that is no longer on screen.
-	let editingId: string | null = null; // plain: written by the effect, never read reactively
+	// `ticket.id`). Dropping the reviewed diff is the only safe answer: it describes a
+	// write against content that is no longer what is loaded. The typed form is left
+	// alone — re-submitting runs a fresh dry-run against the current content, which is
+	// where the user sees what the write would now do.
+	let reviewedBasis: string | null = null; // plain: written by the effect, never read reactively
 	$effect(() => {
-		const id = ticket.id;
-		if (id === editingId) {
+		const basis = editBasis;
+		if (basis === reviewedBasis) {
 			return;
 		}
-		editingId = id;
+		reviewedBasis = basis;
 		resetWriteState();
 	});
 
 	// Cancelling the review returns to the form with the edits intact — the form
-	// stays mounted underneath precisely so nothing typed is lost here.
+	// stays mounted underneath precisely so nothing typed is lost here. Refused while
+	// the apply is in flight: that write cannot be called off, and dismissing over it
+	// would report a cancellation for an edit that still lands.
 	function handlePreviewCancel(): void {
+		if (applying) return;
 		previewOpen = false;
 		preview = null;
 		pendingBody = null;
@@ -263,11 +311,17 @@
 						current one to continue — your edit is still here.
 					</p>
 				{/if}
-				<WriteTokenPrompt onSaved={handleTokenSaved} />
+				<WriteTokenPrompt />
 			</section>
 		{/if}
 
-		<TicketForm mode="edit" initial={initialValues} disabled={busy} onSubmit={handleSubmit} />
+		<!-- Keyed on the ticket so a REPLACED one reseeds the fields. `TicketForm`
+		     snapshots `initial` exactly once (deliberately, so a later prop change
+		     cannot clobber in-progress typing), which without this key would leave
+		     ticket A's values in a dialog now headed and applied as ticket B. -->
+		{#key ticket.id}
+			<TicketForm mode="edit" initial={initialValues} disabled={busy} onSubmit={handleSubmit} />
+		{/key}
 	</div>
 </ModalShell>
 
@@ -277,6 +331,7 @@
 	open={previewOpen}
 	{preview}
 	loading={busy}
+	busy={applying}
 	error={writeError}
 	onConfirm={handleConfirm}
 	onCancel={handlePreviewCancel}

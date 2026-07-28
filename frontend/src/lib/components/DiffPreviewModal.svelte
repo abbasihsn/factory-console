@@ -13,6 +13,7 @@
 		open,
 		preview,
 		loading,
+		busy = false,
 		error,
 		onConfirm,
 		onCancel
@@ -20,10 +21,25 @@
 		open: boolean;
 		preview: WritePreview | null;
 		loading: boolean;
+		/**
+		 * The confirmed WRITE is in flight — narrower than `loading`, which also covers
+		 * the dry-run. A dry-run writes nothing and stays cancellable; once the write
+		 * is out there is nothing left to call off, so dismissal must be refused
+		 * rather than imply it stopped something.
+		 */
+		busy?: boolean;
 		error: ApiError | null;
 		onConfirm: () => void;
 		onCancel: () => void;
 	} = $props();
+
+	// Every route out — Cancel, Escape, the backdrop — goes through this guard, the
+	// same shape `ConfirmDialog` uses. Without it the user can dismiss the dialog
+	// mid-write and still have the write land, told they cancelled a write that applied.
+	function handleCancel(): void {
+		if (busy) return;
+		onCancel();
+	}
 
 	// A preview covers every file the write touches, so the body is a list of
 	// per-file diffs — `files` is optional in the contract, hence the fallback.
@@ -44,7 +60,7 @@
 
 <ModalShell
 	{open}
-	{onCancel}
+	onCancel={handleCancel}
 	labelledBy="diff-preview-title"
 	describedBy="diff-preview-description"
 	panelClass="flex max-h-[85vh] w-full max-w-3xl flex-col"
@@ -79,7 +95,7 @@
 			     action is labelled for what it does: this call site has no retry
 			     hook, so it closes the dialog and the caller re-runs the dry-run
 			     when the action is retried. -->
-			<ApiErrorView {error} compact actionLabel="Close" onReload={onCancel} />
+			<ApiErrorView {error} compact actionLabel="Close" onReload={handleCancel} />
 		{:else if preview === null}
 			<p class="py-6 text-sm text-muted">No preview to review yet.</p>
 		{:else}
@@ -107,8 +123,9 @@
 	<div class="flex justify-end gap-2 border-t border-slate-300 px-4 py-3">
 		<button
 			type="button"
-			class="rounded border border-slate-300 px-3 py-1 text-sm text-text hover:bg-bg"
-			onclick={onCancel}
+			class="rounded border border-slate-300 px-3 py-1 text-sm text-text hover:bg-bg disabled:cursor-not-allowed disabled:opacity-60"
+			disabled={busy}
+			onclick={handleCancel}
 		>
 			Cancel
 		</button>
