@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { get } from 'svelte/store';
 	import type { PageData } from './$types';
@@ -94,6 +95,18 @@
 		deleteTokenRejected = false;
 		confirmDeleteOpen = true;
 	}
+
+	// Reconcile the latch with the store, the way the edit dialog resumes its parked
+	// action. The token can arrive from the OTHER prompt on the page, which does not
+	// call `startDelete`; without this the latch stays set with no confirmation ever
+	// opening, and a LATER `clearToken()` (the edit flow's 401 path) would re-raise a
+	// delete prompt nobody asked for — pasting into which pops a "Delete ticket?"
+	// confirmation for an action abandoned long before.
+	$effect(() => {
+		if ($writeToken === null) return;
+		if (!deleteTokenRequested) return;
+		untrack(startDelete);
+	});
 
 	// Delete deliberately has NO dry-run step, unlike edit: `ConfirmDialog` already
 	// states exactly what is removed, and a diff of a file about to disappear tells

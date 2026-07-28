@@ -245,6 +245,13 @@
 	let reviewedBasis: string | null = null; // plain: written by the effect, never read reactively
 	$effect(() => {
 		const basis = editBasis;
+		// Never tear the review dialog down mid-apply. An SSE bump can land while the
+		// PUT is in flight, and `resetWriteState()` would close the dialog the apply is
+		// running under — the very dismissal `handlePreviewCancel` refuses. `applying`
+		// is `$state`, so this effect re-runs and resets once the write settles.
+		if (applying) {
+			return;
+		}
 		if (basis === reviewedBasis) {
 			return;
 		}
@@ -267,7 +274,13 @@
 	// Closing the dialog writes nothing. The in-progress edit is dropped with it:
 	// `ModalShell` only instantiates its body while open, so the next open reseeds
 	// `TicketForm` from the ticket as loaded.
+	//
+	// Refused mid-apply for the same reason as `handlePreviewCancel`: every control in
+	// the review dialog is disabled then, so focus can fall out to THIS dialog's Close,
+	// and closing here would drop the pending body while the PUT is still in flight —
+	// leaving a later failure to reopen a review dialog whose host is gone.
 	function handleClose(): void {
+		if (applying) return;
 		resetWriteState();
 		onClose();
 	}
@@ -327,8 +340,10 @@
 
 <!-- Stacked over the form dialog, which stays mounted so Cancel comes back to the
      in-progress edit. `loading` covers the apply too, so Save cannot fire twice. -->
+<!-- Gated on `open` too: the review dialog is stacked ON the form dialog, so it must
+     never outlive its host and render parentless over the detail page. -->
 <DiffPreviewModal
-	open={previewOpen}
+	open={previewOpen && open}
 	{preview}
 	loading={busy}
 	busy={applying}

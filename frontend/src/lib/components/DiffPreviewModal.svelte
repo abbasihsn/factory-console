@@ -41,13 +41,21 @@
 		onCancel();
 	}
 
+	// Confirm is guarded here as well as by `canConfirm`, so "one confirmation is one
+	// write" is this component's own guarantee rather than something it inherits from
+	// a caller that happens to also raise `loading` for the apply.
+	function handleConfirm(): void {
+		if (busy) return;
+		onConfirm();
+	}
+
 	// A preview covers every file the write touches, so the body is a list of
 	// per-file diffs — `files` is optional in the contract, hence the fallback.
 	const files = $derived(preview?.diff.files ?? []);
 
 	// Saving is only meaningful once a preview has actually arrived: nothing to
 	// confirm while the dry-run is in flight, failed, or was never made.
-	const canConfirm = $derived(!loading && error === null && preview !== null);
+	const canConfirm = $derived(!loading && !busy && error === null && preview !== null);
 
 	const LINE_CLASSES: Record<DiffLineKind, string> = {
 		add: 'bg-emerald-50 text-emerald-700',
@@ -133,7 +141,7 @@
 			type="button"
 			class="rounded bg-accent px-3 py-1 text-sm text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
 			disabled={!canConfirm}
-			onclick={onConfirm}
+			onclick={handleConfirm}
 		>
 			Save
 		</button>

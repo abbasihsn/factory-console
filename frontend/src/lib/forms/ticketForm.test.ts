@@ -197,4 +197,43 @@ describe('toTicketUpdate', () => {
 	it('sends an empty bodyMarkdown when the form has no body', () => {
 		expect(toTicketUpdate(values(), ticket()).bodyMarkdown).toBe('');
 	});
+
+	// Same failure class as track/milestone above, for the three fields the form DOES
+	// edit. They are mirrored into the `.md` header, but `Ticket.dependsOn/provides/
+	// files` are read from the manifest entry alone — so a ticket whose manifest lacks
+	// one while its header carries a real value seeds the form empty, and sending the
+	// empty value would wipe the header's only copy.
+	describe('mirrored list fields the manifest may not carry', () => {
+		const EMPTY_FORM = { dependsOn: '', provides: '', files: '' };
+
+		it.each(['dependsOn', 'provides', 'files'] as const)(
+			'OMITS %s when it is empty on both the form and the loaded ticket',
+			(key) => {
+				const body = toTicketUpdate(values(EMPTY_FORM), ticket());
+				expect(body).not.toHaveProperty(key);
+			}
+		);
+
+		it('still sends what the user actually entered', () => {
+			const body = toTicketUpdate(
+				values({ dependsOn: 'T1', provides: 'a cap', files: 'a.ts' }),
+				ticket()
+			);
+			expect(body.dependsOn).toEqual(['T1']);
+			expect(body.provides).toBe('a cap');
+			expect(body.files).toEqual(['a.ts']);
+		});
+
+		// The omission must never swallow a deliberate CLEAR: the loaded ticket has the
+		// value, so emptying the field is a real edit and has to reach the server.
+		it('sends the empty value when the loaded ticket really had one', () => {
+			const body = toTicketUpdate(
+				values(EMPTY_FORM),
+				ticket({ dependsOn: ['T1'], provides: ['a cap'], files: ['a.ts'] })
+			);
+			expect(body.dependsOn).toEqual([]);
+			expect(body.provides).toBe('');
+			expect(body.files).toEqual([]);
+		});
+	});
 });

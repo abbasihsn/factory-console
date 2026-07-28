@@ -86,10 +86,16 @@ export function serializeList(items: string[]): string {
  * Build the PUT body for one set of form values, for `ticket` as it was loaded.
  *
  * `track` / `milestone` have no form field, so the form has no user intent to send
- * for either. The server distinguishes the two ways of saying nothing (see
- * `_overlay_front_matter` for the `.md` header, and `_merge_edit` for the manifest
- * entry, both in `server/factory_console/file_adapter/write_render.py`):
- * an **omitted** key changes nothing, while an explicit `null` MEANS "clear it".
+ * for either. `_overlay_front_matter`
+ * (`server/factory_console/file_adapter/write_render.py`) is what distinguishes the
+ * two ways of saying nothing, via `model_fields_set`: for the `.md` YAML HEADER an
+ * **omitted** key changes nothing, while an explicit `null` MEANS "clear it".
+ *
+ * That distinction is the header's alone. The manifest entry is rewritten by
+ * `_merge_edit`, which overlays `_edit_mirror(edit)` unconditionally — so an omitted
+ * `track` still lands in `tickets.json` as an explicit `null`. Omitting is therefore
+ * not "changes nothing" everywhere; it is what keeps the write off the header, which
+ * is the copy that would otherwise be destroyed.
  * So they are echoed only when the loaded ticket actually carries a value, and
  * OMITTED otherwise — never sent as `null`.
  *
@@ -106,15 +112,47 @@ export function serializeList(items: string[]): string {
  * {@link TicketFormValues} for why it is NOT {@link parseList}ed.
  */
 export function toTicketUpdate(values: TicketFormValues, ticket: Ticket): TicketUpdate {
+	const dependsOn = parseList(values.dependsOn);
+	const provides = values.provides.trim();
+	const files = parseList(values.files);
+
 	return {
 		title: values.title.trim(),
 		...(ticket.track == null ? {} : { track: ticket.track }),
 		...(ticket.milestone == null ? {} : { milestone: ticket.milestone }),
-		dependsOn: parseList(values.dependsOn),
-		provides: values.provides.trim(),
-		files: parseList(values.files),
+		...omitWhenNeverSet('dependsOn', dependsOn, ticket.dependsOn),
+		...omitWhenNeverSet('provides', provides, ticket.provides),
+		...omitWhenNeverSet('files', files, ticket.files),
 		bodyMarkdown: values.body ?? ''
 	};
+}
+
+/**
+ * One mirrored field's entry in the PUT body — or nothing at all, when the field is
+ * empty on BOTH sides and sending it could only destroy something.
+ *
+ * These three are mirrored between the manifest entry and the `.md` YAML header, but
+ * `Ticket.dependsOn` / `provides` / `files` are read from the MANIFEST ENTRY ALONE
+ * (`manifest.py`'s `entry.get(...)`, defaulting to empty). So for a ticket whose
+ * manifest entry lacks the field but whose header carries a real value, the form is
+ * seeded empty from the manifest and an unconditional send would overwrite the
+ * header's only correct copy with `[]` / `""` — permanently, since every later edit
+ * re-bases off the wiped value. `_overlay_front_matter` refreshes a mirrored key only
+ * where the request SUPPLIED it, so omission is what protects the header. This is the
+ * `track` / `milestone` rule above, applied to the fields the form actually edits.
+ *
+ * Empty-on-both-sides is the only case that omits, so nothing a user can express is
+ * lost: adding entries sends them, and CLEARING a field the ticket really had still
+ * sends the empty value, because `loaded` is non-empty there and the clear is a
+ * deliberate edit.
+ */
+function omitWhenNeverSet<K extends 'dependsOn' | 'provides' | 'files'>(
+	key: K,
+	value: string[] | string,
+	loaded: string[] | undefined
+): Partial<Pick<TicketUpdate, K>> {
+	const isEmpty = value.length === 0 && (loaded ?? []).length === 0;
+	return isEmpty ? {} : ({ [key]: value } as Pick<TicketUpdate, K>);
 }
 
 /**

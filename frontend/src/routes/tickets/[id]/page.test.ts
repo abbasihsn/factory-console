@@ -21,7 +21,7 @@ vi.mock('$app/navigation', () => ({ goto: vi.fn(), invalidateAll: vi.fn() }));
 import { goto, invalidateAll } from '$app/navigation';
 import { deleteTicket, getTicket, previewWrite, updateTicket } from '$lib/api';
 import { ApiError } from '$lib/api/errors';
-import type { RunState, Ticket } from '$lib/api';
+import type { RunState, Ticket, WriteResult } from '$lib/api';
 import { clearToken, setToken, writeToken } from '$lib/stores/writeToken';
 import type { PageData } from './$types';
 import { load } from './+page';
@@ -328,6 +328,64 @@ describe('ticket detail write affordances', () => {
 
 		await waitFor(() => expect(deleteTicketMock).toHaveBeenCalledWith('T31', TOKEN));
 		expect(gotoMock).toHaveBeenCalledWith('/', { invalidateAll: true });
+	});
+
+	// Delete is the flow where a double-fire is destructive and a dismissal cannot
+	// recall anything, so the confirmation must refuse every route out mid-flight.
+	it('refuses every dismissal while the delete is in flight', async () => {
+		setToken(TOKEN);
+		let settleDelete: (result: WriteResult) => void = () => {};
+		deleteTicketMock.mockReturnValue(
+			new Promise<WriteResult>((resolve) => {
+				settleDelete = resolve;
+			})
+		);
+		render(Page, { props: { data: foundData(ticketInState('todo')) } });
+
+		await fireEvent.click(deleteButton());
+		await fireEvent.click(screen.getByRole('button', { name: 'Delete ticket' }));
+		await waitFor(() => expect(deleteTicketMock).toHaveBeenCalledTimes(1));
+
+		const confirm = screen.getByRole('button', { name: 'Delete ticket' });
+		const cancel = screen.getByRole('button', { name: 'Cancel' });
+		expect(confirm.hasAttribute('disabled')).toBe(true);
+		expect(cancel.hasAttribute('disabled')).toBe(true);
+
+		await fireEvent.click(confirm);
+		await fireEvent.click(cancel);
+		await fireEvent.keyDown(window, { key: 'Escape' });
+
+		// One confirmation stayed one DELETE.
+		expect(deleteTicketMock).toHaveBeenCalledTimes(1);
+		expect(gotoMock).not.toHaveBeenCalled();
+
+		settleDelete({ applied: true, ticketId: 'T31', diff: { ticketId: 'T31' }, ticket: null });
+
+		await waitFor(() => expect(gotoMock).toHaveBeenCalledWith('/', { invalidateAll: true }));
+	});
+
+	// The latch that remembers "a delete is waiting on a token" must be reconciled with
+	// the store, not just with its own prompt: otherwise it survives indefinitely and a
+	// later clearToken() elsewhere resurrects a confirmation for an abandoned action.
+	it('resumes into the confirmation when the token arrives from elsewhere', async () => {
+		render(Page, { props: { data: foundData(ticketInState('todo')) } });
+
+		await fireEvent.click(deleteButton());
+		expect(screen.getByText('Write token required')).toBeTruthy();
+
+		// Stored by something other than this panel's prompt (e.g. the edit dialog's).
+		setToken(TOKEN);
+
+		await waitFor(() => expect(screen.getByText('Delete ticket?')).toBeTruthy());
+		expect(screen.queryByText('Write token required')).toBeNull();
+		// The token alone still does not delete — the confirmation gates it.
+		expect(deleteTicketMock).not.toHaveBeenCalled();
+
+		// With the latch cleared, dropping the token cannot resurrect the panel.
+		await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+		clearToken();
+
+		await waitFor(() => expect(screen.queryByText('Write token required')).toBeNull());
 	});
 
 	it('abandons the delete when the confirmation is cancelled', async () => {

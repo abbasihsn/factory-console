@@ -231,6 +231,49 @@ describe('EditTicketModal', () => {
 		expect((screen.getByLabelText('Title') as HTMLInputElement).value).toBe('Renamed');
 	});
 
+	// Once the PUT is out there is nothing left to call off, so every dismissal must be
+	// refused until it settles — otherwise the user is told they cancelled a write that
+	// still lands. The component-level tests only prove the prop disables buttons; this
+	// proves `EditTicketModal` actually raises it around the write and passes it down.
+	it('refuses every dismissal while the apply is in flight', async () => {
+		setToken(TOKEN);
+		previewWriteMock.mockResolvedValue(PREVIEW);
+		let settleApply: (result: WriteResult) => void = () => {};
+		updateTicketMock.mockReturnValue(
+			new Promise<WriteResult>((resolve) => {
+				settleApply = resolve;
+			})
+		);
+		const props = baseProps();
+		render(EditTicketModal, { props });
+
+		await fireEvent.click(saveChangesButton());
+		await waitFor(() => expect(previewWriteMock).toHaveBeenCalledTimes(1));
+		await fireEvent.click(confirmSaveButton());
+		await waitFor(() => expect(updateTicketMock).toHaveBeenCalledTimes(1));
+
+		// The write is still in flight here — nothing has resolved it yet.
+		const cancel = screen.getByRole('button', { name: 'Cancel' });
+		expect(cancel.hasAttribute('disabled')).toBe(true);
+		expect(confirmSaveButton().hasAttribute('disabled')).toBe(true);
+
+		await fireEvent.click(cancel);
+		await fireEvent.click(confirmSaveButton());
+		await fireEvent.keyDown(window, { key: 'Escape' });
+		// The host dialog's Close is reachable once the review dialog's controls are
+		// all disabled, so it is guarded too.
+		await fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+
+		// One confirmation stayed one write, and nothing closed over it.
+		expect(updateTicketMock).toHaveBeenCalledTimes(1);
+		expect(props.onClose).not.toHaveBeenCalled();
+		expect(props.onSaved).not.toHaveBeenCalled();
+
+		settleApply(APPLIED);
+
+		await waitFor(() => expect(props.onSaved).toHaveBeenCalledTimes(1));
+	});
+
 	// The 401 detour is the seam where the flow hands control back to the prompt and
 	// then resumes: the token is dropped, the edit is held, and the write must go
 	// out again — once — with the token pasted next.
