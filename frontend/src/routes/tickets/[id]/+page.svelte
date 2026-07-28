@@ -205,8 +205,8 @@
 					<!-- `alert`: unlike the bare prompt this is a failure the user must act
 					     on, and the two are otherwise indistinguishable on screen. -->
 					<p role="alert" class="mb-2 text-xs text-danger">
-						The server rejected the token that was held, so it has been discarded. Paste the
-						current one to delete this ticket.
+						The server rejected the token that was held, so it has been discarded. Paste the current
+						one to delete this ticket.
 					</p>
 				{/if}
 				<!-- Saving the token re-enters `startDelete`, which now opens the

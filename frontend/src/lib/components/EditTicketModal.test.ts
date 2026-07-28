@@ -465,9 +465,7 @@ describe('EditTicketModal', () => {
 		// …and so do the FIELDS: `TicketForm` snapshots `initial` once, so without the
 		// `{#key}` these would still hold T70's values while the dialog applies as T71.
 		expect((screen.getByLabelText('Ticket id') as HTMLInputElement).value).toBe('T71');
-		expect((screen.getByLabelText('Title') as HTMLInputElement).value).toBe(
-			'A different ticket'
-		);
+		expect((screen.getByLabelText('Title') as HTMLInputElement).value).toBe('A different ticket');
 	});
 
 	// An id-only guard misses this: the layout `invalidateAll()`s on every SSE bump,

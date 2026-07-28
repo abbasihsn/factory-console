@@ -362,8 +362,8 @@
 					     replaces a prompt that would otherwise look identical to the
 					     plain "no token yet" case. -->
 					<p role="alert" class="mb-2 text-xs text-danger">
-						The server rejected the token that was held, so it has been discarded. Paste the
-						current one to continue — your edit is still here.
+						The server rejected the token that was held, so it has been discarded. Paste the current
+						one to continue — your edit is still here.
 					</p>
 				{/if}
 				<WriteTokenPrompt />
