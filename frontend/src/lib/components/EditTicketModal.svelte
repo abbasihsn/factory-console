@@ -152,19 +152,21 @@
 	/**
 	 * Route a failed write: a REJECTED TOKEN is not a terminal error.
 	 *
-	 * A 401 means the token we hold is known bad — it is the case
-	 * {@link clearToken} exists for. Dropping it and re-parking `retry` behind the
-	 * prompt is what lets the user paste the current token and have the write
-	 * resume; leaving it stored would make every further attempt fail against a
-	 * credential already rejected, with nothing in the app to replace it (the
-	 * prompts only appear when NO token is held).
+	 * Takes the already-normalized error and an already-dropped token — the caller
+	 * clears a known-bad credential BEFORE the attempt/sequence guard (see
+	 * `runPreview` / `applyEdit`), because the token is wrong for every write on the
+	 * page, not just this one; gating that behind "is this attempt still current"
+	 * left an abandoned request's 401 sitting uncleared in `sessionStorage`, resent
+	 * on every later write. This function only decides what an attempt that IS still
+	 * current shows on screen.
 	 *
 	 * The review dialog is closed first because the prompt renders inside the form
 	 * dialog, which sits behind that dialog's backdrop and outside its focus trap —
-	 * leaving it open would show a prompt nobody can click or tab to.
+	 * leaving it open would show a prompt nobody can click or tab to. `preview` is
+	 * deliberately left alone: `applyEdit` re-opens the dialog on resume and needs the
+	 * already-reviewed diff still there, not "No preview to review yet".
 	 */
-	function handleWriteFailure(err: unknown, retry: (token: string) => void): void {
-		const apiError = normalizeError(err);
+	function handleWriteFailure(apiError: ApiError, retry: (token: string) => void): void {
 		if (apiError.code !== WRITE_TOKEN_INVALID_CODE) {
 			writeError = apiError;
 			// The review dialog is the ONLY place this component renders a write error,
@@ -176,12 +178,11 @@
 			previewOpen = true;
 			return;
 		}
-		clearToken();
 		previewOpen = false;
-		preview = null;
 		writeError = null;
 		tokenRejected = true;
-		// The token is null now, so this parks `retry` and raises the prompt.
+		// The token is null now (the caller already cleared it), so this parks `retry`
+		// and raises the prompt.
 		withToken(retry);
 	}
 
@@ -198,8 +199,13 @@
 			if (seq !== attempt) return;
 			preview = result;
 		} catch (err) {
+			const apiError = normalizeError(err);
+			// Drop a known-bad token even for an abandoned attempt — see
+			// `handleWriteFailure`'s doc comment for why this cannot wait on the guard
+			// below.
+			if (apiError.code === WRITE_TOKEN_INVALID_CODE) clearToken();
 			if (seq !== attempt) return;
-			handleWriteFailure(err, (retryToken) => void runPreview(body, retryToken));
+			handleWriteFailure(apiError, (retryToken) => void runPreview(body, retryToken));
 		} finally {
 			if (seq === attempt) busy = false;
 		}
@@ -213,6 +219,12 @@
 	}
 
 	async function applyEdit(body: TicketUpdate, token: string): Promise<void> {
+		// Re-assert the dialog, symmetric with `runPreview` opening it up front:
+		// `withToken` may have closed it while parking (the token went missing at
+		// Save), and a resumed retry after a 401 closes it too. Without this the apply
+		// runs with the dialog torn down — no diff, no spinner, and a Close button
+		// that looks live but silently refuses.
+		previewOpen = true;
 		writeError = null;
 		busy = true;
 		applying = true;
@@ -220,12 +232,16 @@
 		try {
 			await updateTicket(ticket.id, body, token);
 		} catch (err) {
+			const apiError = normalizeError(err);
+			// See `handleWriteFailure`'s doc comment: drop a known-bad token even for an
+			// abandoned attempt, before the guard below can short-circuit past it.
+			if (apiError.code === WRITE_TOKEN_INVALID_CODE) clearToken();
 			if (seq !== attempt) return;
 			// Nothing was written, so the dialog stays open on the failure rather than
 			// closing over it. A rejected token re-raises the prompt and resumes THIS
 			// body once a good one is pasted; any other failure is reported on the
 			// review dialog, from which Cancel returns to the form with the edits intact.
-			handleWriteFailure(err, (retryToken) => void applyEdit(body, retryToken));
+			handleWriteFailure(apiError, (retryToken) => void applyEdit(body, retryToken));
 			return;
 		} finally {
 			busy = false;

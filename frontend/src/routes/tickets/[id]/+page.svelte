@@ -135,6 +135,16 @@
 		try {
 			await deleteTicket(id, token);
 		} catch (err) {
+			// Invalidate a known-bad credential regardless of whether this request is
+			// abandoned: the token is wrong for every write on the page, not just this
+			// one, so dropping it must not be gated behind the ticket-scoped guard below
+			// — otherwise an abandoned request's 401 leaves a rejected token sitting in
+			// `sessionStorage`, resent on every later write until some unrelated 401
+			// happens to land while this same ticket is still shown.
+			const apiError = normalizeError(err);
+			if (apiError.code === WRITE_TOKEN_INVALID_CODE) {
+				clearToken();
+			}
 			// The route can be showing a DIFFERENT ticket by now (a params-only
 			// navigation replaces `data` without unmounting this component, and
 			// neither this request nor the reset effect held it off) — an abandoned
@@ -143,12 +153,10 @@
 			if (id !== shownId) return;
 			deleting = false;
 			confirmDeleteOpen = false;
-			const apiError = normalizeError(err);
 			if (apiError.code === WRITE_TOKEN_INVALID_CODE) {
-				// The held token is known bad — the case `clearToken` exists for. Drop it
-				// so the prompt comes back; keeping it would leave every retry failing
-				// against a rejected credential with no way in the app to replace it.
-				clearToken();
+				// The credential is already dropped above; re-raise the prompt so the
+				// user can paste a working one, since keeping the latch down would leave
+				// every retry failing against a rejected token with no way to replace it.
 				deleteTokenRequested = true;
 				deleteTokenRejected = true;
 			} else {
