@@ -7,6 +7,15 @@
 	// `onSaved` so a host (a dialog, a route) can close or continue afterwards.
 	let { onSaved }: { onSaved?: () => void } = $props();
 
+	// Two prompts can be mounted at once — the detail route raises one for a delete
+	// while the edit dialog raises its own — so these ids must be per-INSTANCE.
+	// Hardcoded ids would repeat in the document, and a label/`aria-describedby`
+	// pointing at a duplicated id resolves to whichever element comes first: one
+	// prompt's label would name the OTHER prompt's input.
+	const uid = $props.id();
+	const inputId = `${uid}-input`;
+	const hintId = `${uid}-hint`;
+
 	let pasted = $state('');
 
 	// Blank (or whitespace-only) input is not a token: keep submit inert rather than
@@ -26,20 +35,18 @@
 </script>
 
 <form class="flex flex-col gap-2" onsubmit={handleSubmit}>
-	<label class="flex flex-col gap-1 text-xs text-muted" for="write-token-input">
-		Write token
-	</label>
+	<label class="flex flex-col gap-1 text-xs text-muted" for={inputId}> Write token </label>
 	<input
-		id="write-token-input"
+		id={inputId}
 		type="password"
 		class="rounded border border-slate-300 bg-surface px-2 py-1 text-sm text-text"
-		aria-describedby="write-token-hint"
+		aria-describedby={hintId}
 		autocomplete="off"
 		spellcheck="false"
 		placeholder="Paste the token"
 		bind:value={pasted}
 	/>
-	<p id="write-token-hint" class="text-xs text-muted">
+	<p id={hintId} class="text-xs text-muted">
 		The server prints this token to its own stderr at startup. Editing is disabled until it is
 		entered; it is kept for this tab only.
 	</p>

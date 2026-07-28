@@ -48,6 +48,13 @@
 	let pendingAction = $state<(() => void) | null>(null);
 	const tokenNeeded = $derived(pendingAction !== null);
 
+	// Why the prompt is up. Raising it silently after a 401 is indistinguishable from
+	// never having held a token, so the user re-pastes the SAME rejected value and
+	// watches it fail again with nothing on screen saying authentication is what
+	// failed. Only the rejection path sets this; the plain no-token detour leaves it
+	// false.
+	let tokenRejected = $state(false);
+
 	// Seeded from the loaded ticket. `dependsOn` / `files` are the two list fields
 	// the form edits as newline text; `provides` is a SCALAR on the wire, and the
 	// read model wraps the stored scalar as a single-element list — so joining is an
@@ -87,6 +94,9 @@
 	}
 
 	function handleSubmit(values: TicketFormValues): void {
+		// A fresh submit is a fresh attempt: whatever a previous one was rejected for
+		// no longer describes this one.
+		tokenRejected = false;
 		const body = toTicketUpdate(values, ticket);
 		pendingBody = body;
 		withToken((token) => void runPreview(body, token));
@@ -110,12 +120,20 @@
 		const apiError = normalizeError(err);
 		if (apiError.code !== WRITE_TOKEN_INVALID_CODE) {
 			writeError = apiError;
+			// The review dialog is the ONLY place this component renders a write error,
+			// so the error state is worth nothing while that dialog is closed. An apply
+			// that fails after a token re-entry is exactly that case — the 401 branch
+			// below already tore the dialog down — and without reopening it the write
+			// would fail in complete silence, leaving the edit looking applied.
+			// Re-asserting `true` is a no-op on every path where it is already open.
+			previewOpen = true;
 			return;
 		}
 		clearToken();
 		previewOpen = false;
 		preview = null;
 		writeError = null;
+		tokenRejected = true;
 		// The token is null now, so this parks `retry` and raises the prompt.
 		withToken(retry);
 	}
@@ -168,6 +186,7 @@
 		pendingBody = null;
 		pendingAction = null;
 		writeError = null;
+		tokenRejected = false;
 	}
 
 	// The `ticket` being edited can be REPLACED under this component: the detail route
@@ -235,6 +254,15 @@
 			     form would discard the values the user just submitted. -->
 			<section class="mb-4 rounded border border-slate-300 bg-bg p-3">
 				<h3 class="mb-2 text-sm font-semibold text-text">Write token required</h3>
+				{#if tokenRejected}
+					<!-- `alert`: this one IS a failure the user has to act on, and it
+					     replaces a prompt that would otherwise look identical to the
+					     plain "no token yet" case. -->
+					<p role="alert" class="mb-2 text-xs text-danger">
+						The server rejected the token that was held, so it has been discarded. Paste the
+						current one to continue — your edit is still here.
+					</p>
+				{/if}
 				<WriteTokenPrompt onSaved={handleTokenSaved} />
 			</section>
 		{/if}

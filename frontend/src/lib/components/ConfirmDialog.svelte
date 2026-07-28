@@ -30,11 +30,28 @@
 		onConfirm: () => void;
 		onCancel: () => void;
 	} = $props();
+
+	// Both decisions are guarded in the handler, not only by `disabled` on the
+	// button: the attribute is what a mouse sees, while these are what actually
+	// hold — and Escape and the backdrop never had an attribute to check.
+	function handleConfirm(): void {
+		if (busy) return;
+		onConfirm();
+	}
+
+	// Dismissal cannot recall a write already in flight, so while `busy` this dialog
+	// must not LOOK dismissable. Every route out — Cancel, Escape, the backdrop —
+	// goes through this guard: closing over a running action would tell the user
+	// they stopped something that is still going to happen.
+	function handleCancel(): void {
+		if (busy) return;
+		onCancel();
+	}
 </script>
 
 <ModalShell
 	{open}
-	{onCancel}
+	onCancel={handleCancel}
 	labelledBy="confirm-dialog-title"
 	describedBy="confirm-dialog-message"
 	panelClass="w-full max-w-md p-4"
@@ -44,8 +61,9 @@
 	<div class="mt-4 flex justify-end gap-2">
 		<button
 			type="button"
-			class="rounded border border-slate-300 px-3 py-1 text-sm text-text hover:bg-bg"
-			onclick={onCancel}
+			class="rounded border border-slate-300 px-3 py-1 text-sm text-text hover:bg-bg disabled:cursor-not-allowed disabled:opacity-60"
+			disabled={busy}
+			onclick={handleCancel}
 		>
 			Cancel
 		</button>
@@ -55,7 +73,7 @@
 				? 'bg-danger'
 				: 'bg-accent'}"
 			disabled={busy}
-			onclick={onConfirm}
+			onclick={handleConfirm}
 		>
 			{confirmLabel}
 		</button>

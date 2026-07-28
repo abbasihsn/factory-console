@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import { get } from 'svelte/store';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The modal is the ONE piece of the edit flow that talks to the API, so the barrel
@@ -11,7 +12,7 @@ import { previewWrite, updateTicket } from '$lib/api';
 import { ApiError } from '$lib/api/errors';
 import type { Ticket, WritePreview, WriteResult } from '$lib/api';
 import EditTicketModal from '$lib/components/EditTicketModal.svelte';
-import { clearToken, setToken } from '$lib/stores/writeToken';
+import { clearToken, setToken, writeToken } from '$lib/stores/writeToken';
 
 const previewWriteMock = vi.mocked(previewWrite);
 const updateTicketMock = vi.mocked(updateTicket);
@@ -228,6 +229,131 @@ describe('EditTicketModal', () => {
 		expect(props.onSaved).not.toHaveBeenCalled();
 		expect(props.onClose).not.toHaveBeenCalled();
 		expect((screen.getByLabelText('Title') as HTMLInputElement).value).toBe('Renamed');
+	});
+
+	// The 401 detour is the seam where the flow hands control back to the prompt and
+	// then resumes: the token is dropped, the edit is held, and the write must go
+	// out again — once — with the token pasted next.
+	describe('when the held token is rejected', () => {
+		it('drops the token, says so, and resumes the dry-run with the new one', async () => {
+			setToken(TOKEN);
+			previewWriteMock.mockRejectedValueOnce(
+				new ApiError({ code: 'write_token_invalid', message: 'Bad token.', status: 401 })
+			);
+			previewWriteMock.mockResolvedValueOnce(PREVIEW);
+			render(EditTicketModal, { props: baseProps() });
+
+			await fireEvent.click(saveChangesButton());
+
+			// The prompt is back, and it explains WHY rather than looking like a
+			// first-time request for a token nobody had entered.
+			expect(await screen.findByText('Write token required')).toBeTruthy();
+			expect(screen.getByRole('alert').textContent).toContain('rejected');
+			// The rejected token was discarded, not left to fail every retry.
+			expect(get(writeToken)).toBeNull();
+
+			await fireEvent.input(screen.getByLabelText('Write token'), {
+				target: { value: 'fresh-token' }
+			});
+			await fireEvent.click(screen.getByRole('button', { name: 'Save token' }));
+
+			await waitFor(() => expect(previewWriteMock).toHaveBeenCalledTimes(2));
+			expect(previewWriteMock).toHaveBeenLastCalledWith(
+				{ verb: 'update', id: 'T70', body: UNCHANGED_BODY },
+				'fresh-token'
+			);
+			expect(await screen.findByText('+new title')).toBeTruthy();
+		});
+
+		it('resumes the APPLY with the reviewed body, writing it exactly once', async () => {
+			setToken(TOKEN);
+			previewWriteMock.mockResolvedValue(PREVIEW);
+			updateTicketMock.mockRejectedValueOnce(
+				new ApiError({ code: 'write_token_invalid', message: 'Bad token.', status: 401 })
+			);
+			updateTicketMock.mockResolvedValueOnce(APPLIED);
+			const props = baseProps();
+			render(EditTicketModal, { props });
+
+			await fireEvent.input(screen.getByLabelText('Title'), { target: { value: 'Renamed' } });
+			await fireEvent.click(saveChangesButton());
+			await waitFor(() => expect(previewWriteMock).toHaveBeenCalledTimes(1));
+			await fireEvent.click(confirmSaveButton());
+
+			await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
+			expect(get(writeToken)).toBeNull();
+			expect(props.onSaved).not.toHaveBeenCalled();
+
+			await fireEvent.input(screen.getByLabelText('Write token'), {
+				target: { value: 'fresh-token' }
+			});
+			await fireEvent.click(screen.getByRole('button', { name: 'Save token' }));
+
+			await waitFor(() => expect(props.onSaved).toHaveBeenCalledTimes(1));
+			// The retry sent the body that was REVIEWED, and the rejected attempt did
+			// not also land: one confirmation is one write.
+			expect(updateTicketMock).toHaveBeenCalledTimes(2);
+			expect(updateTicketMock).toHaveBeenLastCalledWith(
+				'T70',
+				{ ...UNCHANGED_BODY, title: 'Renamed' },
+				'fresh-token'
+			);
+		});
+
+		// The 401 branch tears the review dialog down to raise the prompt. Whatever
+		// fails NEXT still has to be visible, or the write fails in silence and the
+		// edit looks applied.
+		it('still shows a non-401 failure of the resumed apply', async () => {
+			setToken(TOKEN);
+			previewWriteMock.mockResolvedValue(PREVIEW);
+			updateTicketMock.mockRejectedValueOnce(
+				new ApiError({ code: 'write_token_invalid', message: 'Bad token.', status: 401 })
+			);
+			updateTicketMock.mockRejectedValueOnce(
+				new ApiError({ code: 'write_conflict', message: 'Changed on disk.', status: 409 })
+			);
+			const props = baseProps();
+			render(EditTicketModal, { props });
+
+			await fireEvent.click(saveChangesButton());
+			await waitFor(() => expect(previewWriteMock).toHaveBeenCalledTimes(1));
+			await fireEvent.click(confirmSaveButton());
+			await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
+
+			await fireEvent.input(screen.getByLabelText('Write token'), {
+				target: { value: 'fresh-token' }
+			});
+			await fireEvent.click(screen.getByRole('button', { name: 'Save token' }));
+
+			expect(await screen.findByText('write_conflict')).toBeTruthy();
+			expect(screen.getByText('Changed on disk.')).toBeTruthy();
+			expect(props.onSaved).not.toHaveBeenCalled();
+		});
+	});
+
+	// The route reuses this instance across a params-only navigation, so `ticket` can
+	// be swapped under an in-progress edit. `applyEdit` sends the CURRENT `ticket.id`,
+	// so a diff reviewed for one ticket must never survive into another.
+	it('drops an in-progress review when the ticket is replaced', async () => {
+		setToken(TOKEN);
+		previewWriteMock.mockResolvedValue(PREVIEW);
+		const props = baseProps();
+		const { rerender } = render(EditTicketModal, { props });
+
+		await fireEvent.click(saveChangesButton());
+		await waitFor(() => expect(previewWriteMock).toHaveBeenCalledTimes(1));
+		expect(screen.getByText('+new title')).toBeTruthy();
+
+		await rerender({ ...props, ticket: { ...ticket, id: 'T71', title: 'A different ticket' } });
+
+		// The review dialog is gone with it, so there is no reviewed body left that a
+		// confirm could apply to the ticket that replaced it.
+		expect(screen.queryByText('+new title')).toBeNull();
+		expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+		expect(updateTicketMock).not.toHaveBeenCalled();
+		// The heading follows the new ticket, so the dialog is not still claiming to
+		// edit the one whose diff was just discarded.
+		expect(screen.getByRole('heading', { name: /T71/ })).toBeTruthy();
 	});
 
 	it('closing writes nothing and reports the close', async () => {

@@ -34,9 +34,20 @@
 	// confirmation, and what "written" means for the view it is showing.
 	let editOpen = $state(false);
 	let confirmDeleteOpen = $state(false);
-	let deleteTokenNeeded = $state(false);
+	let deleteTokenRequested = $state(false);
 	let deleting = $state(false);
 	let deleteError = $state<ApiError | null>(null);
+
+	// Why the prompt is up. A 401 that silently re-raises the bare prompt looks
+	// exactly like never having held a token, so the user re-pastes the SAME
+	// rejected value with nothing on screen saying authentication is what failed.
+	let deleteTokenRejected = $state(false);
+
+	// The prompt is only for a delete that is WAITING on a token, so it is gated on
+	// the store as well as the request: a token pasted into the edit dialog's prompt
+	// satisfies this one too, and a panel that stayed up after the token existed
+	// would invite a second paste for a delete that no longer needs one.
+	const deleteTokenNeeded = $derived(deleteTokenRequested && $writeToken === null);
 
 	// One predicate for both buttons and the banner (`EditGate` calls the same
 	// `isEditable`), so what the banner explains is exactly what is disabled. A
@@ -58,7 +69,8 @@
 		shownId = id;
 		editOpen = false;
 		confirmDeleteOpen = false;
-		deleteTokenNeeded = false;
+		deleteTokenRequested = false;
+		deleteTokenRejected = false;
 		deleting = false;
 		deleteError = null;
 	});
@@ -73,10 +85,13 @@
 	function startDelete(): void {
 		deleteError = null;
 		if (get(writeToken) === null) {
-			deleteTokenNeeded = true;
+			deleteTokenRequested = true;
 			return;
 		}
-		deleteTokenNeeded = false;
+		// A token is held again, so whatever the last one was rejected for no longer
+		// describes this attempt.
+		deleteTokenRequested = false;
+		deleteTokenRejected = false;
 		confirmDeleteOpen = true;
 	}
 
@@ -95,7 +110,7 @@
 		if (token === null) {
 			// The token was dropped between the prompt and the confirmation.
 			confirmDeleteOpen = false;
-			deleteTokenNeeded = true;
+			deleteTokenRequested = true;
 			return;
 		}
 		deleting = true;
@@ -109,7 +124,8 @@
 				// so the prompt comes back; keeping it would leave every retry failing
 				// against a rejected credential with no way in the app to replace it.
 				clearToken();
-				deleteTokenNeeded = true;
+				deleteTokenRequested = true;
+				deleteTokenRejected = true;
 			} else {
 				deleteError = apiError;
 			}
@@ -168,6 +184,14 @@
 		{#if deleteTokenNeeded}
 			<section class="rounded border border-slate-300 bg-bg p-3">
 				<h2 class="mb-2 text-sm font-semibold text-text">Write token required</h2>
+				{#if deleteTokenRejected}
+					<!-- `alert`: unlike the bare prompt this is a failure the user must act
+					     on, and the two are otherwise indistinguishable on screen. -->
+					<p role="alert" class="mb-2 text-xs text-danger">
+						The server rejected the token that was held, so it has been discarded. Paste the
+						current one to delete this ticket.
+					</p>
+				{/if}
 				<!-- Saving the token re-enters `startDelete`, which now opens the
 				     confirmation — the delete still needs confirming, not just a token. -->
 				<WriteTokenPrompt onSaved={startDelete} />

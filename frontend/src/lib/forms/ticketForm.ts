@@ -87,7 +87,8 @@ export function serializeList(items: string[]): string {
  *
  * `track` / `milestone` have no form field, so the form has no user intent to send
  * for either. The server distinguishes the two ways of saying nothing (see
- * `_merge_front_matter` in `server/factory_console/file_adapter/write_render.py`):
+ * `_overlay_front_matter` for the `.md` header, and `_merge_edit` for the manifest
+ * entry, both in `server/factory_console/file_adapter/write_render.py`):
  * an **omitted** key changes nothing, while an explicit `null` MEANS "clear it".
  * So they are echoed only when the loaded ticket actually carries a value, and
  * OMITTED otherwise — never sent as `null`.
