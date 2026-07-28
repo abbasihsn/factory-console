@@ -488,6 +488,39 @@ describe('ticket detail write affordances', () => {
 		expect(deleteButton().hasAttribute('disabled')).toBe(false);
 	});
 
+	// Neither `confirmDelete` nor the per-ticket reset effect had a guard against a
+	// navigation completing while the delete was still in flight, so an abandoned
+	// delete's result used to settle against whatever ticket replaced it.
+	it('does not attribute an abandoned delete onto the ticket now shown', async () => {
+		setToken(TOKEN);
+		let rejectDelete: (err: unknown) => void = () => {};
+		deleteTicketMock.mockReturnValueOnce(
+			new Promise<WriteResult>((_resolve, reject) => {
+				rejectDelete = reject;
+			})
+		);
+		const { rerender } = render(Page, { props: { data: foundData(ticketInState('todo')) } });
+
+		await fireEvent.click(deleteButton());
+		await fireEvent.click(screen.getByRole('button', { name: 'Delete ticket' }));
+		await waitFor(() => expect(deleteTicketMock).toHaveBeenCalledTimes(1));
+
+		// A params-only navigation to a different ticket completes while the delete
+		// above is still out.
+		const nextTicket = { ...ticketInState('todo'), id: 'T32', title: 'A different ticket' };
+		await rerender({ data: foundData(nextTicket) });
+
+		rejectDelete(
+			new ApiError({ code: 'ticket_not_mutable', message: 'The lane owns it.', status: 409 })
+		);
+		await Promise.resolve();
+
+		// The abandoned delete's failure must not paint onto the new ticket, and its
+		// buttons must not be left stuck disabled with nothing left to wait for.
+		expect(screen.queryByText('ticket_not_mutable')).toBeNull();
+		expect(deleteButton().hasAttribute('disabled')).toBe(false);
+	});
+
 	// Both the route's delete prompt and the edit dialog's can be raised at once, and
 	// each labels its own input — a shared hardcoded id would point both labels at
 	// whichever input came first in the document.

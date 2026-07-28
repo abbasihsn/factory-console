@@ -135,6 +135,14 @@
 		try {
 			await deleteTicket(id, token);
 		} catch (err) {
+			// The route can be showing a DIFFERENT ticket by now (a params-only
+			// navigation replaces `data` without unmounting this component, and
+			// neither this request nor the reset effect held it off) — an abandoned
+			// request's result must not paint onto whatever ticket is shown now,
+			// and must not clobber ITS OWN independent `deleting`/error state.
+			if (id !== shownId) return;
+			deleting = false;
+			confirmDeleteOpen = false;
 			const apiError = normalizeError(err);
 			if (apiError.code === WRITE_TOKEN_INVALID_CODE) {
 				// The held token is known bad — the case `clearToken` exists for. Drop it
@@ -146,11 +154,10 @@
 			} else {
 				deleteError = apiError;
 			}
-			deleting = false;
 			return;
-		} finally {
-			confirmDeleteOpen = false;
 		}
+		if (id !== shownId) return;
+		confirmDeleteOpen = false;
 		// The ticket this route renders is gone, so there is nothing to refresh —
 		// leave for the list, forcing its load to re-run so the deleted row is gone.
 		// `deleting` is deliberately NOT cleared: the buttons must not re-enable for a

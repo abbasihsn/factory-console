@@ -289,10 +289,18 @@
 			return;
 		}
 		const wasReviewing = previewOpen;
+		// A write parked behind the token prompt (`withToken` returned without
+		// starting a request) hits neither `applying` nor `busy` above, so without
+		// this the reset below drops `pendingAction`/`pendingBody` with nothing on
+		// screen saying so — pasting the token then does nothing.
+		const wasParked = pendingAction !== null;
 		reviewedBasis = basis;
 		resetWriteState();
-		if (wasReviewing) {
-			// The user was looking at that diff (or at the failure of applying it), so it
+		// Gated on `open`: this component stays mounted across the host closing, so
+		// surfacing the error here while closed would leave it stale on `previewOpen`
+		// and paint over the next Edit before anything is even submitted.
+		if (open && (wasReviewing || wasParked)) {
+			// The user was looking at that diff (or waiting on a token for it), so it
 			// must not simply vanish. Keep the dialog up and say why it went away. Save
 			// stays inert: `preview` and `pendingBody` are gone, so nothing stale can be
 			// applied from here — only Close, then a fresh dry-run against the new content.
@@ -307,6 +315,14 @@
 	// would report a cancellation for an edit that still lands.
 	function handlePreviewCancel(): void {
 		if (applying) return;
+		// Supersede whatever dry-run is in flight, same as `resetWriteState`: without
+		// this, a cancelled-but-still-settling dry-run's `finally`/`catch` still write
+		// into `preview`/`writeError`/`previewOpen` for a dialog the user just closed.
+		// `busy` is cleared directly rather than via `resetWriteState()` because that
+		// request's own `finally` will now decline to clear it (its `seq` no longer
+		// matches `attempt`), and nothing else would.
+		attempt += 1;
+		busy = false;
 		previewOpen = false;
 		preview = null;
 		pendingBody = null;

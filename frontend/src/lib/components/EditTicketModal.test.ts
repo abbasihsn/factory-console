@@ -338,6 +338,36 @@ describe('EditTicketModal', () => {
 		expect(saveChangesButton().hasAttribute('disabled')).toBe(false);
 	});
 
+	// Cancelling the review is reachable while a dry-run is still loading (the
+	// spinner state), not just once it has landed. `handlePreviewCancel` did not
+	// used to supersede that request, so its settling failure reopened the dialog
+	// the user had just dismissed.
+	it('discards an abandoned dry-run when cancelled while it is still loading', async () => {
+		setToken(TOKEN);
+		let rejectPreview: (err: unknown) => void = () => {};
+		previewWriteMock.mockReturnValueOnce(
+			new Promise<WritePreview>((_resolve, reject) => {
+				rejectPreview = reject;
+			})
+		);
+		render(EditTicketModal, { props: baseProps() });
+
+		await fireEvent.click(saveChangesButton());
+		expect(await screen.findByText('Loading preview…')).toBeTruthy();
+
+		await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+		expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+
+		rejectPreview(new ApiError({ code: 'internal_error', message: 'Boom.', status: 500 }));
+		await waitFor(() => expect(previewWriteMock).toHaveBeenCalledTimes(1));
+
+		// The abandoned attempt's failure does not resurrect the review dialog, and the
+		// form is not left disabled behind a request nobody is waiting for.
+		expect(screen.queryByText('internal_error')).toBeNull();
+		expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+		expect(saveChangesButton().hasAttribute('disabled')).toBe(false);
+	});
+
 	// The 401 detour is the seam where the flow hands control back to the prompt and
 	// then resumes: the token is dropped, the edit is held, and the write must go
 	// out again — once — with the token pasted next.
@@ -494,6 +524,25 @@ describe('EditTicketModal', () => {
 		expect(screen.getByText('ticket_changed_on_disk')).toBeTruthy();
 		expect(confirmSaveButton().hasAttribute('disabled')).toBe(true);
 		expect(updateTicketMock).not.toHaveBeenCalled();
+	});
+
+	// A write parked behind the token prompt sets neither `applying` nor `busy`, so
+	// the reset effect used to drop it with nothing on screen saying so — pasting
+	// the token afterwards did nothing.
+	it('surfaces the ticket-changed error instead of silently dropping a parked write', async () => {
+		const props = baseProps();
+		const { rerender } = render(EditTicketModal, { props });
+
+		await fireEvent.click(saveChangesButton());
+		expect(screen.getByText('Write token required')).toBeTruthy();
+		expect(previewWriteMock).not.toHaveBeenCalled();
+
+		// The ticket changes underneath while the write is still parked — before any
+		// request has even started.
+		await rerender({ ...props, ticket: { ...ticket, id: 'T71', title: 'A different ticket' } });
+
+		expect(screen.queryByText('Write token required')).toBeNull();
+		expect(screen.getByText('ticket_changed_on_disk')).toBeTruthy();
 	});
 
 	// The route raises its own prompt for delete, and that one's `onSaved` knows
