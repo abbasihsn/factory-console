@@ -45,6 +45,24 @@
 	// that still lands.
 	let applying = $state(false);
 
+	// Which attempt the in-flight request belongs to. A request cannot be recalled, so
+	// the only way to make an ABANDONED one harmless is to ignore what it returns: a
+	// dry-run whose dialog was closed, or that the ticket changed underneath, must not
+	// write `preview` / `writeError` when it finally settles. Without this its failure
+	// re-opens the review dialog over whatever the user is doing next — the next click
+	// on Edit shows the previous attempt's error before anything was even submitted.
+	let attempt = $state(0);
+
+	// Reported when the loaded ticket changes under a review that is on screen. NOT from
+	// the server — no write was attempted — but shaped as an `ApiError` so it renders
+	// through the same `ApiErrorView` as a real failure instead of inventing a second
+	// way to show one.
+	const TICKET_CHANGED_ERROR: ApiError = {
+		code: 'ticket_changed_on_disk',
+		message:
+			'This ticket changed on disk, so the reviewed diff no longer describes what would be written. Close and review the edit again.'
+	};
+
 	// The body the preview was built from. The apply MUST reuse it verbatim —
 	// re-reading the form would let a post-preview keystroke write something the
 	// user never reviewed.
@@ -163,12 +181,16 @@
 		preview = null;
 		writeError = null;
 		busy = true;
+		const seq = attempt;
 		try {
-			preview = await previewWrite({ verb: 'update', id: ticket.id, body }, token);
+			const result = await previewWrite({ verb: 'update', id: ticket.id, body }, token);
+			if (seq !== attempt) return;
+			preview = result;
 		} catch (err) {
+			if (seq !== attempt) return;
 			handleWriteFailure(err, (retryToken) => void runPreview(body, retryToken));
 		} finally {
-			busy = false;
+			if (seq === attempt) busy = false;
 		}
 	}
 
@@ -183,9 +205,11 @@
 		writeError = null;
 		busy = true;
 		applying = true;
+		const seq = attempt;
 		try {
 			await updateTicket(ticket.id, body, token);
 		} catch (err) {
+			if (seq !== attempt) return;
 			// Nothing was written, so the dialog stays open on the failure rather than
 			// closing over it. A rejected token re-raises the prompt and resumes THIS
 			// body once a good one is pasted; any other failure is reported on the
@@ -196,17 +220,24 @@
 			busy = false;
 			applying = false;
 		}
+		if (seq !== attempt) return;
 		resetWriteState();
 		onSaved();
 	}
 
+	// Also SUPERSEDES anything in flight: whatever comes back for the attempt being
+	// abandoned here must not write its result into the state this just cleared. And
+	// since an abandoned dry-run's `finally` will now decline to clear `busy`, it is
+	// cleared here — otherwise the form stays disabled with no request to wait for.
 	function resetWriteState(): void {
+		attempt += 1;
 		previewOpen = false;
 		preview = null;
 		pendingBody = null;
 		pendingAction = null;
 		writeError = null;
 		tokenRejected = false;
+		busy = false;
 	}
 
 	// What the reviewed diff is BASED on — every field that feeds `toTicketUpdate`,
@@ -245,18 +276,29 @@
 	let reviewedBasis: string | null = null; // plain: written by the effect, never read reactively
 	$effect(() => {
 		const basis = editBasis;
-		// Never tear the review dialog down mid-apply. An SSE bump can land while the
-		// PUT is in flight, and `resetWriteState()` would close the dialog the apply is
-		// running under — the very dismissal `handlePreviewCancel` refuses. `applying`
-		// is `$state`, so this effect re-runs and resets once the write settles.
-		if (applying) {
+		// Never reset across a request in flight — `busy` covers the dry-run, `applying`
+		// the write. An SSE bump can land mid-request, and resetting then would either
+		// close the dialog the apply is running under (the dismissal
+		// `handlePreviewCancel` refuses) or wipe the very error the settling request is
+		// about to report. Both are `$state`, so this effect re-runs and resets, with
+		// the basis re-checked, once the request settles.
+		if (applying || busy) {
 			return;
 		}
 		if (basis === reviewedBasis) {
 			return;
 		}
+		const wasReviewing = previewOpen;
 		reviewedBasis = basis;
 		resetWriteState();
+		if (wasReviewing) {
+			// The user was looking at that diff (or at the failure of applying it), so it
+			// must not simply vanish. Keep the dialog up and say why it went away. Save
+			// stays inert: `preview` and `pendingBody` are gone, so nothing stale can be
+			// applied from here — only Close, then a fresh dry-run against the new content.
+			writeError = TICKET_CHANGED_ERROR;
+			previewOpen = true;
+		}
 	});
 
 	// Cancelling the review returns to the form with the edits intact — the form

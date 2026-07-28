@@ -274,6 +274,70 @@ describe('EditTicketModal', () => {
 		await waitFor(() => expect(props.onSaved).toHaveBeenCalledTimes(1));
 	});
 
+	// The reset effect must not fire mid-apply: an SSE bump replaces the ticket in place
+	// on any `invalidateAll()`, and resetting then would tear the review dialog down
+	// around a PUT that is still in flight.
+	it('does not reset the review while the apply is in flight, then applies cleanly', async () => {
+		setToken(TOKEN);
+		previewWriteMock.mockResolvedValue(PREVIEW);
+		let settleApply: (result: WriteResult) => void = () => {};
+		updateTicketMock.mockReturnValue(
+			new Promise<WriteResult>((resolve) => {
+				settleApply = resolve;
+			})
+		);
+		const props = baseProps();
+		const { rerender } = render(EditTicketModal, { props });
+
+		await fireEvent.click(saveChangesButton());
+		await waitFor(() => expect(previewWriteMock).toHaveBeenCalledTimes(1));
+		await fireEvent.click(confirmSaveButton());
+		await waitFor(() => expect(updateTicketMock).toHaveBeenCalledTimes(1));
+
+		// Same ticket, new content — exactly what an SSE-driven reload delivers.
+		await rerender({
+			...props,
+			ticket: { ...ticket, bodyMarkdown: '## Context\n\nChanged mid-apply.' }
+		});
+
+		// The dialog the write is running under is still there.
+		expect(screen.getByRole('button', { name: 'Save' })).toBeTruthy();
+		expect(updateTicketMock).toHaveBeenCalledTimes(1);
+
+		settleApply(APPLIED);
+
+		await waitFor(() => expect(props.onSaved).toHaveBeenCalledTimes(1));
+	});
+
+	// A dry-run that was abandoned must not report into a dialog nobody is looking at.
+	it('discards an abandoned dry-run instead of reopening it on the next edit', async () => {
+		setToken(TOKEN);
+		let rejectPreview: (err: unknown) => void = () => {};
+		previewWriteMock.mockReturnValueOnce(
+			new Promise<WritePreview>((_resolve, reject) => {
+				rejectPreview = reject;
+			})
+		);
+		const props = baseProps();
+		render(EditTicketModal, { props });
+
+		await fireEvent.click(saveChangesButton());
+		await waitFor(() => expect(previewWriteMock).toHaveBeenCalledTimes(1));
+
+		// Close while the dry-run is still out — allowed, since nothing is being written.
+		await fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+		expect(props.onClose).toHaveBeenCalledTimes(1);
+
+		rejectPreview(new ApiError({ code: 'internal_error', message: 'Boom.', status: 500 }));
+		await waitFor(() => expect(previewWriteMock).toHaveBeenCalledTimes(1));
+
+		// The abandoned attempt's failure does not resurrect the review dialog, and the
+		// form is not left disabled behind a request nobody is waiting for.
+		expect(screen.queryByText('internal_error')).toBeNull();
+		expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+		expect(saveChangesButton().hasAttribute('disabled')).toBe(false);
+	});
+
 	// The 401 detour is the seam where the flow hands control back to the prompt and
 	// then resumes: the token is dropped, the edit is held, and the write must go
 	// out again — once — with the token pasted next.
@@ -389,10 +453,11 @@ describe('EditTicketModal', () => {
 
 		await rerender({ ...props, ticket: { ...ticket, id: 'T71', title: 'A different ticket' } });
 
-		// The review dialog is gone with it, so there is no reviewed body left that a
-		// confirm could apply to the ticket that replaced it.
+		// The reviewed diff is gone, so there is no body left that a confirm could apply
+		// to the ticket that replaced it — and the dialog says why rather than vanishing.
 		expect(screen.queryByText('+new title')).toBeNull();
-		expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+		expect(screen.getByText('ticket_changed_on_disk')).toBeTruthy();
+		expect(confirmSaveButton().hasAttribute('disabled')).toBe(true);
 		expect(updateTicketMock).not.toHaveBeenCalled();
 		// The heading follows the new ticket, so the dialog is not still claiming to
 		// edit the one whose diff was just discarded.
@@ -424,8 +489,12 @@ describe('EditTicketModal', () => {
 			ticket: { ...ticket, bodyMarkdown: '## Context\n\nRewritten by someone else.' }
 		});
 
+		// The stale diff is dropped and replaced by an explanation, with Save inert — the
+		// user is told why, instead of a dialog silently emptying or applying a diff that
+		// no longer describes the write.
 		expect(screen.queryByText('+new title')).toBeNull();
-		expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+		expect(screen.getByText('ticket_changed_on_disk')).toBeTruthy();
+		expect(confirmSaveButton().hasAttribute('disabled')).toBe(true);
 		expect(updateTicketMock).not.toHaveBeenCalled();
 	});
 

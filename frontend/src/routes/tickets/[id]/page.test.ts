@@ -367,7 +367,9 @@ describe('ticket detail write affordances', () => {
 	// The latch that remembers "a delete is waiting on a token" must be reconciled with
 	// the store, not just with its own prompt: otherwise it survives indefinitely and a
 	// later clearToken() elsewhere resurrects a confirmation for an abandoned action.
-	it('resumes into the confirmation when the token arrives from elsewhere', async () => {
+	// It is DROPPED, not resumed — a token pasted to continue an edit must not throw a
+	// destructive dialog on screen.
+	it('drops the pending delete when the token arrives from elsewhere', async () => {
 		render(Page, { props: { data: foundData(ticketInState('todo')) } });
 
 		await fireEvent.click(deleteButton());
@@ -376,16 +378,20 @@ describe('ticket detail write affordances', () => {
 		// Stored by something other than this panel's prompt (e.g. the edit dialog's).
 		setToken(TOKEN);
 
-		await waitFor(() => expect(screen.getByText('Delete ticket?')).toBeTruthy());
-		expect(screen.queryByText('Write token required')).toBeNull();
-		// The token alone still does not delete — the confirmation gates it.
+		await waitFor(() => expect(screen.queryByText('Write token required')).toBeNull());
+		// No destructive dialog appears off the back of a token stored for something else.
+		expect(screen.queryByText('Delete ticket?')).toBeNull();
 		expect(deleteTicketMock).not.toHaveBeenCalled();
 
-		// With the latch cleared, dropping the token cannot resurrect the panel.
-		await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+		// The latch is gone, so dropping the token cannot resurrect the panel later.
 		clearToken();
 
 		await waitFor(() => expect(screen.queryByText('Write token required')).toBeNull());
+
+		// Deleting is still one click away, and now goes straight to the confirmation.
+		setToken(TOKEN);
+		await fireEvent.click(deleteButton());
+		expect(screen.getByText('Delete ticket?')).toBeTruthy();
 	});
 
 	it('abandons the delete when the confirmation is cancelled', async () => {

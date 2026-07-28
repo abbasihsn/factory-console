@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { untrack } from 'svelte';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { get } from 'svelte/store';
 	import type { PageData } from './$types';
@@ -96,16 +95,21 @@
 		confirmDeleteOpen = true;
 	}
 
-	// Reconcile the latch with the store, the way the edit dialog resumes its parked
-	// action. The token can arrive from the OTHER prompt on the page, which does not
-	// call `startDelete`; without this the latch stays set with no confirmation ever
-	// opening, and a LATER `clearToken()` (the edit flow's 401 path) would re-raise a
-	// delete prompt nobody asked for — pasting into which pops a "Delete ticket?"
-	// confirmation for an action abandoned long before.
+	// Reconcile the latch with the store. The token can arrive from the OTHER prompt on
+	// the page, which does not call `startDelete`; the latch would then stay set forever
+	// with no confirmation ever opening, and a LATER `clearToken()` (the edit flow's 401
+	// path) would re-raise a delete prompt nobody asked for — pasting into which pops a
+	// "Delete ticket?" confirmation for an action abandoned long before.
+	//
+	// Dropping the latch, NOT resuming into the confirmation, is the answer. Resuming
+	// would mean pasting a token to continue an EDIT also throws a destructive dialog on
+	// screen — and `ConfirmDialog` renders after the edit modal, so it would paint on top
+	// and take focus. A delete the user still wants is one more click on Delete.
 	$effect(() => {
 		if ($writeToken === null) return;
 		if (!deleteTokenRequested) return;
-		untrack(startDelete);
+		deleteTokenRequested = false;
+		deleteTokenRejected = false;
 	});
 
 	// Delete deliberately has NO dry-run step, unlike edit: `ConfirmDialog` already

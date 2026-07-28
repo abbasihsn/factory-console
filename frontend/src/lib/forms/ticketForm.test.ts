@@ -206,13 +206,22 @@ describe('toTicketUpdate', () => {
 	describe('mirrored list fields the manifest may not carry', () => {
 		const EMPTY_FORM = { dependsOn: '', provides: '', files: '' };
 
-		it.each(['dependsOn', 'provides', 'files'] as const)(
+		it.each(['dependsOn', 'files'] as const)(
 			'OMITS %s when it is empty on both the form and the loaded ticket',
 			(key) => {
 				const body = toTicketUpdate(values(EMPTY_FORM), ticket());
 				expect(body).not.toHaveProperty(key);
 			}
 		);
+
+		// `provides` gets no such protection: `TicketUpdate` declares it REQUIRED, so it
+		// cannot be omitted without breaking the contract — even though the server's own
+		// schema defaults it. Pinned so the day codegen is refreshed, this is revisited.
+		it('always sends provides, which the contract does not allow omitting', () => {
+			const body = toTicketUpdate(values(EMPTY_FORM), ticket());
+			expect(body).toHaveProperty('provides');
+			expect(body.provides).toBe('');
+		});
 
 		it('still sends what the user actually entered', () => {
 			const body = toTicketUpdate(
