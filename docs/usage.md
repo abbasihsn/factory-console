@@ -103,7 +103,10 @@ paste the value from that stderr line into it. It is held in `sessionStorage`, s
 survives a reload but is **per browser tab** and gone when the tab closes, matching the
 token's own per-process lifetime. If the server is restarted the held token stops
 working; the next write reports that it was rejected, discards it, and asks for the
-current one, resuming what you were doing once you paste it.
+current one. Pasting a fresh token resumes an in-progress **edit** automatically; a
+pending **delete** is not resumed — the confirmation is asked again, since auto-resuming
+a destructive action off the back of an unrelated token paste is not something to do
+without the user looking at it.
 
 The run-state gate above is mirrored in the UI: for a ticket that is not `todo`/`unknown`
 the Edit and Delete buttons are disabled and a banner names the run-state that made it

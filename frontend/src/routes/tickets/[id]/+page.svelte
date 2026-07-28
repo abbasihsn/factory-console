@@ -156,7 +156,14 @@
 			}
 			return;
 		}
-		if (id !== shownId) return;
+		if (id !== shownId) {
+			// The delete still landed on disk even though the route has since moved on to
+			// another ticket, so whatever load functions are active (a list view showing
+			// the now-deleted row, this route's own data) still need refreshing — just
+			// without yanking the user away from the ticket they navigated to.
+			await invalidateAll();
+			return;
+		}
 		confirmDeleteOpen = false;
 		// The ticket this route renders is gone, so there is nothing to refresh —
 		// leave for the list, forcing its load to re-run so the deleted row is gone.

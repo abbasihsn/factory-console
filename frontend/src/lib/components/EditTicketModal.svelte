@@ -403,7 +403,7 @@
 <DiffPreviewModal
 	open={previewOpen && open}
 	{preview}
-	loading={busy}
+	loading={busy && !applying}
 	busy={applying}
 	error={writeError}
 	onConfirm={handleConfirm}
