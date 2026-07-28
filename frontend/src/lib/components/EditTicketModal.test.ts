@@ -159,6 +159,37 @@ describe('EditTicketModal', () => {
 		expect(props.onClose).not.toHaveBeenCalled();
 	});
 
+	// The token can go missing between reviewing the diff and clicking Save (the
+	// sibling delete flow's own 401 clears the shared store) — `handleConfirm` must
+	// close the review dialog before parking, or Save is left looking live behind a
+	// backdrop hiding the very prompt that would let the user continue.
+	it('closes the review dialog and asks for a token that goes missing before Save', async () => {
+		setToken(TOKEN);
+		previewWriteMock.mockResolvedValue(PREVIEW);
+		updateTicketMock.mockResolvedValue(APPLIED);
+		render(EditTicketModal, { props: baseProps() });
+
+		await fireEvent.click(saveChangesButton());
+		await waitFor(() => expect(previewWriteMock).toHaveBeenCalledTimes(1));
+		expect(await screen.findByText('+new title')).toBeTruthy();
+
+		// The token vanishes from under the open review dialog.
+		clearToken();
+		await fireEvent.click(confirmSaveButton());
+
+		// The review dialog is gone rather than left open with a Save that does
+		// nothing, and the token prompt — otherwise unreachable behind its backdrop —
+		// is visible.
+		expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+		expect(screen.getByText('Write token required')).toBeTruthy();
+		expect(updateTicketMock).not.toHaveBeenCalled();
+
+		await fireEvent.input(screen.getByLabelText('Write token'), { target: { value: TOKEN } });
+		await fireEvent.click(screen.getByRole('button', { name: 'Save token' }));
+
+		await waitFor(() => expect(updateTicketMock).toHaveBeenCalledTimes(1));
+	});
+
 	it('prompts for the missing token instead of dry-running, then resumes', async () => {
 		previewWriteMock.mockResolvedValue(PREVIEW);
 		render(EditTicketModal, { props: baseProps() });
@@ -256,6 +287,11 @@ describe('EditTicketModal', () => {
 		const cancel = screen.getByRole('button', { name: 'Cancel' });
 		expect(cancel.hasAttribute('disabled')).toBe(true);
 		expect(confirmSaveButton().hasAttribute('disabled')).toBe(true);
+		// `loading` covers only the dry-run, not the apply: the confirmed diff stays on
+		// screen instead of being replaced by a "Loading preview…" spinner that would
+		// describe a request that is not the one actually in flight.
+		expect(screen.queryByText('Loading preview…')).toBeNull();
+		expect(screen.getByText('+new title')).toBeTruthy();
 
 		await fireEvent.click(cancel);
 		await fireEvent.click(confirmSaveButton());

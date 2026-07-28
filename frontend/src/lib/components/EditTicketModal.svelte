@@ -106,10 +106,21 @@
 	 * `$writeToken` subscription: the value that matters is the one held when the
 	 * request goes out, and reading it here also makes the resume path (below)
 	 * pick up the token the prompt just stored with no ordering subtlety.
+	 *
+	 * Closes the review dialog before parking, same as the 401 branch in
+	 * {@link handleWriteFailure}: the token prompt renders in the FORM dialog, behind
+	 * the review dialog's backdrop and outside its focus trap, so parking behind a
+	 * still-open review dialog raises a prompt nobody can reach and leaves Save
+	 * looking live while it silently does nothing. `handleConfirm` is the one caller
+	 * that can reach here with the review dialog open — the token can go missing
+	 * between opening it and clicking Save, since the sibling delete flow on the same
+	 * route clears the store on its own 401. A no-op for the other callers, which
+	 * either have no dialog open yet or already closed it themselves.
 	 */
 	function withToken(action: (token: string) => void): void {
 		const token = get(writeToken);
 		if (token === null) {
+			previewOpen = false;
 			pendingAction = () => withToken(action);
 			return;
 		}
@@ -397,7 +408,9 @@
 </ModalShell>
 
 <!-- Stacked over the form dialog, which stays mounted so Cancel comes back to the
-     in-progress edit. `loading` covers the apply too, so Save cannot fire twice. -->
+     in-progress edit. `busy={applying}` (not `loading`) is what keeps Save/Cancel inert
+     during the apply; `loading` reflects only the dry-run (`busy && !applying`) so the
+     spinner does not paint over the confirmed diff while the write itself is running. -->
 <!-- Gated on `open` too: the review dialog is stacked ON the form dialog, so it must
      never outlive its host and render parentless over the detail page. -->
 <DiffPreviewModal

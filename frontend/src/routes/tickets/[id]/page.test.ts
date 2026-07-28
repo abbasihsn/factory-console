@@ -521,6 +521,34 @@ describe('ticket detail write affordances', () => {
 		expect(deleteButton().hasAttribute('disabled')).toBe(false);
 	});
 
+	// The one delete branch that refreshes instead of navigating: the delete still
+	// landed on disk even though the route has moved on, so stale load data (e.g. a
+	// list view showing the now-deleted row) must not be left silently unrefreshed.
+	it('refreshes load data instead of navigating when an abandoned delete succeeds', async () => {
+		setToken(TOKEN);
+		let resolveDelete: (result: WriteResult) => void = () => {};
+		deleteTicketMock.mockReturnValueOnce(
+			new Promise<WriteResult>((resolve) => {
+				resolveDelete = resolve;
+			})
+		);
+		const { rerender } = render(Page, { props: { data: foundData(ticketInState('todo')) } });
+
+		await fireEvent.click(deleteButton());
+		await fireEvent.click(screen.getByRole('button', { name: 'Delete ticket' }));
+		await waitFor(() => expect(deleteTicketMock).toHaveBeenCalledTimes(1));
+
+		const nextTicket = { ...ticketInState('todo'), id: 'T32', title: 'A different ticket' };
+		await rerender({ data: foundData(nextTicket) });
+
+		resolveDelete({ applied: true, ticketId: 'T31', diff: { ticketId: 'T31' }, ticket: null });
+		await waitFor(() => expect(invalidateAllMock).toHaveBeenCalledTimes(1));
+
+		// Refreshed in place — the user stays on the ticket they navigated to instead
+		// of being yanked back to the list for a delete they did not just confirm.
+		expect(gotoMock).not.toHaveBeenCalled();
+	});
+
 	// Both the route's delete prompt and the edit dialog's can be raised at once, and
 	// each labels its own input — a shared hardcoded id would point both labels at
 	// whichever input came first in the document.

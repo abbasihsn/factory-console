@@ -94,8 +94,13 @@ export function serializeList(items: string[]): string {
  * since every later edit re-bases off the wiped value. The server refreshes a header
  * key only where the request actually supplied it, so omission is the protection.
  *
- * `provides` is the one exception, and is always sent — see below.
- * It is a trimmed SCALAR, never {@link parseList}ed; {@link TicketFormValues} says why.
+ * `provides` is a trimmed SCALAR, never {@link parseList}ed; {@link TicketFormValues}
+ * says why. It gets the same both-sides-empty omission as its list siblings (see
+ * {@link omitProvidesWhenNeverSet}) rather than the general omit-when-unchanged rule
+ * those get: a non-empty value is always sent, because the scalar wire shape cannot
+ * tell "unchanged" apart from "the user re-typed the same single value" the way a list
+ * diff can, and a manifest that stores `provides` as a genuine multi-entry list is a
+ * separate, documented open issue this guard does not attempt to fix.
  */
 export function toTicketUpdate(values: TicketFormValues, ticket: Ticket): TicketUpdate {
 	const dependsOn = parseList(values.dependsOn);
@@ -108,14 +113,13 @@ export function toTicketUpdate(values: TicketFormValues, ticket: Ticket): Ticket
 		...(ticket.milestone == null ? {} : { milestone: ticket.milestone }),
 		...omitWhenNeverSet('dependsOn', dependsOn, ticket.dependsOn),
 		...omitWhenNeverSet('files', files, ticket.files),
-		// NOT omittable, unlike its two siblings: `TicketUpdate` declares `provides`
-		// REQUIRED, so the same protection cannot be applied without breaking the
-		// contract. (The server's own schema does make it optional — `provides: str = ""`
-		// puts it outside `required` — so the generated `types.ts` is stale here. Closing
-		// that gap needs a `pnpm codegen` against a running backend, not a hand edit.)
-		provides,
+		...omitProvidesWhenNeverSet(provides, ticket.provides),
 		bodyMarkdown: values.body ?? ''
-	};
+		// `TicketUpdate` still declares `provides` REQUIRED (stale codegen: the server
+		// schema itself defaults it to `""`, `pnpm codegen` against a running backend
+		// would drop the `required` entry) — the object above can omit it in the
+		// both-empty case, so the return is asserted rather than structurally matched.
+	} as TicketUpdate;
 }
 
 /**
@@ -134,6 +138,29 @@ function omitWhenNeverSet<K extends 'dependsOn' | 'files'>(
 ): Partial<Pick<TicketUpdate, K>> {
 	const isEmpty = value.length === 0 && (loaded ?? []).length === 0;
 	return isEmpty ? {} : ({ [key]: value } as Pick<TicketUpdate, K>);
+}
+
+/**
+ * `provides`'s own both-sides-empty omit guard — the scalar counterpart of
+ * {@link omitWhenNeverSet}.
+ *
+ * Omits ONLY when the typed value and the loaded ticket's `provides` are both empty.
+ * That is the one case omission is safe despite `provides` having no `?` in the
+ * generated type: the server defaults an omitted `provides` to `""` (`TicketEdit.
+ * provides: str = ""`), which is exactly the value this guard would otherwise have
+ * sent — so the manifest entry ends up identical either way, while omitting also
+ * keeps the field out of `model_fields_set`, so a `.md` header that independently
+ * carries a `provides` this ticket's manifest entry does not is left alone instead of
+ * being overwritten with an empty string by an unrelated edit (e.g. a title fix).
+ * A non-empty value is always sent — see {@link toTicketUpdate} for why that case is
+ * not further protected here.
+ */
+function omitProvidesWhenNeverSet(
+	value: string,
+	loaded: readonly string[] | undefined
+): Partial<Pick<TicketUpdate, 'provides'>> {
+	const isEmpty = value.length === 0 && (loaded ?? []).length === 0;
+	return isEmpty ? {} : ({ provides: value } as Pick<TicketUpdate, 'provides'>);
 }
 
 /**
