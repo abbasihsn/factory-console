@@ -542,9 +542,7 @@ describe('ticket detail write affordances', () => {
 		const nextTicket = { ...ticketInState('todo'), id: 'T32', title: 'A different ticket' };
 		await rerender({ data: foundData(nextTicket) });
 
-		rejectDelete(
-			new ApiError({ code: 'write_token_invalid', message: 'Bad token.', status: 401 })
-		);
+		rejectDelete(new ApiError({ code: 'write_token_invalid', message: 'Bad token.', status: 401 }));
 		await waitFor(() => expect(get(writeToken)).toBeNull());
 	});
 
