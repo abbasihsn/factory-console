@@ -116,6 +116,13 @@
 	 * between opening it and clicking Save, since the sibling delete flow on the same
 	 * route clears the store on its own 401. A no-op for the other callers, which
 	 * either have no dialog open yet or already closed it themselves.
+	 *
+	 * Also where `tokenRejected` is cleared — only once a token is actually held,
+	 * not on every submit regardless of outcome. `handleSubmit` used to clear it
+	 * unconditionally before calling this, so parking behind a still-missing token
+	 * silently erased the "rejected" explanation the prompt had just raised: the
+	 * banner collapsed to the bare "Write token required" panel, indistinguishable
+	 * from having never held a token, on the very next Save click.
 	 */
 	function withToken(action: (token: string) => void): void {
 		const token = get(writeToken);
@@ -125,6 +132,7 @@
 			return;
 		}
 		pendingAction = null;
+		tokenRejected = false;
 		action(token);
 	}
 
@@ -141,9 +149,6 @@
 	});
 
 	function handleSubmit(values: TicketFormValues): void {
-		// A fresh submit is a fresh attempt: whatever a previous one was rejected for
-		// no longer describes this one.
-		tokenRejected = false;
 		const body = toTicketUpdate(values, ticket);
 		pendingBody = body;
 		withToken((token) => void runPreview(body, token));

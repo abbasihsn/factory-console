@@ -462,6 +462,28 @@ def test_edit_with_default_front_matter_matches_the_real_renderer() -> None:
     assert "-title: Old title" in md.diff
 
 
+def test_edit_of_unparseable_front_matter_does_not_double_the_header() -> None:
+    """A header that fails to parse must not be re-prepended by an edit.
+
+    ``read_ticket_md`` falls back to returning the WHOLE file (fences included) as
+    the body when the fenced YAML is malformed or parses to a non-mapping, rather
+    than lose bytes — so ``TicketEdit.bodyMarkdown`` for such a ticket already
+    contains that header verbatim. ``render_edit_md`` used to re-prepend the split-off
+    ``front_matter_yaml`` unconditionally whenever the merged header matched the
+    (always-empty) parsed one, doubling the fence on every edit.
+    """
+    malformed_header = "id: TM-001\nnotes: [unterminated\n"
+    current = f"---\n{malformed_header}---\n# Old body\n"
+    # The client's bodyMarkdown mirrors what read_ticket_md actually handed back for
+    # this ticket: the full original text, fences included, unedited.
+    edit = _edit(bodyMarkdown=current)
+
+    rendered = write_render.render_edit_md(current, edit)
+
+    assert rendered == current
+    assert rendered.count("---") == 2
+
+
 def test_applied_edit_keeps_front_matter_the_edit_did_not_send() -> None:
     """Applying an edit must OVERLAY the seeded header, not replace it.
 

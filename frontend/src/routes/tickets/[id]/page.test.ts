@@ -521,6 +521,33 @@ describe('ticket detail write affordances', () => {
 		expect(deleteButton().hasAttribute('disabled')).toBe(false);
 	});
 
+	// The credential is wrong for every write on the page, not just the abandoned
+	// delete, so clearing it must not be gated behind the ticket-scoped guard above
+	// — otherwise a rejected token from an abandoned request sits in
+	// `sessionStorage` indefinitely, resent on every later write.
+	it('drops a rejected token even when the delete reporting it was abandoned', async () => {
+		setToken(TOKEN);
+		let rejectDelete: (err: unknown) => void = () => {};
+		deleteTicketMock.mockReturnValueOnce(
+			new Promise<WriteResult>((_resolve, reject) => {
+				rejectDelete = reject;
+			})
+		);
+		const { rerender } = render(Page, { props: { data: foundData(ticketInState('todo')) } });
+
+		await fireEvent.click(deleteButton());
+		await fireEvent.click(screen.getByRole('button', { name: 'Delete ticket' }));
+		await waitFor(() => expect(deleteTicketMock).toHaveBeenCalledTimes(1));
+
+		const nextTicket = { ...ticketInState('todo'), id: 'T32', title: 'A different ticket' };
+		await rerender({ data: foundData(nextTicket) });
+
+		rejectDelete(
+			new ApiError({ code: 'write_token_invalid', message: 'Bad token.', status: 401 })
+		);
+		await waitFor(() => expect(get(writeToken)).toBeNull());
+	});
+
 	// The one delete branch that refreshes instead of navigating: the delete still
 	// landed on disk even though the route has moved on, so stale load data (e.g. a
 	// list view showing the now-deleted row) must not be left silently unrefreshed.

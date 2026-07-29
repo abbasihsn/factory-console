@@ -163,11 +163,17 @@ describe('EditTicketModal', () => {
 	// sibling delete flow's own 401 clears the shared store) — `handleConfirm` must
 	// close the review dialog before parking, or Save is left looking live behind a
 	// backdrop hiding the very prompt that would let the user continue.
-	it('closes the review dialog and asks for a token that goes missing before Save', async () => {
+	it('closes the review dialog and asks for a token that goes missing before Save, then shows it again while the resumed apply is pending', async () => {
 		setToken(TOKEN);
 		previewWriteMock.mockResolvedValue(PREVIEW);
-		updateTicketMock.mockResolvedValue(APPLIED);
-		render(EditTicketModal, { props: baseProps() });
+		let settleApply: (result: WriteResult) => void = () => {};
+		updateTicketMock.mockReturnValueOnce(
+			new Promise<WriteResult>((resolve) => {
+				settleApply = resolve;
+			})
+		);
+		const props = baseProps();
+		render(EditTicketModal, { props });
 
 		await fireEvent.click(saveChangesButton());
 		await waitFor(() => expect(previewWriteMock).toHaveBeenCalledTimes(1));
@@ -187,7 +193,16 @@ describe('EditTicketModal', () => {
 		await fireEvent.input(screen.getByLabelText('Write token'), { target: { value: TOKEN } });
 		await fireEvent.click(screen.getByRole('button', { name: 'Save token' }));
 
+		// The resumed apply is now in flight — the dialog must be back on screen
+		// (with the reviewed diff, not "No preview to review yet"), not running
+		// invisibly behind a form the user has no way to tell is doing anything.
 		await waitFor(() => expect(updateTicketMock).toHaveBeenCalledTimes(1));
+		expect(screen.queryByText('Write token required')).toBeNull();
+		expect(screen.getByRole('heading', { name: 'Review changes' })).toBeTruthy();
+		expect(screen.getByText('+new title')).toBeTruthy();
+
+		settleApply(APPLIED);
+		await waitFor(() => expect(props.onSaved).toHaveBeenCalledTimes(1));
 	});
 
 	it('prompts for the missing token instead of dry-running, then resumes', async () => {
@@ -372,6 +387,34 @@ describe('EditTicketModal', () => {
 		expect(screen.queryByText('internal_error')).toBeNull();
 		expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
 		expect(saveChangesButton().hasAttribute('disabled')).toBe(false);
+	});
+
+	// The `seq !== attempt` supersession guard must not stand between a REJECTED
+	// TOKEN and `clearToken()`: the credential is wrong for every write on the page,
+	// not just the abandoned one, so an abandoned request's 401 dropping the guard
+	// first used to leave a known-bad token sitting in `sessionStorage` indefinitely.
+	it('drops a rejected token even when the request reporting it was abandoned', async () => {
+		setToken(TOKEN);
+		let rejectPreview: (err: unknown) => void = () => {};
+		previewWriteMock.mockReturnValueOnce(
+			new Promise<WritePreview>((_resolve, reject) => {
+				rejectPreview = reject;
+			})
+		);
+		render(EditTicketModal, { props: baseProps() });
+
+		await fireEvent.click(saveChangesButton());
+		await waitFor(() => expect(previewWriteMock).toHaveBeenCalledTimes(1));
+
+		// Cancel abandons the dry-run before it settles.
+		await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+		rejectPreview(
+			new ApiError({ code: 'write_token_invalid', message: 'Bad token.', status: 401 })
+		);
+		await waitFor(() => expect(previewWriteMock).toHaveBeenCalledTimes(1));
+
+		expect(get(writeToken)).toBeNull();
 	});
 
 	// Cancelling the review is reachable while a dry-run is still loading (the
