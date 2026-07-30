@@ -14,6 +14,7 @@ The SvelteKit SPA served by the Python server. Built via `adapter-static` (SPA m
 ## Routes (MVP)
 
 - `/` — ticket list with server-side filter + search (T30)
+- `/tickets/new` — create-ticket route with dry-run preview, review, and apply (T71)
 - `/tickets/[id]` — ticket detail (T31)
 - `/tickets/[id]/deps` — dep neighborhood (T32)
 - `+error.svelte` — global error boundary rendering the normalized `ApiError` (T27)
