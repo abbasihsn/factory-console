@@ -305,4 +305,50 @@ describe('create ticket route', () => {
 		);
 		await waitFor(() => expect(get(writeToken)).toBeNull());
 	});
+
+	// Once the POST is out there is nothing left to recall, so every dismissal must be
+	// refused — and a second Save must not fire a duplicate create — until it settles.
+	// The DiffPreviewModal unit test only proves its props disable its buttons; this
+	// proves the page raises `applying` around the write, passes it down as `busy`, and
+	// keeps one confirmation one create.
+	it('refuses every dismissal and a second apply while the create is in flight', async () => {
+		setToken(TOKEN);
+		previewWriteMock.mockResolvedValue(previewResult);
+		let settleApply: (result: WriteResult) => void = () => {};
+		createTicketMock.mockReturnValue(
+			new Promise<WriteResult>((resolve) => {
+				settleApply = resolve;
+			})
+		);
+		render(Page, { props: { data: pageData() } });
+
+		await submitValidForm();
+		await waitFor(() => expect(previewWriteMock).toHaveBeenCalledTimes(1));
+		await fireEvent.click(await screen.findByRole('button', { name: 'Save' }));
+		await waitFor(() => expect(createTicketMock).toHaveBeenCalledTimes(1));
+
+		// The write is still in flight here — nothing has resolved it yet.
+		const cancel = screen.getByRole('button', { name: 'Cancel' });
+		const save = screen.getByRole('button', { name: 'Save' });
+		expect(cancel.hasAttribute('disabled')).toBe(true);
+		expect(save.hasAttribute('disabled')).toBe(true);
+		// `loading` covers only the dry-run, not the apply: the confirmed diff stays on
+		// screen instead of being replaced by a spinner describing a request that is not
+		// the one actually in flight.
+		expect(screen.queryByText('Loading preview…')).toBeNull();
+		expect(screen.getByText('docs/planning/tickets/T99-new-ticket.md')).toBeTruthy();
+
+		// Every dismissal / re-submit route is inert while the POST runs.
+		await fireEvent.click(cancel);
+		await fireEvent.click(save);
+		await fireEvent.keyDown(window, { key: 'Escape' });
+
+		// One confirmation stayed one create, and nothing navigated away over the write.
+		expect(createTicketMock).toHaveBeenCalledTimes(1);
+		expect(gotoMock).not.toHaveBeenCalled();
+
+		settleApply({ applied: true, ticketId: 'T99', diff: { ticketId: 'T99' }, ticket: null });
+
+		await waitFor(() => expect(gotoMock).toHaveBeenCalledWith('/tickets/T99'));
+	});
 });
