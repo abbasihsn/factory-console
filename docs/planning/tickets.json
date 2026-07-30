@@ -985,7 +985,7 @@
       ],
       "provides": "gated edit+delete on /tickets/[id] + EditGate banner + edit/dry-run/save+confirm and delete/confirm flows",
       "path": "docs/planning/tickets/v2/T70-detail-edit-delete.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T71",
