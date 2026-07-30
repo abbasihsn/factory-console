@@ -56,8 +56,19 @@ describe('tickets index page', () => {
 		];
 		const { container } = render(Page, { props: { data: pageData(items) } });
 
-		expect(container.querySelectorAll('a[href^="/tickets/"]')).toHaveLength(3);
+		// Scoped to the list itself: the header's 'New ticket' link also targets
+		// `/tickets/…`, so counting row links has to look inside the `<ul>` only.
+		const list = container.querySelector('ul') as HTMLElement;
+		expect(list.querySelectorAll('a[href^="/tickets/"]')).toHaveLength(3);
 		expect(screen.getByRole('link', { name: 'T31' }).getAttribute('href')).toBe('/tickets/T31');
+	});
+
+	it('offers a New ticket affordance linking to the create route', () => {
+		render(Page, { props: { data: pageData([ticket('T30', 'Ticket list route')]) } });
+
+		expect(screen.getByRole('link', { name: 'New ticket' }).getAttribute('href')).toBe(
+			'/tickets/new'
+		);
 	});
 
 	it('renders the empty state with a clear-filters reset link when there are no items', () => {
