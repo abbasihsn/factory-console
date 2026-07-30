@@ -10,7 +10,7 @@
 
 // Type-only, so this module stays free of any runtime dependency on `$lib/api`
 // (which does fetch) and remains importable from a plain unit test.
-import type { Ticket, TicketUpdate } from '$lib/api';
+import type { Ticket, TicketCreate, TicketUpdate } from '$lib/api';
 
 /**
  * Allowed characters for a ticket id.
@@ -161,6 +161,36 @@ function omitProvidesWhenNeverSet(
 ): Partial<Pick<TicketUpdate, 'provides'>> {
 	const isEmpty = value.length === 0 && (loaded ?? []).length === 0;
 	return isEmpty ? {} : ({ provides: value } as Pick<TicketUpdate, 'provides'>);
+}
+
+/**
+ * Build the POST body for one set of form values, in CREATE mode.
+ *
+ * The deliberate counterpart to {@link toTicketUpdate}, and pointedly SIMPLER: create
+ * has NO "omit when never set" guard. That guard exists only to protect a value that
+ * already lives on disk (the manifest entry versus the `.md` YAML header) from being
+ * wiped by an edit that never meant to touch it — a new ticket has neither, so there
+ * is nothing to preserve and every field is sent exactly as typed. A blank
+ * `dependsOn` / `files` / `provides` here is a real "no deps / no files / no
+ * capability" for the ticket being created, not a signal to leave something alone.
+ *
+ * Field handling matches the shared {@link TicketFormValues} contract: `dependsOn`
+ * and `files` are {@link parseList}ed from their newline textareas into `string[]`;
+ * `provides` is a trimmed SCALAR, never {@link parseList}ed (a multi-entry value would
+ * collapse to one element on the next read); `id` and `title` are trimmed; and the
+ * optional `body` becomes `bodyMarkdown`, defaulted to `''` to match the server's own
+ * default. `track` / `milestone` are intentionally absent — `TicketForm` does not
+ * collect them (see its header note), and both default server-side.
+ */
+export function toTicketCreate(values: TicketFormValues): TicketCreate {
+	return {
+		id: values.id.trim(),
+		title: values.title.trim(),
+		dependsOn: parseList(values.dependsOn),
+		provides: values.provides.trim(),
+		files: parseList(values.files),
+		bodyMarkdown: values.body ?? ''
+	};
 }
 
 /**
