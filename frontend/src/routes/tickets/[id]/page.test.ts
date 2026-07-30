@@ -1,19 +1,40 @@
-import { render, screen } from '@testing-library/svelte';
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import { get } from 'svelte/store';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Fully mock the API barrel so `load` never touches the network. The load imports
 // the real `ApiError` CLASS from `$lib/api/errors` (NOT the barrel), so mocking the
-// barrel down to just `{ getTicket }` still leaves `instanceof ApiError` working.
-vi.mock('$lib/api', () => ({ getTicket: vi.fn() }));
+// barrel down to these wrappers still leaves `instanceof ApiError` working. The
+// write wrappers are here because the page's edit/delete affordances (and the
+// `EditTicketModal` it mounts) import them from the same barrel.
+vi.mock('$lib/api', () => ({
+	getTicket: vi.fn(),
+	deleteTicket: vi.fn(),
+	previewWrite: vi.fn(),
+	updateTicket: vi.fn()
+}));
 
-import { getTicket } from '$lib/api';
+// The delete flow leaves for the list, so navigation is stubbed like every other
+// route test that owns a `goto`.
+vi.mock('$app/navigation', () => ({ goto: vi.fn(), invalidateAll: vi.fn() }));
+
+import { goto, invalidateAll } from '$app/navigation';
+import { deleteTicket, getTicket, previewWrite, updateTicket } from '$lib/api';
 import { ApiError } from '$lib/api/errors';
-import type { Ticket } from '$lib/api';
+import type { RunState, Ticket, WriteResult } from '$lib/api';
+import { clearToken, setToken, writeToken } from '$lib/stores/writeToken';
 import type { PageData } from './$types';
 import { load } from './+page';
 import Page from './+page.svelte';
 
 const getTicketMock = vi.mocked(getTicket);
+const deleteTicketMock = vi.mocked(deleteTicket);
+const previewWriteMock = vi.mocked(previewWrite);
+const updateTicketMock = vi.mocked(updateTicket);
+const gotoMock = vi.mocked(goto);
+const invalidateAllMock = vi.mocked(invalidateAll);
+
+const TOKEN = 'test-write-token';
 
 // `+page.svelte`'s `PageData` merges the root layout's `project`, so the rendered
 // `data` prop must carry it too (the page itself only reads the ticket / id).
@@ -180,5 +201,412 @@ describe('ticket detail page (not found)', () => {
 
 		expect(screen.getByText(/Ticket "nope" not found/)).toBeTruthy();
 		expect(screen.getByRole('link', { name: 'back to list' }).getAttribute('href')).toBe('/');
+	});
+
+	it('offers no write affordances at all when there is no ticket', () => {
+		render(Page, { props: { data: notFoundData('nope') } });
+
+		expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+		expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
+		expect(screen.queryByRole('note')).toBeNull();
+	});
+});
+
+function editButton(): HTMLElement {
+	return screen.getByRole('button', { name: 'Edit' });
+}
+
+function deleteButton(): HTMLElement {
+	return screen.getByRole('button', { name: 'Delete' });
+}
+
+function ticketInState(runState: RunState): Ticket {
+	return { ...fullTicket, runState };
+}
+
+describe('ticket detail write affordances', () => {
+	beforeEach(() => {
+		deleteTicketMock.mockReset();
+		previewWriteMock.mockReset();
+		updateTicketMock.mockReset();
+		gotoMock.mockReset();
+		invalidateAllMock.mockReset();
+		clearToken();
+	});
+
+	// The client-side mirror of the server write-gate: only `todo`/`unknown` are
+	// writable, and the banner explains exactly what the buttons refuse.
+	for (const runState of ['in-flight', 'ready', 'merged'] as RunState[]) {
+		it(`disables edit + delete and explains the gate for ${runState}`, () => {
+			render(Page, { props: { data: foundData(ticketInState(runState)) } });
+
+			expect(editButton().hasAttribute('disabled')).toBe(true);
+			expect(deleteButton().hasAttribute('disabled')).toBe(true);
+			expect(screen.getByRole('note').textContent).toContain(runState);
+		});
+	}
+
+	for (const runState of ['todo', 'unknown'] as RunState[]) {
+		it(`enables edit + delete with no gate banner for ${runState}`, () => {
+			render(Page, { props: { data: foundData(ticketInState(runState)) } });
+
+			expect(editButton().hasAttribute('disabled')).toBe(false);
+			expect(deleteButton().hasAttribute('disabled')).toBe(false);
+			expect(screen.queryByRole('note')).toBeNull();
+		});
+	}
+
+	it('opens the edit dialog seeded from the ticket', async () => {
+		setToken(TOKEN);
+		render(Page, { props: { data: foundData(ticketInState('todo')) } });
+
+		expect(screen.queryByRole('dialog')).toBeNull();
+		await fireEvent.click(editButton());
+
+		expect(screen.getByRole('dialog')).toBeTruthy();
+		expect((screen.getByLabelText('Title') as HTMLInputElement).value).toBe(fullTicket.title);
+	});
+
+	// The route's half of the edit flow: what "saved" means for the view it shows.
+	// The write landed on disk, so the loaded ticket is stale — the page must close
+	// the dialog and re-run its load rather than keep rendering the old ticket.
+	it('closes the edit dialog and reloads the ticket after a successful save', async () => {
+		setToken(TOKEN);
+		previewWriteMock.mockResolvedValue({
+			applied: false,
+			ticketId: 'T31',
+			diff: {
+				ticketId: 'T31',
+				files: [
+					{
+						path: 'docs/planning/tickets/mvp/T31-ticket-detail-route.md',
+						changeKind: 'modify',
+						diff: '@@ -1 +1 @@\n-old\n+new\n'
+					}
+				]
+			},
+			ticket: null
+		});
+		updateTicketMock.mockResolvedValue({
+			applied: true,
+			ticketId: 'T31',
+			diff: { ticketId: 'T31' },
+			ticket: ticketInState('todo')
+		});
+		render(Page, { props: { data: foundData(ticketInState('todo')) } });
+
+		await fireEvent.click(editButton());
+		await fireEvent.input(screen.getByLabelText('Title'), { target: { value: 'Renamed' } });
+		await fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+		await waitFor(() => expect(previewWriteMock).toHaveBeenCalledTimes(1));
+		await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+		await waitFor(() => expect(updateTicketMock).toHaveBeenCalledTimes(1));
+		// Without this wiring the page would sit on the pre-write ticket.
+		await waitFor(() => expect(invalidateAllMock).toHaveBeenCalledTimes(1));
+		await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+	});
+
+	it('confirms before deleting, then deletes with the token and leaves for the list', async () => {
+		setToken(TOKEN);
+		deleteTicketMock.mockResolvedValue({
+			applied: true,
+			ticketId: 'T31',
+			diff: { ticketId: 'T31' },
+			ticket: null
+		});
+		render(Page, { props: { data: foundData(ticketInState('todo')) } });
+
+		await fireEvent.click(deleteButton());
+
+		// The click alone writes nothing — the confirmation gates it.
+		expect(deleteTicketMock).not.toHaveBeenCalled();
+		expect(screen.getByText('Delete ticket?')).toBeTruthy();
+
+		await fireEvent.click(screen.getByRole('button', { name: 'Delete ticket' }));
+
+		await waitFor(() => expect(deleteTicketMock).toHaveBeenCalledWith('T31', TOKEN));
+		expect(gotoMock).toHaveBeenCalledWith('/', { invalidateAll: true });
+	});
+
+	// Delete is the flow where a double-fire is destructive and a dismissal cannot
+	// recall anything, so the confirmation must refuse every route out mid-flight.
+	it('refuses every dismissal while the delete is in flight', async () => {
+		setToken(TOKEN);
+		let settleDelete: (result: WriteResult) => void = () => {};
+		deleteTicketMock.mockReturnValue(
+			new Promise<WriteResult>((resolve) => {
+				settleDelete = resolve;
+			})
+		);
+		render(Page, { props: { data: foundData(ticketInState('todo')) } });
+
+		await fireEvent.click(deleteButton());
+		await fireEvent.click(screen.getByRole('button', { name: 'Delete ticket' }));
+		await waitFor(() => expect(deleteTicketMock).toHaveBeenCalledTimes(1));
+
+		const confirm = screen.getByRole('button', { name: 'Delete ticket' });
+		const cancel = screen.getByRole('button', { name: 'Cancel' });
+		expect(confirm.hasAttribute('disabled')).toBe(true);
+		expect(cancel.hasAttribute('disabled')).toBe(true);
+
+		await fireEvent.click(confirm);
+		await fireEvent.click(cancel);
+		await fireEvent.keyDown(window, { key: 'Escape' });
+
+		// One confirmation stayed one DELETE.
+		expect(deleteTicketMock).toHaveBeenCalledTimes(1);
+		expect(gotoMock).not.toHaveBeenCalled();
+
+		settleDelete({ applied: true, ticketId: 'T31', diff: { ticketId: 'T31' }, ticket: null });
+
+		await waitFor(() => expect(gotoMock).toHaveBeenCalledWith('/', { invalidateAll: true }));
+	});
+
+	// The latch that remembers "a delete is waiting on a token" must be reconciled with
+	// the store, not just with its own prompt: otherwise it survives indefinitely and a
+	// later clearToken() elsewhere resurrects a confirmation for an abandoned action.
+	// It is DROPPED, not resumed — a token pasted to continue an edit must not throw a
+	// destructive dialog on screen.
+	it('drops the pending delete when the token arrives from elsewhere', async () => {
+		render(Page, { props: { data: foundData(ticketInState('todo')) } });
+
+		await fireEvent.click(deleteButton());
+		expect(screen.getByText('Write token required')).toBeTruthy();
+
+		// Stored by something other than this panel's prompt (e.g. the edit dialog's).
+		setToken(TOKEN);
+
+		await waitFor(() => expect(screen.queryByText('Write token required')).toBeNull());
+		// No destructive dialog appears off the back of a token stored for something else.
+		expect(screen.queryByText('Delete ticket?')).toBeNull();
+		expect(deleteTicketMock).not.toHaveBeenCalled();
+
+		// The latch is gone, so dropping the token cannot resurrect the panel later.
+		clearToken();
+
+		await waitFor(() => expect(screen.queryByText('Write token required')).toBeNull());
+
+		// Deleting is still one click away, and now goes straight to the confirmation.
+		setToken(TOKEN);
+		await fireEvent.click(deleteButton());
+		expect(screen.getByText('Delete ticket?')).toBeTruthy();
+	});
+
+	it('abandons the delete when the confirmation is cancelled', async () => {
+		setToken(TOKEN);
+		render(Page, { props: { data: foundData(ticketInState('todo')) } });
+
+		await fireEvent.click(deleteButton());
+		await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+		expect(deleteTicketMock).not.toHaveBeenCalled();
+		expect(screen.queryByText('Delete ticket?')).toBeNull();
+	});
+
+	it('asks for a missing token before it asks for confirmation', async () => {
+		render(Page, { props: { data: foundData(ticketInState('todo')) } });
+
+		await fireEvent.click(deleteButton());
+
+		expect(screen.getByText('Write token required')).toBeTruthy();
+		expect(screen.queryByText('Delete ticket?')).toBeNull();
+		expect(deleteTicketMock).not.toHaveBeenCalled();
+
+		// Storing the token resumes into the confirmation — not into the delete.
+		await fireEvent.input(screen.getByLabelText('Write token'), { target: { value: TOKEN } });
+		await fireEvent.click(screen.getByRole('button', { name: 'Save token' }));
+
+		expect(screen.getByText('Delete ticket?')).toBeTruthy();
+		expect(deleteTicketMock).not.toHaveBeenCalled();
+	});
+
+	// A 401 is the one delete failure that is not terminal: the held token is known
+	// bad, so it is dropped and the prompt comes back to collect a working one.
+	it('drops a rejected token, says so, and resumes the delete once a new one is pasted', async () => {
+		setToken(TOKEN);
+		deleteTicketMock.mockRejectedValueOnce(
+			new ApiError({ code: 'write_token_invalid', message: 'Bad token.', status: 401 })
+		);
+		deleteTicketMock.mockResolvedValueOnce({
+			applied: true,
+			ticketId: 'T31',
+			diff: { ticketId: 'T31' },
+			ticket: null
+		});
+		render(Page, { props: { data: foundData(ticketInState('todo')) } });
+
+		await fireEvent.click(deleteButton());
+		await fireEvent.click(screen.getByRole('button', { name: 'Delete ticket' }));
+
+		await waitFor(() => expect(screen.getByText('Write token required')).toBeTruthy());
+		// The prompt explains the rejection instead of looking like a first request.
+		expect(screen.getByRole('alert').textContent).toContain('rejected');
+		expect(get(writeToken)).toBeNull();
+		// Nothing was deleted and the view did not leave for the list.
+		expect(gotoMock).not.toHaveBeenCalled();
+
+		await fireEvent.input(screen.getByLabelText('Write token'), {
+			target: { value: 'fresh-token' }
+		});
+		await fireEvent.click(screen.getByRole('button', { name: 'Save token' }));
+
+		// The token alone does not delete — the confirmation is asked again.
+		expect(screen.getByText('Delete ticket?')).toBeTruthy();
+		expect(deleteTicketMock).toHaveBeenCalledTimes(1);
+
+		await fireEvent.click(screen.getByRole('button', { name: 'Delete ticket' }));
+
+		await waitFor(() => expect(deleteTicketMock).toHaveBeenCalledTimes(2));
+		expect(deleteTicketMock).toHaveBeenLastCalledWith('T31', 'fresh-token');
+		expect(gotoMock).toHaveBeenCalledWith('/', { invalidateAll: true });
+	});
+
+	// SvelteKit reuses this component instance for a params-only navigation, so the
+	// per-ticket write state has to be dropped when `data` is swapped — otherwise one
+	// ticket's error and dialogs stay on screen attributed to the next.
+	it('clears the write state when the rendered ticket is replaced', async () => {
+		setToken(TOKEN);
+		deleteTicketMock.mockRejectedValue(
+			new ApiError({ code: 'ticket_not_mutable', message: 'The lane owns it.', status: 409 })
+		);
+		const { rerender } = render(Page, { props: { data: foundData(ticketInState('todo')) } });
+
+		await fireEvent.click(deleteButton());
+		await fireEvent.click(screen.getByRole('button', { name: 'Delete ticket' }));
+		expect(await screen.findByText('ticket_not_mutable')).toBeTruthy();
+
+		const nextTicket = { ...ticketInState('todo'), id: 'T32', title: 'A different ticket' };
+		await rerender({ data: foundData(nextTicket) });
+
+		// The previous ticket's failure does not carry over onto this one.
+		expect(screen.queryByText('ticket_not_mutable')).toBeNull();
+		expect(screen.queryByText('Delete ticket?')).toBeNull();
+		expect(screen.getByRole('heading', { level: 1, name: 'A different ticket' })).toBeTruthy();
+		// The buttons are live again for the ticket now on screen.
+		expect(deleteButton().hasAttribute('disabled')).toBe(false);
+	});
+
+	// Neither `confirmDelete` nor the per-ticket reset effect had a guard against a
+	// navigation completing while the delete was still in flight, so an abandoned
+	// delete's result used to settle against whatever ticket replaced it.
+	it('does not attribute an abandoned delete onto the ticket now shown', async () => {
+		setToken(TOKEN);
+		let rejectDelete: (err: unknown) => void = () => {};
+		deleteTicketMock.mockReturnValueOnce(
+			new Promise<WriteResult>((_resolve, reject) => {
+				rejectDelete = reject;
+			})
+		);
+		const { rerender } = render(Page, { props: { data: foundData(ticketInState('todo')) } });
+
+		await fireEvent.click(deleteButton());
+		await fireEvent.click(screen.getByRole('button', { name: 'Delete ticket' }));
+		await waitFor(() => expect(deleteTicketMock).toHaveBeenCalledTimes(1));
+
+		// A params-only navigation to a different ticket completes while the delete
+		// above is still out.
+		const nextTicket = { ...ticketInState('todo'), id: 'T32', title: 'A different ticket' };
+		await rerender({ data: foundData(nextTicket) });
+
+		rejectDelete(
+			new ApiError({ code: 'ticket_not_mutable', message: 'The lane owns it.', status: 409 })
+		);
+		await Promise.resolve();
+
+		// The abandoned delete's failure must not paint onto the new ticket, and its
+		// buttons must not be left stuck disabled with nothing left to wait for.
+		expect(screen.queryByText('ticket_not_mutable')).toBeNull();
+		expect(deleteButton().hasAttribute('disabled')).toBe(false);
+	});
+
+	// The credential is wrong for every write on the page, not just the abandoned
+	// delete, so clearing it must not be gated behind the ticket-scoped guard above
+	// — otherwise a rejected token from an abandoned request sits in
+	// `sessionStorage` indefinitely, resent on every later write.
+	it('drops a rejected token even when the delete reporting it was abandoned', async () => {
+		setToken(TOKEN);
+		let rejectDelete: (err: unknown) => void = () => {};
+		deleteTicketMock.mockReturnValueOnce(
+			new Promise<WriteResult>((_resolve, reject) => {
+				rejectDelete = reject;
+			})
+		);
+		const { rerender } = render(Page, { props: { data: foundData(ticketInState('todo')) } });
+
+		await fireEvent.click(deleteButton());
+		await fireEvent.click(screen.getByRole('button', { name: 'Delete ticket' }));
+		await waitFor(() => expect(deleteTicketMock).toHaveBeenCalledTimes(1));
+
+		const nextTicket = { ...ticketInState('todo'), id: 'T32', title: 'A different ticket' };
+		await rerender({ data: foundData(nextTicket) });
+
+		rejectDelete(new ApiError({ code: 'write_token_invalid', message: 'Bad token.', status: 401 }));
+		await waitFor(() => expect(get(writeToken)).toBeNull());
+	});
+
+	// The one delete branch that refreshes instead of navigating: the delete still
+	// landed on disk even though the route has moved on, so stale load data (e.g. a
+	// list view showing the now-deleted row) must not be left silently unrefreshed.
+	it('refreshes load data instead of navigating when an abandoned delete succeeds', async () => {
+		setToken(TOKEN);
+		let resolveDelete: (result: WriteResult) => void = () => {};
+		deleteTicketMock.mockReturnValueOnce(
+			new Promise<WriteResult>((resolve) => {
+				resolveDelete = resolve;
+			})
+		);
+		const { rerender } = render(Page, { props: { data: foundData(ticketInState('todo')) } });
+
+		await fireEvent.click(deleteButton());
+		await fireEvent.click(screen.getByRole('button', { name: 'Delete ticket' }));
+		await waitFor(() => expect(deleteTicketMock).toHaveBeenCalledTimes(1));
+
+		const nextTicket = { ...ticketInState('todo'), id: 'T32', title: 'A different ticket' };
+		await rerender({ data: foundData(nextTicket) });
+
+		resolveDelete({ applied: true, ticketId: 'T31', diff: { ticketId: 'T31' }, ticket: null });
+		await waitFor(() => expect(invalidateAllMock).toHaveBeenCalledTimes(1));
+
+		// Refreshed in place — the user stays on the ticket they navigated to instead
+		// of being yanked back to the list for a delete they did not just confirm.
+		expect(gotoMock).not.toHaveBeenCalled();
+	});
+
+	// Both the route's delete prompt and the edit dialog's can be raised at once, and
+	// each labels its own input — a shared hardcoded id would point both labels at
+	// whichever input came first in the document.
+	it('keeps the token inputs distinct when two prompts are on screen', async () => {
+		render(Page, { props: { data: foundData(ticketInState('todo')) } });
+
+		await fireEvent.click(deleteButton());
+		expect(screen.getByText('Write token required')).toBeTruthy();
+
+		await fireEvent.click(editButton());
+		await fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+		const inputs = screen.getAllByLabelText('Write token') as HTMLInputElement[];
+		expect(inputs).toHaveLength(2);
+		expect(inputs[0].id).not.toBe(inputs[1].id);
+		expect(new Set(inputs.map((input) => input.id)).size).toBe(2);
+	});
+
+	it('renders a failed delete inline and keeps the ticket on screen', async () => {
+		setToken(TOKEN);
+		deleteTicketMock.mockRejectedValue(
+			new ApiError({ code: 'ticket_not_mutable', message: 'The lane owns it.', status: 409 })
+		);
+		render(Page, { props: { data: foundData(ticketInState('todo')) } });
+
+		await fireEvent.click(deleteButton());
+		await fireEvent.click(screen.getByRole('button', { name: 'Delete ticket' }));
+
+		expect(await screen.findByText('ticket_not_mutable')).toBeTruthy();
+		expect(screen.getByText('The lane owns it.')).toBeTruthy();
+		expect(gotoMock).not.toHaveBeenCalled();
+		// Dismissing clears the error without touching the ticket.
+		await fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+		expect(screen.queryByText('ticket_not_mutable')).toBeNull();
 	});
 });

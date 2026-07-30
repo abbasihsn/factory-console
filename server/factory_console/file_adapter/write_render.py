@@ -432,6 +432,24 @@ def _render_md(front_matter: Mapping[str, Any], body_markdown: str) -> str:
     return _render_md_text(_dump_front_matter(front_matter), body_markdown)
 
 
+def _front_matter_parsed_cleanly(front_matter_yaml: str) -> bool:
+    """Whether `front_matter_yaml` parses the way :func:`read_ticket_md` treats as
+    clean — to a mapping, or to nothing — so that function's BODY excludes the
+    header text.
+
+    Malformed YAML, or YAML that parses to a non-mapping, makes ``read_ticket_md``
+    fall back to returning the WHOLE file (fences included) as the body rather than
+    lose bytes over a header it cannot make sense of. :func:`render_edit_md` has to
+    know which case it is in: only here does the client's ``edit.bodyMarkdown``
+    already contain the fenced header verbatim.
+    """
+    try:
+        parsed = yaml.safe_load(front_matter_yaml)
+    except yaml.YAMLError:
+        return False
+    return parsed is None or isinstance(parsed, dict)
+
+
 def render_edit_md(current_text: str | None, edit: TicketEdit) -> str:
     """Render an edited ticket ``.md`` from the ONE text already read for the diff.
 
@@ -445,9 +463,16 @@ def render_edit_md(current_text: str | None, edit: TicketEdit) -> str:
     formatting PyYAML cannot round-trip survive and the ``.md`` diff shows only the
     body. Otherwise the merged header is re-dumped in the on-disk style.
 
+    A header that does not parse cleanly (see :func:`_front_matter_parsed_cleanly`)
+    is a THIRD case, handled before either of those: `read_ticket_md` already folded
+    the whole file, fences included, into the body it handed the client, so
+    re-prepending the header here would emit it twice.
+
     Shared with :class:`FakeFileWriter` so both writers agree on what an edit does.
     """
     front_matter_yaml, _body = _split_front_matter(current_text) if current_text else (None, "")
+    if front_matter_yaml is not None and not _front_matter_parsed_cleanly(front_matter_yaml):
+        return _render_md_text(None, edit.bodyMarkdown)
     existing = _parse_front_matter(front_matter_yaml)
     merged = _overlay_front_matter(existing, edit)
     if front_matter_yaml is not None and merged == existing:

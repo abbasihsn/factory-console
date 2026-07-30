@@ -119,6 +119,47 @@ describe('ConfirmDialog', () => {
 		outside.remove();
 	});
 
+	// `busy` means the confirmed action is already in flight. One confirmation must
+	// stay one write, and — just as important — nothing may offer to "cancel" work
+	// that cannot be recalled.
+	it('disables confirm while busy so one confirmation cannot become two writes', async () => {
+		const props = baseProps();
+		render(ConfirmDialog, { props: { ...props, busy: true } });
+
+		const confirm = screen.getByRole('button', { name: 'Delete' });
+		expect(confirm.hasAttribute('disabled')).toBe(true);
+
+		await fireEvent.click(confirm);
+
+		expect(props.onConfirm).not.toHaveBeenCalled();
+	});
+
+	it('refuses every dismissal while busy, since cancelling cannot recall the write', async () => {
+		const props = baseProps();
+		render(ConfirmDialog, { props: { ...props, busy: true } });
+
+		const cancel = screen.getByRole('button', { name: 'Cancel' });
+		expect(cancel.hasAttribute('disabled')).toBe(true);
+
+		await fireEvent.click(cancel);
+		// The backdrop and Escape are the other two ways out, and both would
+		// otherwise close over a delete that still completes.
+		await fireEvent.click(screen.getByRole('dialog').parentElement!.querySelector('button')!);
+		await fireEvent.keyDown(window, { key: 'Escape' });
+
+		expect(props.onCancel).not.toHaveBeenCalled();
+	});
+
+	it('allows confirm and cancel again once busy clears', async () => {
+		const props = baseProps();
+		const { rerender } = render(ConfirmDialog, { props: { ...props, busy: true } });
+
+		await rerender({ ...props, busy: false });
+
+		await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+		expect(props.onCancel).toHaveBeenCalledTimes(1);
+	});
+
 	it('styles the confirm button as destructive only when danger is set', () => {
 		const { unmount } = render(ConfirmDialog, { props: baseProps() });
 		expect(screen.getByRole('button', { name: 'Delete' }).className).toContain('bg-accent');

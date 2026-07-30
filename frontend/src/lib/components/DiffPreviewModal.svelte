@@ -13,6 +13,7 @@
 		open,
 		preview,
 		loading,
+		busy = false,
 		error,
 		onConfirm,
 		onCancel
@@ -20,10 +21,33 @@
 		open: boolean;
 		preview: WritePreview | null;
 		loading: boolean;
+		/**
+		 * The confirmed WRITE is in flight — narrower than `loading`, which also covers
+		 * the dry-run. A dry-run writes nothing and stays cancellable; once the write
+		 * is out there is nothing left to call off, so dismissal must be refused
+		 * rather than imply it stopped something.
+		 */
+		busy?: boolean;
 		error: ApiError | null;
 		onConfirm: () => void;
 		onCancel: () => void;
 	} = $props();
+
+	// Every route out — Cancel, Escape, the backdrop — goes through this guard, the
+	// same shape `ConfirmDialog` uses. Without it the user can dismiss the dialog
+	// mid-write and still have the write land, told they cancelled a write that applied.
+	function handleCancel(): void {
+		if (busy) return;
+		onCancel();
+	}
+
+	// Confirm is guarded here as well as by `canConfirm`, so "one confirmation is one
+	// write" is this component's own guarantee rather than something it inherits from
+	// a caller that happens to also raise `loading` for the apply.
+	function handleConfirm(): void {
+		if (busy) return;
+		onConfirm();
+	}
 
 	// A preview covers every file the write touches, so the body is a list of
 	// per-file diffs — `files` is optional in the contract, hence the fallback.
@@ -31,7 +55,7 @@
 
 	// Saving is only meaningful once a preview has actually arrived: nothing to
 	// confirm while the dry-run is in flight, failed, or was never made.
-	const canConfirm = $derived(!loading && error === null && preview !== null);
+	const canConfirm = $derived(!loading && !busy && error === null && preview !== null);
 
 	const LINE_CLASSES: Record<DiffLineKind, string> = {
 		add: 'bg-emerald-50 text-emerald-700',
@@ -44,7 +68,7 @@
 
 <ModalShell
 	{open}
-	{onCancel}
+	onCancel={handleCancel}
 	labelledBy="diff-preview-title"
 	describedBy="diff-preview-description"
 	panelClass="flex max-h-[85vh] w-full max-w-3xl flex-col"
@@ -79,7 +103,7 @@
 			     action is labelled for what it does: this call site has no retry
 			     hook, so it closes the dialog and the caller re-runs the dry-run
 			     when the action is retried. -->
-			<ApiErrorView {error} compact actionLabel="Close" onReload={onCancel} />
+			<ApiErrorView {error} compact actionLabel="Close" onReload={handleCancel} />
 		{:else if preview === null}
 			<p class="py-6 text-sm text-muted">No preview to review yet.</p>
 		{:else}
@@ -107,8 +131,9 @@
 	<div class="flex justify-end gap-2 border-t border-slate-300 px-4 py-3">
 		<button
 			type="button"
-			class="rounded border border-slate-300 px-3 py-1 text-sm text-text hover:bg-bg"
-			onclick={onCancel}
+			class="rounded border border-slate-300 px-3 py-1 text-sm text-text hover:bg-bg disabled:cursor-not-allowed disabled:opacity-60"
+			disabled={busy}
+			onclick={handleCancel}
 		>
 			Cancel
 		</button>
@@ -116,7 +141,7 @@
 			type="button"
 			class="rounded bg-accent px-3 py-1 text-sm text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
 			disabled={!canConfirm}
-			onclick={onConfirm}
+			onclick={handleConfirm}
 		>
 			Save
 		</button>

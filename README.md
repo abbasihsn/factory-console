@@ -26,6 +26,7 @@ Within a few seconds the console discovers the project, starts a local server on
 
 - A searchable, filterable list of every ticket (id / status / title / track).
 - A detail view with the rendered ticket `.md`, resolved `depends_on` / `provides`, and a factory run-state badge.
+- **Edit and delete** from the detail view — an edit shows the exact diff for review before anything is written, and both are disabled (with the reason stated) once a ticket leaves `todo` and a factory lane owns it. The first write asks for the token the server printed at startup; it is kept for that browser tab only.
 - A dependency-neighborhood view listing direct deps and dependents as clickable links.
 - A **global full-text search** box (header) over a ticket's id, title, `provides`, and body, with results at `/search`.
 - A **dependency graph** (`/graph`) — the whole project as a run-state-colored DAG; click a node to open its ticket.
