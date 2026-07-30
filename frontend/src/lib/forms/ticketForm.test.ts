@@ -4,6 +4,7 @@ import {
 	TICKET_ID_PATTERN,
 	parseList,
 	serializeList,
+	toTicketCreate,
 	toTicketUpdate,
 	validateTicketForm,
 	type TicketFormValues
@@ -235,5 +236,43 @@ describe('toTicketUpdate', () => {
 			expect(body.provides).toBe('');
 			expect(body.files).toEqual([]);
 		});
+	});
+});
+
+describe('toTicketCreate', () => {
+	it('trims id and title and defaults an absent body to an empty string', () => {
+		const body = toTicketCreate(values({ id: '  T99  ', title: '  New ticket  ' }));
+
+		expect(body).toEqual({
+			id: 'T99',
+			title: 'New ticket',
+			dependsOn: [],
+			provides: '',
+			files: [],
+			bodyMarkdown: ''
+		});
+	});
+
+	it('parses dependsOn and files from newline text, trimming and dropping blanks', () => {
+		const body = toTicketCreate(
+			values({ dependsOn: 'T1\n  T2  \n\nT3', files: 'a.ts\n\n b.ts ' })
+		);
+
+		expect(body.dependsOn).toEqual(['T1', 'T2', 'T3']);
+		expect(body.files).toEqual(['a.ts', 'b.ts']);
+	});
+
+	it('keeps provides as a trimmed SCALAR — a multi-line value is never split into a list', () => {
+		const body = toTicketCreate(values({ provides: '  edit affordances\nsecond line  ' }));
+
+		// parseList would collapse this to ['edit affordances', 'second line']; the scalar
+		// contract keeps the internal newline and only trims the ends.
+		expect(body.provides).toBe('edit affordances\nsecond line');
+	});
+
+	it('passes the markdown body through as bodyMarkdown', () => {
+		const body = toTicketCreate(values({ body: '## Context\n\nProse.' }));
+
+		expect(body.bodyMarkdown).toBe('## Context\n\nProse.');
 	});
 });

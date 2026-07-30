@@ -61,7 +61,17 @@
 </script>
 
 <div class="space-y-4">
-	<h1 class="text-2xl font-semibold text-text">Tickets</h1>
+	<div class="flex flex-wrap items-center justify-between gap-3">
+		<h1 class="text-2xl font-semibold text-text">Tickets</h1>
+		<!-- Presentational affordance only: a plain link to the dedicated create route,
+		     which owns the whole dry-run → confirm → create flow. -->
+		<a
+			class="rounded border border-slate-300 px-3 py-1 text-sm font-medium text-text hover:bg-bg"
+			href="/tickets/new"
+		>
+			New ticket
+		</a>
+	</div>
 
 	<FiltersBar filters={data.filters} {statuses} {tracks} {milestones} onNavigate={navigate} />
 
