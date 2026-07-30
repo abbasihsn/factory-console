@@ -163,4 +163,146 @@ describe('create ticket route', () => {
 			TOKEN
 		);
 	});
+
+	// A rejected token on the DRY-RUN is not terminal (see the repo write-token rule):
+	// drop it, say WHY, and resume the same preview once a fresh one is pasted.
+	it('drops a rejected token on the dry-run, explains it, and resumes the preview', async () => {
+		setToken(TOKEN);
+		previewWriteMock.mockRejectedValueOnce(
+			new ApiError({ code: 'write_token_invalid', message: 'Bad token.', status: 401 })
+		);
+		previewWriteMock.mockResolvedValueOnce(previewResult);
+		render(Page, { props: { data: pageData() } });
+
+		const expectedBody = {
+			id: 'T99',
+			title: 'A brand new ticket',
+			dependsOn: [],
+			provides: '',
+			files: [],
+			bodyMarkdown: ''
+		};
+
+		await submitValidForm();
+
+		// The prompt is back and explains WHY, not a first-time "no token" panel.
+		expect(await screen.findByText('Write token required')).toBeTruthy();
+		expect(screen.getByRole('alert').textContent).toContain('rejected');
+		// The known-bad token was discarded, not left to fail every retry.
+		expect(get(writeToken)).toBeNull();
+
+		await fireEvent.input(screen.getByLabelText('Write token'), {
+			target: { value: 'fresh-token' }
+		});
+		await fireEvent.click(screen.getByRole('button', { name: 'Save token' }));
+
+		await waitFor(() => expect(previewWriteMock).toHaveBeenCalledTimes(2));
+		// The resumed dry-run sends the SAME full body, only with the fresh token.
+		expect(previewWriteMock).toHaveBeenLastCalledWith(
+			{ verb: 'create', body: expectedBody },
+			'fresh-token'
+		);
+		expect(screen.queryByText('Write token required')).toBeNull();
+	});
+
+	// A rejected token on the APPLY re-raises the prompt and, once a fresh one is pasted,
+	// resumes with the REVIEWED body verbatim — written exactly once, never re-derived.
+	it('resumes the apply with the reviewed body after a rejected token, writing it once', async () => {
+		setToken(TOKEN);
+		previewWriteMock.mockResolvedValue(previewResult);
+		createTicketMock.mockRejectedValueOnce(
+			new ApiError({ code: 'write_token_invalid', message: 'Bad token.', status: 401 })
+		);
+		createTicketMock.mockResolvedValueOnce({
+			applied: true,
+			ticketId: 'T99',
+			diff: { ticketId: 'T99' },
+			ticket: null
+		});
+		render(Page, { props: { data: pageData() } });
+
+		const expectedBody = {
+			id: 'T99',
+			title: 'A brand new ticket',
+			dependsOn: [],
+			provides: '',
+			files: [],
+			bodyMarkdown: ''
+		};
+
+		await submitValidForm();
+		await waitFor(() => expect(previewWriteMock).toHaveBeenCalledTimes(1));
+		await fireEvent.click(await screen.findByRole('button', { name: 'Save' }));
+
+		// The apply's 401 raised the prompt; nothing was written or navigated yet.
+		await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
+		expect(get(writeToken)).toBeNull();
+		expect(gotoMock).not.toHaveBeenCalled();
+
+		await fireEvent.input(screen.getByLabelText('Write token'), {
+			target: { value: 'fresh-token' }
+		});
+		await fireEvent.click(screen.getByRole('button', { name: 'Save token' }));
+
+		await waitFor(() => expect(gotoMock).toHaveBeenCalledWith('/tickets/T99'));
+		// The rejected attempt did not also land: one confirmation is one create, and the
+		// retry carried the previewed body with the fresh token.
+		expect(createTicketMock).toHaveBeenCalledTimes(2);
+		expect(createTicketMock).toHaveBeenLastCalledWith(expectedBody, 'fresh-token');
+	});
+
+	// Cancelling a dry-run that is still in flight must supersede it: its late failure
+	// cannot reopen the dialog the user just dismissed or strand the form disabled.
+	it('cancels an in-flight dry-run and does not reopen it when it later fails', async () => {
+		setToken(TOKEN);
+		let rejectPreview: (err: unknown) => void = () => {};
+		previewWriteMock.mockReturnValueOnce(
+			new Promise<WriteResult>((_resolve, reject) => {
+				rejectPreview = reject;
+			})
+		);
+		render(Page, { props: { data: pageData() } });
+
+		await submitValidForm();
+		expect(await screen.findByText('Loading preview…')).toBeTruthy();
+
+		await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+		expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+
+		rejectPreview(new ApiError({ code: 'internal_error', message: 'Boom.', status: 500 }));
+		await waitFor(() => expect(previewWriteMock).toHaveBeenCalledTimes(1));
+
+		// The abandoned failure does not resurrect the review dialog or its error, and the
+		// form is usable again rather than stuck disabled behind a request nobody awaits.
+		expect(screen.queryByText('internal_error')).toBeNull();
+		expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+		expect(
+			(screen.getByRole('button', { name: 'Create ticket' }) as HTMLButtonElement).disabled
+		).toBe(false);
+	});
+
+	// The `seq !== attempt` guard must not stand between a rejected token and `clearToken()`:
+	// the credential is wrong for every write on the page, so even an abandoned dry-run's
+	// 401 must still drop it rather than leave a known-bad token in sessionStorage.
+	it('drops a rejected token even when the dry-run reporting it was cancelled', async () => {
+		setToken(TOKEN);
+		let rejectPreview: (err: unknown) => void = () => {};
+		previewWriteMock.mockReturnValueOnce(
+			new Promise<WriteResult>((_resolve, reject) => {
+				rejectPreview = reject;
+			})
+		);
+		render(Page, { props: { data: pageData() } });
+
+		await submitValidForm();
+		await waitFor(() => expect(previewWriteMock).toHaveBeenCalledTimes(1));
+
+		// Cancel abandons the dry-run before it settles.
+		await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+		rejectPreview(
+			new ApiError({ code: 'write_token_invalid', message: 'Bad token.', status: 401 })
+		);
+		await waitFor(() => expect(get(writeToken)).toBeNull());
+	});
 });

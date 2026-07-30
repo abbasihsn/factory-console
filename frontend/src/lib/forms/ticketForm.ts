@@ -178,8 +178,10 @@ function omitProvidesWhenNeverSet(
  * and `files` are {@link parseList}ed from their newline textareas into `string[]`;
  * `provides` is a trimmed SCALAR, never {@link parseList}ed (a multi-entry value would
  * collapse to one element on the next read); `id` and `title` are trimmed; and the
- * optional `body` becomes `bodyMarkdown`, defaulted to `''` to match the server's own
- * default. `track` / `milestone` are intentionally absent — `TicketForm` does not
+ * optional `body` becomes `bodyMarkdown`, defaulted to `''` on the client because the
+ * server's `bodyMarkdown` is a REQUIRED field with no default of its own (unlike the
+ * adjacent `provides`, which defaults to `""` server-side) — omitting it would 422, so a
+ * string must always be sent. `track` / `milestone` are intentionally absent — `TicketForm` does not
  * collect them (see its header note), and both default server-side.
  */
 export function toTicketCreate(values: TicketFormValues): TicketCreate {
