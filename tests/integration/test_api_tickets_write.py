@@ -42,7 +42,8 @@ from _write_support import (
     real_app as _real_app,
 )
 from fastapi import FastAPI
-from fastapi.dependencies.utils import get_flat_dependant
+from fastapi.dependencies.utils import get_flat_params
+from fastapi.params import Query
 from fastapi.routing import APIRoute
 from httpx import AsyncClient
 
@@ -366,7 +367,8 @@ def test_the_query_allow_list_matches_what_the_routes_declare() -> None:
         param.alias
         for route in write_router.routes
         if isinstance(route, APIRoute)
-        for param in get_flat_dependant(route.dependant).query_params
+        for param in get_flat_params(route.dependant)
+        if isinstance(param.field_info, Query)
     }
     assert declared == set(_ALLOWED_QUERY_KEYS)
 
