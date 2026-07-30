@@ -10,7 +10,7 @@
       "depends_on": [],
       "provides": "Empty repo tree matching PROJECT_STRUCTURE.md",
       "path": "docs/planning/tickets/mvp/T01-monorepo-skeleton.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T02",
@@ -22,7 +22,7 @@
       ],
       "provides": "Installable factory_console package with factory-console entry point",
       "path": "docs/planning/tickets/mvp/T02-python-package-skeleton.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T03",
@@ -34,7 +34,7 @@
       ],
       "provides": "Buildable SvelteKit SPA scaffold",
       "path": "docs/planning/tickets/mvp/T03-frontend-skeleton.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T04",
@@ -46,7 +46,7 @@
       ],
       "provides": "Shared logging formatter, FactoryConsoleError base + to_error_response, Settings pinned to 127.0.0.1",
       "path": "docs/planning/tickets/mvp/T04-observability-skeleton.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T05",
@@ -59,7 +59,7 @@
       ],
       "provides": "Pre-commit hook config",
       "path": "docs/planning/tickets/mvp/T05-pre-commit-config.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T06",
@@ -72,7 +72,7 @@
       ],
       "provides": "Boot-and-serve spine + /api/v1/health returning { ok, version, projectRoot: null }",
       "path": "docs/planning/tickets/mvp/T06-walking-skeleton-app.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T07",
@@ -84,7 +84,7 @@
       ],
       "provides": "Shared Pydantic v2 domain models + TICKET_ID_PATTERN constant",
       "path": "docs/planning/tickets/mvp/T07-domain-models.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T08",
@@ -96,7 +96,7 @@
       ],
       "provides": "Shared executable test contract at tests/fixtures/projects/",
       "path": "docs/planning/tickets/mvp/T08-fixture-projects.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T09",
@@ -110,7 +110,7 @@
       ],
       "provides": "make dev/test/build/package/smoke/release + scripts/{dev,package}.sh",
       "path": "docs/planning/tickets/mvp/T09-dev-and-package-scripts.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T10",
@@ -122,7 +122,7 @@
       ],
       "provides": "FileAdapter port + FakeFileAdapter (unblocks backend early)",
       "path": "docs/planning/tickets/mvp/T10-file-adapter-protocol-and-fake.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T11",
@@ -134,7 +134,7 @@
       ],
       "provides": "discover_project(explicit, cwd); ProjectNotFound exception",
       "path": "docs/planning/tickets/mvp/T11-project-discovery.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T12",
@@ -147,7 +147,7 @@
       ],
       "provides": "Schema-tolerant manifest parser + MalformedManifest exception",
       "path": "docs/planning/tickets/mvp/T12-manifest-parser.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T13",
@@ -160,7 +160,7 @@
       ],
       "provides": "read_ticket_md + enrich_ticket + PathTraversal + TicketFileMissing",
       "path": "docs/planning/tickets/mvp/T13-ticket-md-parser.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T14",
@@ -172,7 +172,7 @@
       ],
       "provides": "render_markdown + render_ticket_html (sanitized HTML the SPA can inject)",
       "path": "docs/planning/tickets/mvp/T14-markdown-renderer.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T15",
@@ -185,7 +185,7 @@
       ],
       "provides": "find_run_state_dir + probe_ticket_state",
       "path": "docs/planning/tickets/mvp/T15-run-state-prober.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T16",
@@ -199,7 +199,7 @@
       ],
       "provides": "Multi-stage Dockerfile (node → python builder → python runtime)",
       "path": "docs/planning/tickets/mvp/T16-dockerfile.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T17",
@@ -216,7 +216,7 @@
       ],
       "provides": "RealFileAdapter implementing all six FileAdapter methods",
       "path": "docs/planning/tickets/mvp/T17-real-file-adapter.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T18",
@@ -232,7 +232,7 @@
       ],
       "provides": "GitHub Actions ci.yml matrix",
       "path": "docs/planning/tickets/mvp/T18-ci-workflow.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T19",
@@ -245,7 +245,7 @@
       ],
       "provides": "docs/{architecture,usage,contributing}.md + README refresh",
       "path": "docs/planning/tickets/mvp/T19-docs-skeleton.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T20",
@@ -266,7 +266,7 @@
       ],
       "provides": "create_app + create_dev_app + DI seam + error handlers + access-log middleware",
       "path": "docs/planning/tickets/mvp/T20-app-factory-rewrite.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T21",
@@ -278,7 +278,7 @@
       ],
       "provides": "GET /api/v1/project + non-trivial OpenAPI schema at /api/v1/openapi.json",
       "path": "docs/planning/tickets/mvp/T21-project-endpoint.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T22",
@@ -291,7 +291,7 @@
       ],
       "provides": "GET /api/v1/tickets + GET /api/v1/tickets/{id}",
       "path": "docs/planning/tickets/mvp/T22-tickets-endpoints.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T23",
@@ -303,7 +303,7 @@
       ],
       "provides": "GET /api/v1/tickets/{id}/deps",
       "path": "docs/planning/tickets/mvp/T23-deps-endpoint.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T24",
@@ -316,7 +316,7 @@
       ],
       "provides": "GET /api/v1/roadmap (presence-only) + GET /api/v1/health with projectRoot",
       "path": "docs/planning/tickets/mvp/T24-roadmap-and-health-endpoints.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T25",
@@ -334,7 +334,7 @@
       ],
       "provides": "factory-console CLI per ARCHITECTURE.md CLI contract",
       "path": "docs/planning/tickets/mvp/T25-cli-extension.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T26",
@@ -346,7 +346,7 @@
       ],
       "provides": "GitHub Actions release.yml",
       "path": "docs/planning/tickets/mvp/T26-release-workflow.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T27",
@@ -359,7 +359,7 @@
       ],
       "provides": "SPA shell + top bar + Reload + Tailwind base + global +error.svelte",
       "path": "docs/planning/tickets/mvp/T27-spa-shell.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T28",
@@ -372,7 +372,7 @@
       ],
       "provides": "Typed same-origin API client + generated src/lib/api/types.ts",
       "path": "docs/planning/tickets/mvp/T28-api-client-and-types.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T29",
@@ -384,7 +384,7 @@
       ],
       "provides": "StatusBadge + RunStateBadge + MarkdownBody (the ONE place using {@html})",
       "path": "docs/planning/tickets/mvp/T29-shared-components.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T30",
@@ -398,7 +398,7 @@
       ],
       "provides": "Root route with FiltersBar + TicketRow list",
       "path": "docs/planning/tickets/mvp/T30-ticket-list-route.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T31",
@@ -412,7 +412,7 @@
       ],
       "provides": "Detail route with badges, chips, deps/provides, files, MarkdownBody",
       "path": "docs/planning/tickets/mvp/T31-ticket-detail-route.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T32",
@@ -426,7 +426,7 @@
       ],
       "provides": "Deps route with direct deps + dependents + unresolved lists",
       "path": "docs/planning/tickets/mvp/T32-dep-neighborhood-route.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T33",
@@ -445,7 +445,7 @@
       ],
       "provides": "Playwright config + global-setup/teardown + happy-path.spec.ts (MVP acceptance harness)",
       "path": "docs/planning/tickets/mvp/T33-playwright-harness.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T34",
@@ -458,7 +458,7 @@
       ],
       "provides": "screenshots.spec.ts + copy-screenshots.mjs + docs/screenshots/ + README embed",
       "path": "docs/planning/tickets/mvp/T34-screenshots-pipeline.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T35",
@@ -471,7 +471,7 @@
       ],
       "provides": "pyproject.toml coverage gate at 85 + ci.yml unconditional Playwright step",
       "path": "docs/planning/tickets/mvp/T35-ci-tightening.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T36",
@@ -487,7 +487,7 @@
       ],
       "provides": "FileAdapter.search_tickets + SearchHit model + pure file_adapter/search.py ranking over ticket id/title/provides/body",
       "path": "docs/planning/tickets/v1/T36-full-text-search-capability.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T37",
@@ -502,7 +502,7 @@
       ],
       "provides": "FileAdapter.get_graph -> TicketGraph (run-state nodes + dependsOn edges) reusing the shared TicketProjection",
       "path": "docs/planning/tickets/v1/T37-dependency-graph-projection.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T38",
@@ -516,7 +516,7 @@
       ],
       "provides": "Roadmap model widened with milestones[] + pure parse_milestones; RealFileAdapter.get_roadmap returns full body + structured milestones",
       "path": "docs/planning/tickets/v1/T38-structured-roadmap-parse.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T39",
@@ -529,7 +529,7 @@
       ],
       "provides": "FileWatcher port (start/stop/subscribe -> AsyncIterator[ChangeEvent]) + ChangeEvent model + deterministic FakeFileWatcher",
       "path": "docs/planning/tickets/v1/T39-file-watcher-port.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T40",
@@ -542,7 +542,7 @@
       ],
       "provides": "RealFileWatcher (watchdog Observer, debounced, thread->async fan-out, project-relative ChangeEvent paths) + watchdog dependency",
       "path": "docs/planning/tickets/v1/T40-watchdog-real-file-watcher.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T41",
@@ -557,7 +557,7 @@
       ],
       "provides": "GET /api/v1/search?q= returning full-text SearchHit results in a SearchResponse envelope",
       "path": "docs/planning/tickets/v1/T41-search-endpoint.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T42",
@@ -572,7 +572,7 @@
       ],
       "provides": "GET /api/v1/graph returning a TicketGraph (run-state nodes + dependsOn edges) for the frontend Cytoscape render",
       "path": "docs/planning/tickets/v1/T42-graph-endpoint.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T43",
@@ -585,7 +585,7 @@
       ],
       "provides": "GET /api/v1/roadmap returning the full Roadmap (bodyMarkdown + bodyHtml + structured milestones) or { present:false }",
       "path": "docs/planning/tickets/v1/T43-roadmap-endpoint-widen.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T44",
@@ -600,7 +600,7 @@
       ],
       "provides": "an injected FileWatcher started/stopped by the app lifespan + get_file_watcher DI - the watcher backbone for the SSE endpoint",
       "path": "docs/planning/tickets/v1/T44-file-watcher-lifecycle.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T45",
@@ -613,7 +613,7 @@
       ],
       "provides": "GET /api/v1/events streaming file-change notifications as text/event-stream for live SPA updates",
       "path": "docs/planning/tickets/v1/T45-events-sse-endpoint.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T46",
@@ -628,7 +628,7 @@
       ],
       "provides": "regenerated src/lib/api/types.ts + getGraph()/searchTickets()/expanded getRoadmap() wrappers + model aliases",
       "path": "docs/planning/tickets/v1/T46-typed-api-client.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T47",
@@ -642,7 +642,7 @@
       ],
       "provides": "/graph route + DepGraph.svelte (Cytoscape bundled) + accessible DOM node-hook, nodes colored by run-state, click-through to /tickets/[id]",
       "path": "docs/planning/tickets/v1/T47-graph-route.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T48",
@@ -657,7 +657,7 @@
       ],
       "provides": "/roadmap route + MilestoneSection.svelte rendering the sanitized body via MarkdownBody + structured milestones",
       "path": "docs/planning/tickets/v1/T48-roadmap-route.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T49",
@@ -674,7 +674,7 @@
       ],
       "provides": "NavSearch.svelte = the TopBar nav surface (links to /graph + /roadmap + search box) + /search route; owns discoverability of all three new views",
       "path": "docs/planning/tickets/v1/T49-topbar-nav-and-search.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T50",
@@ -687,7 +687,7 @@
       ],
       "provides": "layout-level SSE subscription refreshing the current route on file changes + a subtle updated/disconnected indicator, graceful fallback",
       "path": "docs/planning/tickets/v1/T50-sse-live-updates.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T51",
@@ -702,7 +702,7 @@
       ],
       "provides": "e2e coverage that /graph renders every fixture node with correct run-state and node activation navigates to the ticket",
       "path": "docs/planning/tickets/v1/T51-graph-e2e.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T52",
@@ -717,7 +717,7 @@
       ],
       "provides": "e2e coverage that the global search box surfaces cross-ticket full-text matches that link to tickets, plus the empty state",
       "path": "docs/planning/tickets/v1/T52-search-e2e.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T53",
@@ -733,7 +733,7 @@
       ],
       "provides": "deterministic e2e that a watcher-detected mutation refreshes the open view via SSE + a reusable copy-to-temp dedicated-console helper",
       "path": "docs/planning/tickets/v1/T53-live-update-e2e.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T54",
@@ -750,7 +750,7 @@
       ],
       "provides": "docs/usage.md updated for the new views + the screenshots pipeline extended to capture /graph, /roadmap, /search for the README gallery",
       "path": "docs/planning/tickets/v1/T54-docs-screenshots-refresh.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T55",
@@ -762,7 +762,7 @@
       ],
       "provides": "domain/write.py — canonical Pydantic write DTOs consumed by the FileWriter port, diff engine, endpoints, and the SPA",
       "path": "docs/planning/tickets/v2/T55-write-domain-models.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T56",
@@ -775,7 +775,7 @@
       ],
       "provides": "file_adapter/write_gate.py — ensure_mutable allowing only todo/unknown; TicketNotMutable (409) otherwise",
       "path": "docs/planning/tickets/v2/T56-run-state-gate.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T57",
@@ -790,7 +790,7 @@
       ],
       "provides": "file_adapter/write_render.py — pure render of the desired manifest+md+roadmap PlannedChange set, preserving unknown fields",
       "path": "docs/planning/tickets/v2/T57-write-render.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T58",
@@ -803,7 +803,7 @@
       ],
       "provides": "file_adapter/write_diff.py — dry-run unified DiffPreview computed without writing",
       "path": "docs/planning/tickets/v2/T58-dry-run-diff-engine.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T59",
@@ -817,7 +817,7 @@
       ],
       "provides": "file_adapter/atomic_write.py — atomic three-file co-writer; hard-refuses run-state paths",
       "path": "docs/planning/tickets/v2/T59-atomic-co-writer.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T60",
@@ -832,7 +832,7 @@
       ],
       "provides": "file_adapter/writer_protocol.py FileWriter port (symmetric to FileAdapter) + fake_writer.py FakeFileWriter",
       "path": "docs/planning/tickets/v2/T60-file-writer-port-and-fake.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T61",
@@ -849,7 +849,7 @@
       ],
       "provides": "file_adapter/real_writer.py — production RealFileWriter composing gate+render+diff+atomic",
       "path": "docs/planning/tickets/v2/T61-real-file-writer.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T62",
@@ -864,7 +864,7 @@
       ],
       "provides": "create_app + CLI wire the FileWriter; get_file_writer DI seam",
       "path": "docs/planning/tickets/v2/T62-file-writer-di-wiring.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T63",
@@ -881,7 +881,7 @@
       ],
       "provides": "services/write_service.py WriteService (create/edit/delete/preview) + WriteConflict/WriteValidationError",
       "path": "docs/planning/tickets/v2/T63-write-service.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T64",
@@ -895,7 +895,7 @@
       ],
       "provides": "per-session loopback write token + require_write_token dependency (X-Factory-Write-Token, 401)",
       "path": "docs/planning/tickets/v2/T64-write-token.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T65",
@@ -912,7 +912,7 @@
       ],
       "provides": "POST/PUT/DELETE /api/v1/tickets with ?dryRun, token-gated, published in OpenAPI",
       "path": "docs/planning/tickets/v2/T65-ticket-write-endpoints.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T66",
@@ -927,7 +927,7 @@
       ],
       "provides": "write API client wrappers + regenerated types.ts + writeToken sessionStorage store + WriteTokenPrompt",
       "path": "docs/planning/tickets/v2/T66-write-api-client-and-token-store.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T67",
@@ -940,7 +940,7 @@
       ],
       "provides": "MarkdownEditor (CodeMirror 6) + ticketForm validation (TICKET_ID_PATTERN) + isEditable predicate",
       "path": "docs/planning/tickets/v2/T67-markdown-editor-and-validation.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T68",
@@ -953,7 +953,7 @@
       ],
       "provides": "TicketForm.svelte — editable front-matter fields + body editor + live per-field validation",
       "path": "docs/planning/tickets/v2/T68-ticket-form.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T69",
@@ -967,7 +967,7 @@
       ],
       "provides": "DiffPreviewModal (dry-run diff, gates save+confirm) + ConfirmDialog + unifiedDiff renderer",
       "path": "docs/planning/tickets/v2/T69-diff-preview-modal.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T70",
@@ -985,7 +985,7 @@
       ],
       "provides": "gated edit+delete on /tickets/[id] + EditGate banner + edit/dry-run/save+confirm and delete/confirm flows",
       "path": "docs/planning/tickets/v2/T70-detail-edit-delete.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T71",
@@ -1002,7 +1002,7 @@
       ],
       "provides": "/tickets/new create route reusing TicketForm + dry-run preview + 'New ticket' button on the list",
       "path": "docs/planning/tickets/v2/T71-create-ticket-route.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T72",
@@ -1018,7 +1018,7 @@
       ],
       "provides": "Hypothesis property tests: no write mutates a non-todo ticket; co-writer is all-or-nothing",
       "path": "docs/planning/tickets/v2/T72-write-safety-property-tests.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T73",
@@ -1033,7 +1033,7 @@
       ],
       "provides": "httpx/TestClient coverage of create/edit/delete, token auth (401), non-todo rejection, dry-run, error envelope",
       "path": "docs/planning/tickets/v2/T73-write-endpoint-integration-tests.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T74",
@@ -1076,7 +1076,7 @@
       ],
       "provides": "release.yml signs wheel+sdist + publishes sigstore/cosign attestations on tag vX.Y.Z + a verify step",
       "path": "docs/planning/tickets/v2/T76-signed-releases-sigstore.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T77",
@@ -1092,7 +1092,7 @@
       ],
       "provides": "usage.md editing section + write-token workflow + README write capabilities + signed-release verification",
       "path": "docs/planning/tickets/v2/T77-v2-docs-refresh.md",
-      "status": "todo"
+      "status": "merged"
     }
   ]
 }
