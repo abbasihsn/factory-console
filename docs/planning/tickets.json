@@ -985,7 +985,7 @@
       ],
       "provides": "gated edit+delete on /tickets/[id] + EditGate banner + edit/dry-run/save+confirm and delete/confirm flows",
       "path": "docs/planning/tickets/v2/T70-detail-edit-delete.md",
-      "status": "merged"
+      "status": "todo"
     },
     {
       "id": "T71",
@@ -1002,7 +1002,7 @@
       ],
       "provides": "/tickets/new create route reusing TicketForm + dry-run preview + 'New ticket' button on the list",
       "path": "docs/planning/tickets/v2/T71-create-ticket-route.md",
-      "status": "merged"
+      "status": "todo"
     },
     {
       "id": "T72",
@@ -1092,7 +1092,7 @@
       ],
       "provides": "usage.md editing section + write-token workflow + README write capabilities + signed-release verification",
       "path": "docs/planning/tickets/v2/T77-v2-docs-refresh.md",
-      "status": "merged"
+      "status": "todo"
     }
   ]
 }
