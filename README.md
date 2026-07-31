@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/abbasihsn/factory-console/actions/workflows/ci.yml/badge.svg)](https://github.com/abbasihsn/factory-console/actions/workflows/ci.yml)
 
-A standalone local console that points at any App-Factory-generated project directory and lets you browse its tickets — status, title, description, and dependencies. Read-only in the MVP; safe editing of `todo` tickets in v2.
+A standalone local console that points at any App-Factory-generated project directory and lets you browse its tickets — status, title, description, and dependencies — and safely edit the ones a factory lane has not claimed yet.
 
 ## Install
 
@@ -12,6 +12,16 @@ Factory Console is a Python wheel on PyPI. Run it with no install via `uvx`, or 
 uvx factory-console            # run without installing
 pipx install factory-console   # install onto your PATH
 ```
+
+## Verifying releases
+
+Every tagged release (`vX.Y.Z`) is signed with a keyless [sigstore](https://www.sigstore.dev/) build-provenance attestation, produced by GitHub's OIDC-backed `actions/attest-build-provenance` action against the wheel and sdist published to PyPI — no long-lived signing key. Verify a downloaded artifact with the `gh` CLI:
+
+```
+gh attestation verify factory_console-X.Y.Z-py3-none-any.whl --repo abbasihsn/factory-console
+```
+
+The attestation bundle is also attached to the artifact's [GitHub Release](https://github.com/abbasihsn/factory-console/releases).
 
 ## Quickstart
 
@@ -79,7 +89,7 @@ Regenerate with `pnpm --dir frontend screenshots` (equivalently `pnpm --dir fron
 
 ## Status
 
-Planning complete; the MVP is being built ticket-by-ticket from `docs/planning/tickets/mvp/` in dependency order. See [`docs/planning/ROADMAP.md`](docs/planning/ROADMAP.md) for the ladder.
+The MVP (read-only browsing — ticket list, detail, dependency neighborhood) and v1 (dependency graph, full-text search, roadmap view, live updates) have landed. v2 — safe editing of `todo` tickets behind a loopback write token, plus signed releases — is landing now. Work is built ticket-by-ticket from `docs/planning/tickets/` in dependency order — see [`docs/planning/ROADMAP.md`](docs/planning/ROADMAP.md) for the ladder.
 
 ## License
 
