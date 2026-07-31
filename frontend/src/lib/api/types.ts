@@ -392,9 +392,17 @@ export interface components {
          * Project
          * @description Resolved paths for one App Factory project, discovered per request.
          *
-         *     ``roadmapPath`` and ``runStateDir`` are ``None`` when the corresponding file
-         *     or directory is absent from the target project (both are optional in the
-         *     project layout).
+         *     ``roadmapPath``, ``runStateDir`` and ``runStateSource`` are ``None`` when the
+         *     corresponding file or directory is absent from the target project (all are
+         *     optional in the project layout).
+         *
+         *     ``runStateSource`` is the resolved run-state artifact — the factory's
+         *     ``.factory/run-state.json`` OR a legacy marker directory — and is what
+         *     run-state reads dispatch on. ``runStateDir`` keeps its original meaning
+         *     exactly: a path ONLY when the resolved source is a directory, so a
+         *     JSON-sourced project has ``runStateDir is None``. Read run-state through
+         *     ``runStateSource``; ``runStateDir`` answers only "which directory, if any, is
+         *     off-limits to the writer".
          */
         readonly Project: {
             /**
@@ -416,6 +424,7 @@ export interface components {
             readonly roadmapPath?: string | null;
             /** Runstatedir */
             readonly runStateDir?: string | null;
+            readonly runStateSource?: components["schemas"]["RunStateSource"] | null;
             /**
              * Discoveredat
              * Format: date-time
@@ -488,13 +497,33 @@ export interface components {
         };
         /**
          * RunState
-         * @description A ticket's run-state, derived by probing the factory run-state directory.
+         * @description A ticket's run-state, derived from the project's resolved run-state source.
          *
          *     Subclasses ``str`` so a member compares and serializes as its string value
-         *     (``RunState.todo == "todo"``); the value is the on-disk directory name.
+         *     (``RunState.todo == "todo"``); the value is the name its source uses.
          * @enum {string}
          */
-        readonly RunState: "todo" | "in-flight" | "ready" | "merged" | "unknown";
+        readonly RunState: "todo" | "in-flight" | "ready" | "merged" | "in_progress" | "in_part" | "in_submilestone" | "flagged" | "failed" | "needs_human" | "unknown";
+        /**
+         * RunStateSource
+         * @description A resolved run-state artifact: its form (``kind``) and where it lives.
+         *
+         *     Frozen and ``extra="forbid"`` like every other domain model, and carried on
+         *     :class:`~factory_console.domain.project.Project` so the whole request reads
+         *     through ONE resolution rather than each call site re-probing the filesystem.
+         */
+        readonly RunStateSource: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            readonly kind: "json" | "directory";
+            /**
+             * Path
+             * Format: path
+             */
+            readonly path: string;
+        };
         /**
          * SearchHit
          * @description One ranked full-text search result: a ticket summary, its score, and hits.

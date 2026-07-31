@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/svelte';
 import { describe, expect, it } from 'vitest';
+import type { RunState } from '$lib/api';
 import RunStateBadge from '$lib/components/RunStateBadge.svelte';
 
 // RunStateBadge is presentational: render it with a supplied `runState` and
@@ -69,14 +70,56 @@ describe('RunStateBadge', () => {
 		const { container } = render(RunStateBadge, { props: { runState: 'unknown' } });
 
 		const pill = screen.getByText('Unknown');
-		expect(pill.getAttribute('title')).toBe('run-state directory not present or unresolved');
+		expect(pill.getAttribute('title')).toBe(
+			'No run-state source present, or this ticket is not in it'
+		);
 		expect(container.querySelector('span')).toMatchInlineSnapshot(`
 			<span
 			  class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-slate-100 text-slate-500"
-			  title="run-state directory not present or unresolved"
+			  title="No run-state source present, or this ticket is not in it"
 			>
 			  Unknown
 			</span>
 		`);
 	});
+
+	// The six states only the factory's run-state.json names. Each must render a
+	// labelled, titled, styled pill — a state the map forgot would render an empty
+	// span with `undefined` classes, which is exactly what shipped for every
+	// factory state before the JSON source was read at all.
+	const FACTORY_ONLY_STATES: readonly (readonly [RunState, string])[] = [
+		['in_progress', 'In progress'],
+		['in_part', 'In part'],
+		['in_submilestone', 'In submilestone'],
+		['flagged', 'Flagged'],
+		['failed', 'Failed'],
+		['needs_human', 'Needs human']
+	];
+
+	it.each(FACTORY_ONLY_STATES)('renders the %s variant', (runState, label) => {
+		const { container } = render(RunStateBadge, { props: { runState } });
+
+		const pill = container.querySelector('span');
+		expect(screen.getByText(label)).toBeTruthy();
+		expect(pill?.getAttribute('title')).toBeTruthy();
+		expect(pill?.className).not.toContain('undefined');
+	});
+
+	// The three failure-ish states must be visually distinct from the in-progress
+	// ones: an operator scanning the board needs "a lane stopped and something is
+	// wrong" to look different from "a lane is working".
+	it.each(['flagged', 'failed', 'needs_human'] as const)('paints %s as a failure pill', (state) => {
+		const { container } = render(RunStateBadge, { props: { runState: state } });
+		expect(container.querySelector('span')?.className).toContain('red');
+	});
+
+	it.each(['in_progress', 'in_part', 'in_submilestone'] as const)(
+		'paints %s as an in-progress pill',
+		(state) => {
+			const { container } = render(RunStateBadge, { props: { runState: state } });
+			const className = container.querySelector('span')?.className ?? '';
+			expect(className).toContain('amber');
+			expect(className).not.toContain('red');
+		}
+	);
 });
