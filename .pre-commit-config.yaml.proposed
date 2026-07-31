@@ -1,0 +1,44 @@
+# Pre-commit hooks for factory-console.
+#
+# Reuses the ruff config in pyproject.toml (T02) and the eslint/prettier configs
+# under frontend/ (T03). CI re-runs these same hooks for parity, and `make lint`
+# delegates here, so this file is the single definition of the lint gate.
+
+# tests/fixtures/ holds deliberately malformed test data (bad JSON, a raw
+# un-backticked <script> payload, extensionless run-state markers). The generic
+# whitespace/EOF/yaml hooks would rewrite or reject it, so it is excluded
+# wholesale.
+exclude: '^tests/fixtures/'
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.22
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+        files: '^(server|tests)/.*\.py$'
+      - id: ruff-format
+        files: '^(server|tests)/.*\.py$'
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+
+  - repo: local
+    hooks:
+      - id: frontend-eslint
+        name: eslint (frontend)
+        entry: pnpm --dir frontend lint
+        language: system
+        files: '^frontend/.*\.(ts|svelte|js|html|css)$'
+        pass_filenames: false
+      - id: frontend-prettier
+        name: prettier --check (frontend)
+        entry: pnpm --dir frontend format:check
+        language: system
+        files: '^frontend/.*\.(ts|svelte|js|html|css)$'
+        pass_filenames: false
