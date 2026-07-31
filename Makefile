@@ -22,10 +22,10 @@ test:
 # corrected what it reported. Review `git diff` and re-run to confirm clean.
 lint:
 	@command -v pre-commit >/dev/null 2>&1 || { \
-		echo "make lint requires pre-commit, which is not on PATH."; \
-		echo "Install the dev extra and the hooks:"; \
-		echo "  pip install -e '.[dev]'"; \
-		echo "  pre-commit install"; \
+		echo "make lint requires pre-commit, which is not on PATH." >&2; \
+		echo "Install the dev extra and the hooks:" >&2; \
+		echo "  pip install -e '.[dev]'" >&2; \
+		echo "  pre-commit install" >&2; \
 		exit 1; \
 	}
 	pre-commit run --all-files

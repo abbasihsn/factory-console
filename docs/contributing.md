@@ -34,6 +34,11 @@ make test    # pytest (server) + pnpm test (frontend Vitest)
 make lint    # pre-commit run --all-files — the same gate CI runs
 ```
 
+Unlike `make test`, `make lint` **writes**: `ruff check` runs with `--fix` and the
+whitespace/end-of-file hooks rewrite in place, so a failing run may have already
+corrected some of what it reported. Review `git diff` afterwards and re-run to
+confirm a clean pass.
+
 The pre-commit hook — configured in
 [`../.pre-commit-config.yaml`](../.pre-commit-config.yaml) — runs the same ruff +
 eslint + prettier checks; CI re-runs them so a commit that skipped the local hook
