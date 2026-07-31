@@ -43,7 +43,9 @@ from factory_console.domain.write import (
     WriteResult,
 )
 from factory_console.file_adapter import atomic_write, write_diff, write_gate, write_render
+from factory_console.file_adapter.manifest import load_manifest, manifest_entry_to_ticket_stub
 from factory_console.file_adapter.real import RealFileAdapter
+from factory_console.file_adapter.ticket_md import TicketFileMissing
 
 
 class RealFileWriter:
@@ -133,7 +135,16 @@ class RealFileWriter:
         preview = write_diff.preview(ticket_id, planned)
         # Re-read the deleted ticket's FINAL state before the write erases its .md,
         # so the applied WriteResult can carry it (ticket-set-iff-applied invariant).
-        ticket = self._reread(project, ticket_id)
+        # An orphaned entry (manifest present, .md already absent) makes the full
+        # re-read RAISE (``_reread``'s own docstring says so) rather than return a
+        # ticket — right for a READ, but a pre-delete snapshot must not block the
+        # delete it only exists to describe, or the orphan could never be removed.
+        # Falls back to a manifest-only snapshot, mirroring how FakeFileWriter
+        # snapshots an unseeded body as ``""``.
+        try:
+            ticket = self._reread(project, ticket_id)
+        except TicketFileMissing:
+            ticket = self._manifest_only_snapshot(project, ticket_id)
         atomic_write.apply_changes(project, planned)
         return self._applied_result(ticket_id, preview, ticket)
 
@@ -156,6 +167,20 @@ class RealFileWriter:
         ticket = RealFileAdapter().get_ticket(project, ticket_id)
         assert ticket is not None, f"ticket {ticket_id} vanished from the manifest after write"
         return ticket
+
+    @staticmethod
+    def _manifest_only_snapshot(project: Project, ticket_id: str) -> Ticket:
+        """Build a bare :class:`Ticket` from the manifest entry alone, body empty.
+
+        The pre-delete fallback for :meth:`delete_ticket` on an orphaned entry: its
+        ``.md`` is already absent, so there is nothing to read a body from — mirrors
+        :class:`FakeFileWriter`'s snapshot-before-removal, which defaults an
+        unseeded body to ``""`` for the same reason.
+        """
+        _schema_version, entries = load_manifest(project.ticketsManifestPath)
+        index = write_render._find_entry_index(entries, ticket_id)
+        assert index is not None  # existence already validated by render_delete
+        return manifest_entry_to_ticket_stub(entries[index], project.ticketsDir)
 
     @staticmethod
     def _applied_result(ticket_id: str, preview: DiffPreview, ticket: Ticket) -> WriteResult:

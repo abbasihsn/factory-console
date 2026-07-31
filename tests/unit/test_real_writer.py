@@ -259,6 +259,24 @@ def test_delete_todo_ticket_removes_files_and_returns_snapshot(tmp_path: Path) -
     assert "CAD-131" not in project.roadmapPath.read_text()
 
 
+def test_delete_orphaned_manifest_entry_removes_it_instead_of_404ing(tmp_path: Path) -> None:
+    # An orphan (manifest entry present, .md already gone — e.g. a partial App
+    # Factory write) must still be deletable: the pre-delete re-read used to RAISE
+    # TicketFileMissing before apply_changes ever ran, so the orphan could never be
+    # cleaned up through the API. It now falls back to a manifest-only snapshot.
+    writer, project = _load(tmp_path)
+    (project.ticketsDir / "CAD-131.md").unlink()
+
+    result = writer.delete_ticket(project, "CAD-131")
+
+    assert result.applied is True
+    assert result.ticket is not None
+    assert result.ticket.id == "CAD-131"
+    assert result.ticket.bodyMarkdown == ""  # nothing to read a body from
+    adapter = RealFileAdapter()
+    assert "CAD-131" not in {s.id for s in adapter.list_tickets(project)}
+
+
 def test_delete_unknown_id_raises_unknown_ticket(tmp_path: Path) -> None:
     writer, project = _load(tmp_path)
     with pytest.raises(UnknownTicket):

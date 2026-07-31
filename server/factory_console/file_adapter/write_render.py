@@ -401,6 +401,13 @@ def _overlay_front_matter(existing: Mapping[str, Any], edit: TicketEdit) -> dict
     sends ``"track": null`` MEANS clear it, and that still works, because the key is
     in the supplied set. A client that omits the key changes nothing.
 
+    ``provides`` gets the SAME extra guard :func:`_merge_edit` applies on the
+    manifest side: the SPA always sends it (no "omit me" default the way
+    ``track``/``milestone`` have), so an untouched header carrying a genuine
+    multi-entry ``provides`` list would otherwise be fused to one scalar string by
+    an edit that never meant to touch it — desyncing the header from the manifest
+    entry :func:`_merge_edit` just kept as a list.
+
     ``frontMatter`` is applied last but filtered through
     :func:`_client_front_matter`, so a client can add or override its own keys and
     nothing else.
@@ -417,6 +424,12 @@ def _overlay_front_matter(existing: Mapping[str, Any], edit: TicketEdit) -> dict
             if key in existing and key in supplied
         }
     )
+    if (
+        "provides" in existing
+        and "provides" in supplied
+        and _provides_unchanged(existing.get("provides"), edit.provides)
+    ):
+        merged["provides"] = existing.get("provides")
     merged.update(_client_front_matter(edit.frontMatter))
     return merged
 

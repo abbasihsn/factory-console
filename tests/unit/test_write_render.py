@@ -761,6 +761,39 @@ def test_edit_refreshes_front_matter_keys_it_also_writes_to_the_manifest(tmp_pat
     assert f"provides: {entry['provides']}" in md.newText
 
 
+def test_edit_preserves_a_multi_entry_provides_list_in_the_header_when_untouched(
+    tmp_path: Path,
+) -> None:
+    # The manifest-side guard (test_edit_preserves_a_multi_entry_provides_list_when_
+    # untouched) has a header-side twin: a title-only edit must not fuse an existing
+    # multi-entry ``provides`` list in the .md header into one scalar string either.
+    project = _make_project(tmp_path)
+    manifest = json.loads(json.dumps(_MANIFEST))  # deep copy
+    manifest["tickets"][1]["provides"] = ["GET /api/v1/trails/{slug}/status", "Trail SDK"]
+    _seed(project, manifest=manifest)
+    (project.ticketsDir / "TM-015.md").write_text(
+        "---\n"
+        "id: TM-015\n"
+        "title: Public read API\n"
+        "status: todo\n"
+        "provides:\n"
+        "  - GET /api/v1/trails/{slug}/status\n"
+        "  - Trail SDK\n"
+        "---\n"
+        "# Old body\n",
+        encoding="utf-8",
+    )
+
+    changes = render_edit(
+        project, "TM-015", _edit(provides="GET /api/v1/trails/{slug}/status, Trail SDK")
+    )
+
+    md = _by_rel(changes, "docs/planning/tickets/TM-015.md")
+    assert "- GET /api/v1/trails/{slug}/status" in md.newText
+    assert "- Trail SDK" in md.newText
+    assert "GET /api/v1/trails/{slug}/status, Trail SDK" not in md.newText  # not fused
+
+
 def test_edit_does_not_add_mirrored_keys_a_header_never_carried(tmp_path: Path) -> None:
     """Refreshing is limited to keys already on disk, so a sparse header stays sparse."""
     project = _make_project(tmp_path)
