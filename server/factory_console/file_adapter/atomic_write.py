@@ -10,7 +10,8 @@ rendering its new text to a sibling temp file, ``fsync``-ing it, then
 ``os.replace``-ing it into place (atomic single-file swap on POSIX); a delete is an
 unlink. Every change is guarded BEFORE any write, and — as an independent second
 defense on top of write-render — the console HARD-REFUSES writing into the factory
-run-state directory.
+run-state source, in EITHER of its forms: a marker directory or the factory's
+``.factory/run-state.json``.
 
 Concurrency (see ARCHITECTURE.md "Concurrency: single-worker Uvicorn. No locks"):
 the console runs one Uvicorn worker and this is its only writer, so no file lock is
@@ -35,15 +36,15 @@ import tempfile
 from pathlib import Path
 
 from factory_console.domain.project import Project
+from factory_console.domain.run_state_source import RUN_STATE_SOURCE_LOCATIONS
 from factory_console.errors import FactoryConsoleError
 from factory_console.file_adapter.path_safety import PathTraversal
-from factory_console.file_adapter.run_state import RUN_STATE_RELATIVE_LOCATIONS
 from factory_console.file_adapter.write_render import PlannedChange
 
 _LOGGER = logging.getLogger(__name__)
 
 _ESCAPES_ROOT_REASON = "Change target resolves outside the project root"
-_RUN_STATE_REASON = "Change target resolves inside the factory run-state directory"
+_RUN_STATE_REASON = "Change target resolves inside the factory run-state source"
 
 # Manifest first, ticket .md second, roadmap last — a fixed, deterministic apply
 # order so a partial failure always fails at a known boundary and the manifest
@@ -138,12 +139,13 @@ def _guard_all(project: Project, changes: list[PlannedChange]) -> None:
     """Refuse the whole change-set before ANY write if any target is unsafe.
 
     For every change, resolve its absolute target and assert it is (a) contained
-    under ``project.rootPath`` and (b) NOT inside any run-state directory. Both
-    sides are ``resolve(strict=False)``-d — matching write-render's symlinked-root
-    idiom — so a symlinked temp root does not defeat :meth:`Path.is_relative_to`.
+    under ``project.rootPath`` and (b) NOT inside any run-state artifact (either
+    a marker directory or the factory's ``run-state.json``). Both sides are
+    ``resolve(strict=False)``-d — matching write-render's symlinked-root idiom —
+    so a symlinked temp root does not defeat :meth:`Path.is_relative_to`.
     """
     root = project.rootPath.resolve(strict=False)
-    forbidden = _forbidden_run_state_dirs(project)
+    forbidden = _forbidden_run_state_paths(project)
     for change in changes:
         target = change.path.resolve(strict=False)
         if not target.is_relative_to(root):
@@ -152,20 +154,31 @@ def _guard_all(project: Project, changes: list[PlannedChange]) -> None:
             raise PathTraversal(change.relPath, reason=_RUN_STATE_REASON)
 
 
-def _forbidden_run_state_dirs(project: Project) -> list[Path]:
-    """Return every run-state directory this writer must never write into (resolved).
+def _forbidden_run_state_paths(project: Project) -> list[Path]:
+    """Return every run-state artifact this writer must never write into (resolved).
 
-    Both the documented project-relative locations
-    (:data:`~factory_console.file_adapter.run_state.RUN_STATE_RELATIVE_LOCATIONS`)
-    under the project root AND the concretely discovered ``project.runStateDir``
-    (when set) — so the refusal holds whether or not discovery found the directory.
+    Covers BOTH artifact forms the console consumes read-only: every documented
+    project-relative location
+    (:data:`~factory_console.domain.run_state_source.RUN_STATE_SOURCE_LOCATIONS`
+    — the marker DIRECTORIES *and* the factory's ``run-state.json``) under the
+    project root, AND the concretely resolved ``project.runStateSource.path``
+    (when set) — so the refusal holds whether or not discovery found the artifact.
+
+    Derived from the FULL source tuple, NOT the directory-only
+    :data:`~factory_console.file_adapter.run_state.RUN_STATE_RELATIVE_LOCATIONS`:
+    a JSON-sourced project has ``runStateDir is None``, so a directory-only list
+    named nothing at all for exactly the form the factory actually writes, leaving
+    the highest-precedence run-state artifact unguarded. A directory entry forbids
+    its whole subtree and a JSON entry forbids exactly that file — the
+    :meth:`Path.is_relative_to` test in :func:`_guard_all` gives both, since a
+    path is relative to itself.
     """
     forbidden = [
-        (project.rootPath / location).resolve(strict=False)
-        for location in RUN_STATE_RELATIVE_LOCATIONS
+        (project.rootPath / relative).resolve(strict=False)
+        for _kind, relative in RUN_STATE_SOURCE_LOCATIONS
     ]
-    if project.runStateDir is not None:
-        forbidden.append(project.runStateDir.resolve(strict=False))
+    if project.runStateSource is not None:
+        forbidden.append(project.runStateSource.path.resolve(strict=False))
     return forbidden
 
 

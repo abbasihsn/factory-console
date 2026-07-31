@@ -269,6 +269,12 @@ def test_a_hyphenated_status_is_not_munged_into_an_underscored_member(tmp_path: 
         pytest.param(json.dumps({"version": 1, "tickets": None}), id="tickets-null"),
         pytest.param(json.dumps(["T01"]), id="document-not-an-object"),
         pytest.param("", id="empty-file"),
+        # Deep nesting makes ``json.loads`` raise ``RecursionError``, NOT a
+        # ``JSONDecodeError``. This artifact is written by another process, so
+        # the "never raises" contract has to hold for the exceptions pathological
+        # input actually produces — otherwise one bad file 500s every
+        # list/read/write request until it changes.
+        pytest.param("[" * 20_000 + "]" * 20_000, id="too-deeply-nested"),
     ],
 )
 def test_a_malformed_file_yields_unknown_for_every_ticket_without_raising(

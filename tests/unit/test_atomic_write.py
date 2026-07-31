@@ -18,12 +18,12 @@ from pathlib import Path
 import pytest
 
 from factory_console.domain import Project
+from factory_console.domain.run_state_source import RUN_STATE_SOURCE_LOCATIONS, RunStateSource
 from factory_console.domain.write import TicketDraft
 from factory_console.file_adapter import atomic_write
 from factory_console.file_adapter.atomic_write import AtomicWriteError, apply_changes
 from factory_console.file_adapter.path_safety import PathTraversal
 from factory_console.file_adapter.real import RealFileAdapter
-from factory_console.file_adapter.run_state import RUN_STATE_RELATIVE_LOCATIONS
 from factory_console.file_adapter.write_render import PlannedChange, render_create
 
 _MANIFEST = {
@@ -202,16 +202,23 @@ def test_apply_creates_missing_parent_dir(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "location",
-    [location.as_posix() for location in RUN_STATE_RELATIVE_LOCATIONS],
+    "run_state_rel",
+    # EVERY documented run-state location, in BOTH forms — a marker directory
+    # (whose subtree is forbidden) and the factory's ``run-state.json`` (the file
+    # itself). Parametrizing over the directory-only subset would give the JSON
+    # source, which is the highest-precedence artifact, zero coverage by
+    # construction — the gap this test exists to close.
+    [
+        relative.as_posix() if kind == "json" else f"{relative.as_posix()}/todo/TM-050"
+        for kind, relative in RUN_STATE_SOURCE_LOCATIONS
+    ],
 )
 def test_run_state_relative_location_refused_before_any_write(
-    tmp_path: Path, location: str
+    tmp_path: Path, run_state_rel: str
 ) -> None:
     project = _make_project(tmp_path)
     _seed(project)
     before = _snapshot(project)
-    run_state_rel = f"{location}/todo/TM-050"
     changes = [
         # A valid manifest change paired with the forbidden one: the guard must
         # refuse the whole set before the manifest is ever touched.
@@ -247,6 +254,34 @@ def test_discovered_run_state_dir_refused_before_any_write(tmp_path: Path) -> No
 
     assert not (project.rootPath / run_state_rel).exists()
     assert _snapshot(project) == before
+
+
+def test_discovered_json_run_state_source_refused_before_any_write(tmp_path: Path) -> None:
+    """A JSON-sourced project's ``run-state.json`` is refused via the resolved source.
+
+    The JSON-source regression: such a project has ``runStateDir is None``, so a
+    guard consulting only the marker directory would name nothing for it and let
+    the console clobber the factory's authoritative run-state file.
+    """
+    root = tmp_path / "project"
+    run_state_json = root / ".factory" / "run-state.json"
+    run_state_json.parent.mkdir(parents=True, exist_ok=True)
+    run_state_json.write_text('{"version": 1, "tickets": {}}\n', encoding="utf-8")
+    project = _make_project(tmp_path).model_copy(
+        update={"runStateSource": RunStateSource(kind="json", path=run_state_json)}
+    )
+    _seed(project)
+    assert project.runStateDir is None
+    before = _snapshot(project)
+    changes = [
+        _planned(project, _MANIFEST_REL, '{"tickets": []}\n'),
+        _planned(project, ".factory/run-state.json", '{"tickets": {}}\n'),
+    ]
+
+    with pytest.raises(PathTraversal):
+        apply_changes(project, changes)
+
+    assert _snapshot(project) == before  # the factory's run-state is untouched
 
 
 # --------------------------------------------------------------------------- #

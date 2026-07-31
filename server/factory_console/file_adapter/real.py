@@ -188,7 +188,10 @@ class RealFileAdapter:
         project has no run-state directory, so probing the directory would report
         ``unknown`` for every ticket the factory has actually merged. A
         :class:`~factory_console.file_adapter.path_safety.PathTraversal` for an
-        unsafe id propagates per that contract.
+        unsafe id propagates per that contract, but ONLY when the resolved source
+        is a DIRECTORY — that is the only form that turns the id into a path
+        segment. A JSON source joins no path, so it looks an unsafe id up as an
+        ordinary (absent) key and answers ``unknown``.
         """
         return probe_ticket_state_from_source(project.runStateSource, ticket_id)
 
@@ -339,8 +342,10 @@ class RealFileAdapter:
     def _project_manifest(project: Project) -> TicketProjection:
         """Materialize the manifest stubs and wrap them in a per-request projection.
 
-        Run-state is resolved lazily by probing the project's run-state directory,
-        the one behavioral difference from the fake adapter's seeded-map lookup. A
+        Run-state is resolved through the project's run-state SOURCE — a JSON
+        source is read and parsed once, when the projection is built; a directory
+        source is probed per ticket — which is the one behavioral difference from
+        the fake adapter's seeded-map lookup. A
         :class:`~factory_console.file_adapter.manifest.MalformedManifest` from the
         manifest read propagates to the caller.
         """

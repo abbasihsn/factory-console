@@ -206,7 +206,13 @@ def read_json_run_state(path: Path) -> JsonRunState:
         return JsonRunState()
     try:
         document = json.loads(raw)
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError, MemoryError):
+        # Not just ``JSONDecodeError`` (a ``ValueError`` subclass): this artifact
+        # is written by another process, and ``json.loads`` answers pathological
+        # input with exceptions outside that type — deeply nested arrays raise
+        # ``RecursionError``, a huge document ``MemoryError``. Letting either
+        # escape would break the "NEVER raises" contract above and 500 every
+        # list/read/write request until the file changed.
         _LOGGER.warning("run-state: %s is not valid JSON; every ticket resolves unknown", path)
         return JsonRunState()
 
@@ -224,7 +230,11 @@ def read_json_run_state(path: Path) -> JsonRunState:
     for ticket_id, entry in tickets.items():
         status = entry.get("status") if isinstance(entry, dict) else None
         if not isinstance(status, str):
-            _LOGGER.warning("run-state: %s entry %s has no string status", path, ticket_id)
+            # ``%r`` (like the status below), never ``%s``: this key is arbitrary
+            # text from a file the console does not own, and the log formatter is
+            # one record per line — an unescaped newline in it would forge log
+            # records (e.g. a fake write-audit line).
+            _LOGGER.warning("run-state: %s entry %r has no string status", path, ticket_id)
             continue
         state = FACTORY_STATUS_ALIASES.get(status)
         if state is None:
