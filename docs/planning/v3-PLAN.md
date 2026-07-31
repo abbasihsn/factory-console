@@ -1,0 +1,162 @@
+# v3 — Reconcile the console with the factory that builds it
+
+**Milestone:** v3 · **Tickets:** T78–T86 · **Status:** planned, not started
+
+v1 made the console read a project. v2 let it safely edit one. **v3 is about the gap
+between the factory the console was specced against and the factory that actually
+built it.**
+
+---
+
+## 1. The finding that set this milestone's scope
+
+`docs/architecture.md` describes a *"Factory run-state **directory** (read-only) — the
+factory-owned directory the console probes to map each ticket to a run-state"*, and
+`file_adapter/run_state.py` implements exactly that: it probes
+`.factory/run-state/` and `docs/planning/.run-state/` for per-state marker
+subdirectories.
+
+**The factory writes neither.** It writes a single JSON *file*, `.factory/run-state.json`:
+
+```json
+{ "version": 1, "tickets": { "T01": { "status": "merged", "pr_url": null }, ... } }
+```
+
+Run against this repository — the repository the factory built, using the console's own
+adapter:
+
+```
+find_run_state_dir(factory-console) = None
+  T01 -> unknown
+  T75 -> unknown
+  T77 -> unknown
+MUTABLE_STATES = ['todo', 'unknown']
+=> every ticket in this repo is MUTABLE: True
+```
+
+So the run-state badge reads `unknown` for all 77 tickets, and — because
+`write_gate.MUTABLE_STATES` treats `unknown` as mutable — **the gate that exists to stop
+a user editing an in-flight or merged ticket is inert in the only repository the console
+ships against.** It is not bypassed; it never engages, because it can never see a state.
+
+Nothing caught this. The unit tests build a run-state directory in a tmpdir and the
+adapter reads it correctly, so the tests pass and prove only that the code matches the
+spec. **The spec was never checked against the factory.** Fixtures that are written from
+the same assumption as the code under test cannot detect that the assumption is wrong.
+
+### 1b. The same mismatch, one level down: the states themselves
+
+`RunState` has five members — `todo`, `in-flight`, `ready`, `merged`, `unknown`. The
+factory's `FAC_STATES` (`app-factory/lib/common.sh:864`) has nine:
+
+```
+todo  in_progress  ready  in_part  in_submilestone  merged  flagged  failed  needs_human
+```
+
+**Three overlap.** There is no `in_flight` in the factory at all — the console invented
+it; the factory's in-progress state is `in_progress`. And the six states the console
+cannot represent include the three an operator would most want to see: `flagged`,
+`failed`, `needs_human`.
+
+This compounds §2 below. A ticket the factory has marked `failed` maps to no console
+state, falls to `unknown`, and `unknown` is mutable — so the states that most need
+protecting are the ones the gate is least able to see.
+
+That is the theme of v3: **stop assuming the factory's shape and read what it writes.**
+
+## 2. Why `unknown` is mutable, and why that stays
+
+The `unknown → mutable` rule is not a bug on its own. It is what lets the console work in
+a project the factory has never touched, where there is no run state at all and every
+ticket is legitimately editable. Removing it would make the console useless on a fresh
+plan.
+
+The defect is that `unknown` currently means two different things:
+
+| what is true on disk | what the gate should do |
+|---|---|
+| no run-state source of any kind | treat as mutable — nothing claims otherwise |
+| a run-state source exists, ticket absent from it | **refuse** — the source is authoritative and it does not list this ticket |
+
+Today both collapse to `unknown`. **T80 splits them.** This is the eighth time in this
+program's history that an empty result had to be made distinguishable from an unasked
+question; it is the same rule, arriving in a new place.
+
+## 3. What else `.factory/` already holds that the console shows nothing of
+
+The console browses tickets and says nothing about the runs that produced them, even
+though the factory leaves a full record beside them:
+
+| path | content |
+|---|---|
+| `.factory/run-state.json` | per-ticket `status` + `pr_url` |
+| `.factory/metrics/ledger.jsonl` | per-lane spend: model, effort, wall time, turns, tokens by model, `cost_usd` |
+| `.factory/results/T*.json` | per-ticket lane result |
+| `.factory/receipts/T*.json` | review receipts |
+| `.factory/reports/sprint-*.json` | sprint reports |
+| `.factory/qa/result-*.json` | QA lane verdicts |
+| `.factory/last-stop.json` | why the last run stopped |
+
+A real example from this repo's ledger — one ticket, one lane:
+
+```json
+{"ids":["T71"],"model":"sonnet","wall_min":12,"turns":27,
+ "tokens":{"output":40143,"total":7543318},"cost_usd":5.74,
+ "by_model":{"claude-sonnet-5":{...},"claude-opus-4-8[1m]":{...}}}
+```
+
+Nothing in the console surfaces that. v3 adds two read paths (runs, spend) and the two
+views on top of them.
+
+## 4. `.factory/` is gitignored — which bounds what v3 may promise
+
+`.gitignore:40` ignores `.factory/`. Everything in §3 is **local to the machine that ran
+the factory** and absent from a fresh clone. v3 therefore treats every one of these
+sources as *optional*: a missing source renders an explicit "no run data for this
+project" state, never an empty list that looks like zero spend. The console must not
+imply a run cost nothing because the record of it was never committed.
+
+This also explains a divergence visible right now: `docs/planning/tickets.json` marks
+T71, T74, T75 and T77 `todo` while `.factory/run-state.json` marks all four `merged`.
+The manifest field is a **seed**, written by hand; the factory reads it only when no run
+state exists and never writes back to it. The committed file is the stale one. T78 makes
+the console show the authoritative source rather than the seed, and says which it used.
+
+## 5. Tickets
+
+| id | track | depends on | what it delivers |
+|---|---|---|---|
+| **T78** | file-adapter | — | JSON run-state source (`.factory/run-state.json`) with the directory form kept as fallback; `RunState` widened to the factory's nine states; the resolved source reported, never guessed |
+| **T79** | file-adapter | — | ledger reader: `.factory/metrics/ledger.jsonl` → typed spend records, tolerant of partial lines |
+| **T80** | backend | T78 | write gate splits "no source" from "absent from a source that exists"; only the first is mutable |
+| **T81** | backend | T78 | `GET /api/v1/runs` — per-ticket run record from run-state + results + receipts |
+| **T82** | backend | T79 | `GET /api/v1/spend` — spend aggregated by ticket, model and phase |
+| **T83** | frontend | T81 | `/runs` view — status, PR link, lane outcome per ticket |
+| **T84** | frontend | T82 | `/spend` view — cost by ticket and by model, with the unavailable case explicit |
+| **T85** | infra-devops | — | `make lint` runs the repo's own `.pre-commit-config.yaml` hooks, so a build lane can check what CI checks |
+| **T86** | docs | T80–T85 | `architecture.md` corrected on the run-state source; `usage.md` gains runs + spend |
+
+**T78, T79 and T85 have no dependencies and share no files.** Any two can run
+concurrently.
+
+## 6. What v3 does not do
+
+- It does **not** write to `.factory/`. The console stays read-only there; v2's write
+  surface remains limited to `docs/planning/`.
+- It does **not** make the console drive the factory. No launching, no merging.
+- It does **not** commit `.factory/` or change `.gitignore`. The absent-source case is
+  handled in the console instead.
+
+## 7. The T85 case, recorded because it is about the factory
+
+`frontend/src/lib/forms/ticketForm.test.ts` fails the repo's own `frontend-prettier`
+pre-commit hook. `git log` attributes it to `f18b7f8 "fixed 7 review issues"` — a factory
+review-fix commit. `.pre-commit-config.yaml` states that *"CI re-runs these same hooks for
+parity"*, and CI did fail on it, after the merge.
+
+So a lane produced code that fails a gate the repository declares, its QA passed it, and
+the gate fired only post-merge. The lane's declared toolchain
+(`FAC_BUILD_TOOLS="node npm pnpm corepack"`) names the runtime but nothing runs the
+repository's own hook config. T85 gives a lane one command to run it. The corresponding
+factory-side finding is recorded in app-factory's decision log; T85 is only this
+repository's half.
