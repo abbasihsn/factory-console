@@ -9,8 +9,26 @@ dev:
 test:
 	$(PYTHON) -m pytest -q && cd frontend && pnpm test
 
+# lint delegates to pre-commit instead of enumerating checks, because CI runs
+# `pre-commit run --all-files` and a Makefile that re-derives the hook set is a
+# second authority that drifts from the first (it did, in both directions: it
+# walked into tests/fixtures/ that the hooks exclude, and it never ran prettier
+# that the hooks do). Add new checks to .pre-commit-config.yaml and they land
+# here and in CI at once. No fallback when pre-commit is missing — a fallback
+# that checks something different is the defect this delegation removes.
+#
+# Unlike the recipe it replaces, this one WRITES: ruff-check runs with --fix and
+# the whitespace/EOF hooks rewrite in place, so a failing run may have already
+# corrected what it reported. Review `git diff` and re-run to confirm clean.
 lint:
-	ruff check . && ruff format --check . && cd frontend && pnpm lint
+	@command -v pre-commit >/dev/null 2>&1 || { \
+		echo "make lint requires pre-commit, which is not on PATH." >&2; \
+		echo "Install the dev extra and the hooks:" >&2; \
+		echo "  pip install -e '.[dev]'" >&2; \
+		echo "  pre-commit install" >&2; \
+		exit 1; \
+	}
+	pre-commit run --all-files
 
 # build and package both go through scripts/package.sh — the one reproducible
 # recipe that rebuilds the SPA and bakes it into the (gitignored) _static/ before

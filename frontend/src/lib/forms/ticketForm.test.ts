@@ -254,9 +254,7 @@ describe('toTicketCreate', () => {
 	});
 
 	it('parses dependsOn and files from newline text, trimming and dropping blanks', () => {
-		const body = toTicketCreate(
-			values({ dependsOn: 'T1\n  T2  \n\nT3', files: 'a.ts\n\n b.ts ' })
-		);
+		const body = toTicketCreate(values({ dependsOn: 'T1\n  T2  \n\nT3', files: 'a.ts\n\n b.ts ' }));
 
 		expect(body.dependsOn).toEqual(['T1', 'T2', 'T3']);
 		expect(body.files).toEqual(['a.ts', 'b.ts']);
