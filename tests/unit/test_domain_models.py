@@ -294,15 +294,32 @@ def test_run_state_members_are_exactly_these() -> None:
         "in_flight",
         "ready",
         "merged",
+        "in_progress",
+        "in_part",
+        "in_submilestone",
+        "flagged",
+        "failed",
+        "needs_human",
         "unknown",
     ]
 
 
-def test_run_state_values_mirror_on_disk_dir_names() -> None:
+def test_run_state_values_mirror_the_name_their_source_uses() -> None:
+    # Named by the legacy run-state DIRECTORY form (``in-flight`` hyphenated).
     assert RunState.todo.value == "todo"
     assert RunState.in_flight.value == "in-flight"
     assert RunState.ready.value == "ready"
     assert RunState.merged.value == "merged"
+    # Named by the factory's run-state.json (FAC_STATES, underscored). These are
+    # NOT hyphenated variants of the directory names: the factory has no
+    # ``in-flight`` at all, and ``in_progress`` must never collapse onto it.
+    assert RunState.in_progress.value == "in_progress"
+    assert RunState.in_part.value == "in_part"
+    assert RunState.in_submilestone.value == "in_submilestone"
+    assert RunState.flagged.value == "flagged"
+    assert RunState.failed.value == "failed"
+    assert RunState.needs_human.value == "needs_human"
+    # Named by no source: no run-state source present, or it could not be read.
     assert RunState.unknown.value == "unknown"
 
 
