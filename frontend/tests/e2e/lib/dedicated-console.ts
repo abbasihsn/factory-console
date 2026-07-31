@@ -30,6 +30,31 @@ const URL_PATTERN = /http:\/\/127\.0\.0\.1:\d+/;
 // boot. Matches global-setup's BOOT_TIMEOUT_MS.
 const BOOT_TIMEOUT_MS = 30_000;
 
+// The console announces this session's write token on STDERR (never stdout,
+// never the logging handlers — it is a secret), as one line:
+//   "X-Factory-Write-Token: {token}"
+// The header name MIRRORS `factory_console.config.WRITE_TOKEN_HEADER` — source
+// of truth: `server/factory_console/config.py`. Anchored to the start of a line
+// so a token value that happens to contain the header text cannot be matched
+// instead of the announcement itself.
+const WRITE_TOKEN_PATTERN = /^X-Factory-Write-Token: (.+)$/m;
+
+// What the console prints INSTEAD of the value when the token was pinned via
+// FACTORY_CONSOLE_WRITE_TOKEN: it withholds a secret the operator already has
+// rather than writing it into whatever captures stderr. We spawn with the
+// ambient `process.env`, so a developer who has that variable exported would get
+// this placeholder where a token is expected — worth failing on by name (see
+// `awaitWriteToken`) rather than handing tests a literal `<pinned, not echoed>`
+// and letting every write 401.
+const PINNED_TOKEN_PLACEHOLDER = '<pinned, not echoed>';
+
+// Poll cadence and total grace for the write-token line to turn up in the stderr
+// buffer once the URL line has already arrived on stdout. Short: the console
+// prints the token BEFORE the URL (see `awaitWriteToken`), so this only ever
+// waits on pipe scheduling, not on the server doing more work.
+const TOKEN_POLL_INTERVAL_MS = 50;
+const TOKEN_TIMEOUT_MS = 5_000;
+
 // Poll cadence and total grace given to a clean SIGTERM shutdown (uvicorn drains
 // and exits 0) before escalating to SIGKILL. Matches global-teardown.
 const KILL_POLL_INTERVAL_MS = 100;
@@ -57,6 +82,13 @@ export interface DedicatedConsole {
 	readonly baseURL: string;
 	/** The temp dir holding this run's private fixture copy. */
 	readonly tempDir: string;
+	/**
+	 * This session's write token, as announced on the console's stderr. Every
+	 * mutating API call must carry it in the `X-Factory-Write-Token` header —
+	 * a browser test authorizes itself by seeding it into `sessionStorage` under
+	 * the SPA's own key, exactly as a pasted token would land there.
+	 */
+	readonly writeToken: string;
 	/**
 	 * Move a run-state marker on the copy from one status dir to another by
 	 * renaming `<tempDir>/.factory/run-state/<from>/<id>` → `.../<to>/<id>`.
@@ -118,11 +150,52 @@ async function killChild(child: ChildProcess): Promise<void> {
 }
 
 /**
+ * Read this session's write token out of the accumulated stderr, waiting briefly
+ * for the line if it has not landed yet.
+ *
+ * `cli.py` builds the app — which mints the token and announces it — BEFORE it
+ * echoes the URL line, so by the time the URL has been seen the token has already
+ * been written. It is written to a DIFFERENT pipe, though, and Node makes no
+ * promise about how two pipes' `data` events interleave, so the buffer is polled
+ * to a short deadline rather than read once and trusted.
+ *
+ * Throws (via `describe`, like every other boot failure) when the line never
+ * appears or carries the pinned-token placeholder instead of a value — a handle
+ * with no usable token would otherwise fail much later, as an unexplained 401 in
+ * whatever test tried to write.
+ */
+async function awaitWriteToken(
+	readStderr: () => string,
+	describe: (reason: string) => string
+): Promise<string> {
+	const deadline = Date.now() + TOKEN_TIMEOUT_MS;
+	for (;;) {
+		const match = readStderr().match(WRITE_TOKEN_PATTERN);
+		if (match) {
+			const token = match[1].trim();
+			if (token === PINNED_TOKEN_PLACEHOLDER) {
+				throw new Error(
+					describe(
+						'the write token is pinned via FACTORY_CONSOLE_WRITE_TOKEN, so the console withheld ' +
+							'its value — unset that variable so each dedicated console mints and announces its own'
+					)
+				);
+			}
+			return token;
+		}
+		if (Date.now() >= deadline) {
+			throw new Error(describe('timed out waiting for the write-token line on stderr'));
+		}
+		await sleep(TOKEN_POLL_INTERVAL_MS);
+	}
+}
+
+/**
  * Boot a dedicated console against a fresh temp copy of `fixtureName` (default
- * `with_run_state`) and resolve once it has printed its base URL. On timeout,
- * early exit, or spawn error, the child is killed and the temp dir removed
- * before rejecting with a descriptive message — a setup failure never leaks a
- * process or a temp dir.
+ * `with_run_state`) and resolve once it has printed its base URL AND its write
+ * token. On timeout, early exit, or spawn error, the child is killed and the
+ * temp dir removed before rejecting with a descriptive message — a setup failure
+ * never leaks a process or a temp dir.
  */
 export async function start(fixtureName: string = DEFAULT_FIXTURE): Promise<DedicatedConsole> {
 	const src = path.join(REPO_ROOT, 'tests', 'fixtures', 'projects', fixtureName);
@@ -156,6 +229,7 @@ export async function start(fixtureName: string = DEFAULT_FIXTURE): Promise<Dedi
 		].join('\n');
 
 	let baseURL: string;
+	let writeToken: string;
 	try {
 		baseURL = await new Promise<string>((resolve, reject) => {
 			let settled = false;
@@ -191,6 +265,9 @@ export async function start(fixtureName: string = DEFAULT_FIXTURE): Promise<Dedi
 				stderr += chunk.toString();
 			});
 		});
+		// Only once the console is up: the stderr listener above stays attached, so
+		// this reads the SAME accumulating buffer, waiting out any pipe-ordering lag.
+		writeToken = await awaitWriteToken(() => stderr, describe);
 	} catch (err) {
 		// Setup failed: never leak the child (the timeout path leaves it running)
 		// or the temp dir. Both cleanups swallow their own errors.
@@ -215,5 +292,5 @@ export async function start(fixtureName: string = DEFAULT_FIXTURE): Promise<Dedi
 		}
 	};
 
-	return { baseURL, tempDir, moveRunState, dispose };
+	return { baseURL, tempDir, writeToken, moveRunState, dispose };
 }
