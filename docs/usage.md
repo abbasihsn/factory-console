@@ -112,23 +112,23 @@ The run-state gate above is mirrored in the UI: for a ticket that is not `todo`/
 the Edit and Delete buttons are disabled and a banner names the run-state that made it
 read-only. That mirror is convenience only — the server enforces the gate regardless.
 
-The console binds to loopback only, so the token is defence-in-depth *behind* that
+The console binds to loopback only, so the token is defence-in-depth _behind_ that
 boundary — it stops another process on your machine, or a drive-by request from a page in
 your browser, from mutating the project. There is no command-line flag
 for it, because anything on the command line is readable by every local process.
 
-If you pinned the token with the dev override above, the value is *not* echoed — you
+If you pinned the token with the dev override above, the value is _not_ echoed — you
 already have it, and printing it would copy it into whatever captures stderr — so the
 line reads `X-Factory-Write-Token: <pinned, not echoed>`.
 
 ## Exit codes
 
-| Code | Meaning                                                       |
-| ---- | ------------------------------------------------------------- |
-| `0`  | ok (`--version`, or a clean run)                              |
-| `1`  | project not found                                             |
+| Code | Meaning                                                                                                                                                 |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`  | ok (`--version`, or a clean run)                                                                                                                        |
+| `1`  | project not found                                                                                                                                       |
 | `2`  | invalid `--host` (non-loopback), out-of-range `--port`, unrecognized `--log-level`, a bad `FACTORY_CONSOLE_WRITE_TOKEN` pin, or the port already in use |
-| `3`  | malformed ticket manifest                                     |
+| `3`  | malformed ticket manifest                                                                                                                               |
 
 ## What you'll see
 
@@ -143,6 +143,31 @@ The landing page (`/`) is a searchable, filterable list of every ticket. Open a
 ticket for its detail view — the rendered `.md` body, resolved
 `depends_on` / `provides`, and a factory run-state badge — and follow "View dep
 neighborhood" for that ticket's direct deps and dependents as clickable links.
+
+### Editing tickets
+
+Only a ticket whose factory run-state is `todo` — or `unknown`, on a project with no
+run-state directory — is editable; `in-flight`, `ready`, and `merged` tickets stay
+read-only. For those, the detail view's Edit and Delete buttons are disabled and a
+banner names the run-state that made them so — the same gate the server enforces on
+every write (see ["The write token"](#the-write-token) above).
+
+- **Create** — the **New ticket** link on the ticket list (`/`) opens `/tickets/new`
+  with a blank form (id, title, `depends_on`, `provides`, files, and the Markdown
+  body).
+- **Edit** — an eligible ticket's detail view opens the same form pre-filled with its
+  current fields.
+- **Delete** — an eligible ticket's detail view offers a delete action guarded by a
+  confirmation step.
+
+Create and edit both save through a **preview → confirm** flow: submitting the form
+first sends a dry-run request and opens a diff-preview modal showing the exact unified
+diff that would be written — nothing is written yet. Confirming from that modal sends
+the same request again without `dryRun`, applying the write; canceling discards it and
+returns to the form unchanged. The first write in a session prompts for the write token
+described above; a token rejected because the server restarted is discarded and asked
+for again, and confirming resumes the edit automatically once you paste the current one
+(a pending delete is not auto-resumed — see above).
 
 ### Global search
 
@@ -197,6 +222,10 @@ _The `CAD-125` dependency neighborhood listing its direct deps._
 ![Global search results](screenshots/search.png)
 
 _Full-text search for `idempotent` at `/search`, matching two ticket bodies._
+
+The editing flow (create/edit + diff-preview) isn't captured in this gallery yet —
+adding it means extending the same Playwright pipeline with a `/tickets/new` (or edit)
+capture, not a new mechanism.
 
 ![Dependency graph](screenshots/graph.png)
 

@@ -13,6 +13,16 @@ uvx factory-console            # run without installing
 pipx install factory-console   # install onto your PATH
 ```
 
+## Verifying releases
+
+Every tagged release (`vX.Y.Z`) is signed with a keyless [sigstore](https://www.sigstore.dev/) build-provenance attestation, produced by GitHub's OIDC-backed `actions/attest-build-provenance` action against the wheel and sdist published to PyPI — no long-lived signing key. Verify a downloaded artifact with the `gh` CLI:
+
+```
+gh attestation verify factory_console-X.Y.Z-py3-none-any.whl --repo abbasihsn/factory-console
+```
+
+The attestation bundle is also attached to the artifact's [GitHub Release](https://github.com/abbasihsn/factory-console/releases).
+
 ## Quickstart
 
 From any App Factory project directory:
