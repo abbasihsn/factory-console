@@ -66,8 +66,10 @@ test('guardrails: deleting CAD-140 needs a confirmation and cancelling leaves it
 		await expect(page.getByRole('heading', { name: 'Tickets', level: 1 })).toBeVisible();
 		await page.getByRole('link', { name: 'CAD-140', exact: true }).click();
 		await expect(page).toHaveURL(/\/tickets\/CAD-140$/);
-		// CAD-140's run-state is `todo`, the one state `isEditable` allows, so the
-		// button is live rather than gated behind EditGate's read-only banner.
+		// CAD-140's run-state is `todo` — one of the two states `isEditable` allows
+		// (`todo`/`unknown`, mirroring the server's `MUTABLE_STATES`), and the only
+		// one reachable on a project that HAS a run-state directory. So the button is
+		// live rather than gated behind EditGate's read-only banner.
 		await expect(deleteButton).toBeEnabled();
 	});
 
@@ -84,6 +86,14 @@ test('guardrails: deleting CAD-140 needs a confirmation and cancelling leaves it
 		await expect(
 			page.getByRole('heading', { name: 'Habit heatmap calendar view', level: 1 }).first()
 		).toBeVisible();
+		// The three assertions above are all client-side: cancelling only flips
+		// `confirmDeleteOpen` back to false — it triggers no refetch — so they would
+		// ALL still pass against the already-painted DOM even if the click had fired
+		// `DELETE /api/v1/tickets/CAD-140`. Read the server directly to make the step
+		// actually able to fail for the thing it is named after: 200 means the ticket
+		// is still in the manifest, where a delete would have left a 404.
+		const stillThere = await page.request.get(`${handle.baseURL}/api/v1/tickets/CAD-140`);
+		expect(stillThere.status()).toBe(200);
 	});
 
 	await test.step('confirming deletes the ticket and hands the user back to the list', async () => {
