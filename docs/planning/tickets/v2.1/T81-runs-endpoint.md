@@ -1,6 +1,6 @@
 # [T81] `GET /api/v1/runs` — what the factory did, per ticket
 
-milestone: v3 · track: backend · depends_on: T78 · provides: a read-only runs endpoint returning per-ticket run status, PR url, lane result and receipt presence, with every absent source named rather than rendered as an empty success.
+milestone: v2.1 · track: backend · depends_on: T78 · provides: a read-only runs endpoint returning per-ticket run status, PR url, lane result and receipt presence, with every absent source named rather than rendered as an empty success.
 
 ## Context
 

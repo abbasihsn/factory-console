@@ -1,6 +1,6 @@
 # [T78] Read the run-state the factory actually writes, and model the states it actually has
 
-milestone: v3 · track: file-adapter · depends_on: — · provides: a `RunStateSource` that resolves either `.factory/run-state.json` or the legacy marker-directory form and reports WHICH it resolved; a `RunState` enum covering the factory's real nine-state vocabulary; and an explicit alias table mapping factory status to console state.
+milestone: v2.1 · track: file-adapter · depends_on: — · provides: a `RunStateSource` that resolves either `.factory/run-state.json` or the legacy marker-directory form and reports WHICH it resolved; a `RunState` enum covering the factory's real nine-state vocabulary; and an explicit alias table mapping factory status to console state.
 
 ## Context
 

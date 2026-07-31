@@ -1,6 +1,6 @@
 # [T83] `/runs` — the run view
 
-milestone: v3 · track: frontend · depends_on: T81 · provides: a `/runs` route listing every ticket with its run-state, PR link and lane outcome, rendering the no-run-data case as an explicit state rather than an empty table.
+milestone: v2.1 · track: frontend · depends_on: T81 · provides: a `/runs` route listing every ticket with its run-state, PR link and lane outcome, rendering the no-run-data case as an explicit state rather than an empty table.
 
 ## Context
 

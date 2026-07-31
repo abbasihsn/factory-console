@@ -1,6 +1,6 @@
 # [T82] `GET /api/v1/spend` — what the factory cost
 
-milestone: v3 · track: backend · depends_on: T79 · provides: a read-only spend endpoint aggregating the ledger by ticket, by model and by agent level, reporting skipped lines and the no-ledger case explicitly.
+milestone: v2.1 · track: backend · depends_on: T79 · provides: a read-only spend endpoint aggregating the ledger by ticket, by model and by agent level, reporting skipped lines and the no-ledger case explicitly.
 
 ## Context
 

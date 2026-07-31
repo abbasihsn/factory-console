@@ -1,6 +1,6 @@
 # [T85] One lint gate — `make lint` must run what CI runs
 
-milestone: v3 · track: infra-devops · depends_on: — · provides: `make lint` delegating to `pre-commit run --all-files`, so the gate a developer or a build lane can run locally is the same gate CI enforces; plus the one file currently failing it, and the stale handoff note in the hook config.
+milestone: v2.1 · track: infra-devops · depends_on: — · provides: `make lint` delegating to `pre-commit run --all-files`, so the gate a developer or a build lane can run locally is the same gate CI enforces; plus the one file currently failing it, and the stale handoff note in the hook config.
 
 ## Context
 
