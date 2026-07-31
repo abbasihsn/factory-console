@@ -270,6 +270,34 @@ def test_create_raises_on_duplicate_id(tmp_path: Path) -> None:
     assert exc_info.value.details == {"ticketId": "TM-001"}
 
 
+def test_create_rechecks_duplicate_id_against_a_concurrent_manifest_write(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # Same race as render_edit/render_delete's: the first (load_manifest) read is
+    # stale and reports no collision, but the file a live App Factory has since
+    # rewritten (read raw by the second read) already carries this id. Appending
+    # anyway would write a manifest with two entries sharing one id.
+    project = _make_project(tmp_path)
+    _seed(project)
+
+    import factory_console.file_adapter.write_render as write_render_module
+
+    real_load_manifest = write_render_module.load_manifest
+    schema_version, entries = real_load_manifest(project.ticketsManifestPath)
+    stale_entries = [entry for entry in entries if entry["id"] != "TM-050"]
+    monkeypatch.setattr(
+        write_render_module, "load_manifest", lambda path: (schema_version, stale_entries)
+    )
+    manifest = json.loads(json.dumps(_MANIFEST))  # deep copy
+    manifest["tickets"].append({"id": "TM-050", "title": "Inserted by the factory"})
+    _seed(project, manifest=manifest)
+
+    with pytest.raises(TicketAlreadyExists) as exc_info:
+        render_create(project, _draft(id="TM-050"))
+
+    assert exc_info.value.details == {"ticketId": "TM-050"}
+
+
 def test_create_with_no_matching_roadmap_section_skips_roadmap(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     _seed(project)

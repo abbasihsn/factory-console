@@ -762,7 +762,15 @@ def render_create(project: Project, draft: TicketDraft) -> list[PlannedChange]:
     if _find_entry_index(entries, draft.id) is not None:
         raise TicketAlreadyExists(draft.id)
 
+    # Re-check against THIS read's own list rather than trusting the one above: the
+    # console runs beside a live App Factory that can insert an entry with this same
+    # id between the two reads, and appending anyway would write a manifest with two
+    # entries sharing one id — rejected by every later read (a malformed_manifest
+    # 500 until someone hand-edits the file). Mirrors render_edit/render_delete's
+    # re-derived index for the identical race.
     manifest_raw, manifest_obj = _read_manifest_source(manifest_path)
+    if _find_entry_index(manifest_obj["tickets"], draft.id) is not None:
+        raise TicketAlreadyExists(draft.id)
     manifest_obj["tickets"].append(_draft_to_entry(draft))
 
     changes = [
