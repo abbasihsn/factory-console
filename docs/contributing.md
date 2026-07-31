@@ -31,7 +31,7 @@ proxies `/api/*` to the Python port — so the SPA and API hot-reload together.
 
 ```
 make test    # pytest (server) + pnpm test (frontend Vitest)
-make lint    # ruff check + ruff format --check + eslint
+make lint    # pre-commit run --all-files — the same gate CI runs
 ```
 
 The pre-commit hook — configured in

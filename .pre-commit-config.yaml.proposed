@@ -1,8 +1,8 @@
 # Pre-commit hooks for factory-console.
 #
 # Reuses the ruff config in pyproject.toml (T02) and the eslint/prettier configs
-# under frontend/ (T03). CI re-runs these same hooks for parity, and `make lint`
-# delegates here, so this file is the single definition of the lint gate.
+# under frontend/ (T03). CI and `make lint` both run `pre-commit run --all-files`,
+# which reads `.pre-commit-config.yaml` — one hook set, one lint gate.
 
 # tests/fixtures/ holds deliberately malformed test data (bad JSON, a raw
 # un-backticked <script> payload, extensionless run-state markers). The generic

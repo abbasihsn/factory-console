@@ -16,6 +16,10 @@ test:
 # that the hooks do). Add new checks to .pre-commit-config.yaml and they land
 # here and in CI at once. No fallback when pre-commit is missing — a fallback
 # that checks something different is the defect this delegation removes.
+#
+# Unlike the recipe it replaces, this one WRITES: ruff-check runs with --fix and
+# the whitespace/EOF hooks rewrite in place, so a failing run may have already
+# corrected what it reported. Review `git diff` and re-run to confirm clean.
 lint:
 	@command -v pre-commit >/dev/null 2>&1 || { \
 		echo "make lint requires pre-commit, which is not on PATH."; \
