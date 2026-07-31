@@ -1098,97 +1098,97 @@
       "id": "T78",
       "title": "Read the run-state the factory actually writes, and model the states it actually has",
       "track": "file-adapter",
-      "milestone": "v3",
+      "milestone": "v2.1",
       "depends_on": [],
       "provides": "RunStateSource resolving .factory/run-state.json (json) or the legacy marker directories, reporting which; RunState widened to the factory's nine FAC_STATES values; explicit alias table; malformed source degrades to unknown without raising.",
-      "path": "docs/planning/tickets/v3/T78-run-state-json-source.md",
+      "path": "docs/planning/tickets/v2.1/T78-run-state-json-source.md",
       "status": "todo"
     },
     {
       "id": "T79",
       "title": "Ledger reader — typed spend records from .factory/metrics/ledger.jsonl",
       "track": "file-adapter",
-      "milestone": "v3",
+      "milestone": "v2.1",
       "depends_on": [],
       "provides": "read_ledger() parsing JSONL into typed LedgerEntry records, per-line skip with reason instead of aborting the file, and a no-ledger result distinguishable from an empty one.",
-      "path": "docs/planning/tickets/v3/T79-ledger-reader.md",
+      "path": "docs/planning/tickets/v2.1/T79-ledger-reader.md",
       "status": "todo"
     },
     {
       "id": "T80",
       "title": "Write gate: split 'no run-state source' from 'absent from a source that exists'",
       "track": "backend",
-      "milestone": "v3",
+      "milestone": "v2.1",
       "depends_on": [
         "T78"
       ],
       "provides": "RunState.absent; ensure_mutable refuses a ticket a present run-state does not list, while a project with no run-state source stays fully editable.",
-      "path": "docs/planning/tickets/v3/T80-write-gate-absent-vs-unsourced.md",
+      "path": "docs/planning/tickets/v2.1/T80-write-gate-absent-vs-unsourced.md",
       "status": "todo"
     },
     {
       "id": "T81",
       "title": "GET /api/v1/runs — what the factory did, per ticket",
       "track": "backend",
-      "milestone": "v3",
+      "milestone": "v2.1",
       "depends_on": [
         "T78"
       ],
       "provides": "Per-ticket run records from run-state + results + receipts + last-stop, with a sources block and a per-record unavailable list so a null field is attributable.",
-      "path": "docs/planning/tickets/v3/T81-runs-endpoint.md",
+      "path": "docs/planning/tickets/v2.1/T81-runs-endpoint.md",
       "status": "todo"
     },
     {
       "id": "T82",
       "title": "GET /api/v1/spend — what the factory cost",
       "track": "backend",
-      "milestone": "v3",
+      "milestone": "v2.1",
       "depends_on": [
         "T79"
       ],
       "provides": "Ledger aggregated by ticket, model and level via a pure aggregator; stated attribution rule; skipped lines and the no-ledger case carried in the response.",
-      "path": "docs/planning/tickets/v3/T82-spend-endpoint.md",
+      "path": "docs/planning/tickets/v2.1/T82-spend-endpoint.md",
       "status": "todo"
     },
     {
       "id": "T83",
       "title": "/runs — the run view",
       "track": "frontend",
-      "milestone": "v3",
+      "milestone": "v2.1",
       "depends_on": [
         "T81"
       ],
       "provides": "Route listing every ticket with run-state, PR link and lane outcome; SourcesBanner rendering the no-run-data case explicitly instead of an empty table.",
-      "path": "docs/planning/tickets/v3/T83-runs-view.md",
+      "path": "docs/planning/tickets/v2.1/T83-runs-view.md",
       "status": "todo"
     },
     {
       "id": "T84",
       "title": "/spend — the cost view",
       "track": "frontend",
-      "milestone": "v3",
+      "milestone": "v2.1",
       "depends_on": [
         "T82"
       ],
       "provides": "Route showing total, per-ticket, per-model and per-level spend; no-ledger and partial-total states stated on the page beside the figures.",
-      "path": "docs/planning/tickets/v3/T84-spend-view.md",
+      "path": "docs/planning/tickets/v2.1/T84-spend-view.md",
       "status": "todo"
     },
     {
       "id": "T85",
       "title": "One lint gate — make lint must run what CI runs",
       "track": "infra-devops",
-      "milestone": "v3",
+      "milestone": "v2.1",
       "depends_on": [],
       "provides": "make lint delegates to pre-commit run --all-files; the one file failing prettier is fixed; the stale handoff note in the hook config is removed.",
-      "path": "docs/planning/tickets/v3/T85-lint-gate-parity.md",
+      "path": "docs/planning/tickets/v2.1/T85-lint-gate-parity.md",
       "status": "todo"
     },
     {
       "id": "T86",
-      "title": "v3 docs — run-state source, runs, spend, and the one lint gate",
+      "title": "v2.1 docs — run-state source, runs, spend, and the one lint gate",
       "track": "docs",
-      "milestone": "v3",
+      "milestone": "v2.1",
       "depends_on": [
         "T80",
         "T82",
@@ -1197,7 +1197,7 @@
         "T85"
       ],
       "provides": "architecture.md corrected on the run-state source and state vocabulary; usage.md gains runs, spend and the changed editability rule; README reflects the new views.",
-      "path": "docs/planning/tickets/v3/T86-v3-docs.md",
+      "path": "docs/planning/tickets/v2.1/T86-v2.1-docs.md",
       "status": "todo"
     }
   ]

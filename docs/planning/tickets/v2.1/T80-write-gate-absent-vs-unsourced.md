@@ -1,6 +1,6 @@
 # [T80] Write gate: split "no run-state source" from "absent from a source that exists"
 
-milestone: v3 · track: backend · depends_on: T78 · provides: `ensure_mutable` refuses a ticket that a present run-state source does not list, while a project with no run-state source at all stays fully editable.
+milestone: v2.1 · track: backend · depends_on: T78 · provides: `ensure_mutable` refuses a ticket that a present run-state source does not list, while a project with no run-state source at all stays fully editable.
 
 ## Context
 
@@ -12,6 +12,8 @@ T78 fixes the reading, which fixes this repository. It does not fix the rule. `u
 |---|---|
 | no run-state source of any kind | mutable — nothing claims otherwise |
 | a source exists, this ticket is not in it | **refuse** — the source is authoritative and does not list this ticket |
+
+**The authoritative contract currently mandates the wrong answer for the second case.** `docs/planning/ARCHITECTURE.md` §"Factory run-state directory (read-only)" says *"Present dir but missing marker → `RunState.todo`"* — and `todo` is mutable. So this is not only a defect in the JSON path T78 adds; it is the specified behaviour of the directory path too, and a project using the legacy directory form has the same hole. **This ticket changes the contract, not just the code**, and T86 is where the document catches up. Implementing it without that amendment would leave the code and its contract disagreeing, which is the condition this whole milestone exists to remove.
 
 The second case is not hypothetical after T78: `.factory/run-state.json` lists the tickets the factory has seeded, and a ticket added to `tickets.json` by hand after the last factory run is absent from it. So is a ticket whose id was mistyped. Under today's rule both are editable, and under the fixed rule the first still is — via the seed path, not via a blanket `unknown`.
 

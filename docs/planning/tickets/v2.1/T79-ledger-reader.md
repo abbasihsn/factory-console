@@ -1,6 +1,6 @@
 # [T79] Ledger reader — typed spend records from `.factory/metrics/ledger.jsonl`
 
-milestone: v3 · track: file-adapter · depends_on: — · provides: a read-only `read_ledger()` that parses `.factory/metrics/ledger.jsonl` into typed `LedgerEntry` records, tolerates partial and unparseable lines without discarding the file, and distinguishes "no ledger" from "an empty ledger".
+milestone: v2.1 · track: file-adapter · depends_on: — · provides: a read-only `read_ledger()` that parses `.factory/metrics/ledger.jsonl` into typed `LedgerEntry` records, tolerates partial and unparseable lines without discarding the file, and distinguishes "no ledger" from "an empty ledger".
 
 ## Context
 

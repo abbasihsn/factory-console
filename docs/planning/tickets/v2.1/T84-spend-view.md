@@ -1,6 +1,6 @@
 # [T84] `/spend` — the cost view
 
-milestone: v3 · track: frontend · depends_on: T82 · provides: a `/spend` route showing total, per-ticket, per-model and per-level factory spend, with the no-ledger case and any partial total stated on the page.
+milestone: v2.1 · track: frontend · depends_on: T82 · provides: a `/spend` route showing total, per-ticket, per-model and per-level factory spend, with the no-ledger case and any partial total stated on the page.
 
 ## Context
 
