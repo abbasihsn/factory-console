@@ -103,10 +103,10 @@ paste the value from that stderr line into it. It is held in `sessionStorage`, s
 survives a reload but is **per browser tab** and gone when the tab closes, matching the
 token's own per-process lifetime. If the server is restarted the held token stops
 working; the next write reports that it was rejected, discards it, and asks for the
-current one. Pasting a fresh token resumes an in-progress **edit** automatically; a
-pending **delete** is not resumed — the confirmation is asked again, since auto-resuming
-a destructive action off the back of an unrelated token paste is not something to do
-without the user looking at it.
+current one. Pasting a fresh token resumes an in-progress **create or edit**
+automatically; a pending **delete** is not resumed — the confirmation is asked again,
+since auto-resuming a destructive action off the back of an unrelated token paste is not
+something to do without the user looking at it.
 
 The run-state gate above is mirrored in the UI: for a ticket that is not `todo`/`unknown`
 the Edit and Delete buttons are disabled and a banner names the run-state that made it
@@ -148,15 +148,15 @@ neighborhood" for that ticket's direct deps and dependents as clickable links.
 
 Only a ticket whose factory run-state is `todo` — or `unknown`, on a project with no
 run-state directory — is editable; `in-flight`, `ready`, and `merged` tickets stay
-read-only. For those, the detail view's Edit and Delete buttons are disabled and a
-banner names the run-state that made them so — the same gate the server enforces on
-every write (see ["The write token"](#the-write-token) above).
+read-only — the detail view disables Edit and Delete and names the run-state that did it.
+Every write also needs the write token; both gates are covered in ["The write
+token"](#the-write-token) above.
 
 - **Create** — the **New ticket** link on the ticket list (`/`) opens `/tickets/new`
   with a blank form (id, title, `depends_on`, `provides`, files, and the Markdown
   body).
 - **Edit** — an eligible ticket's detail view opens the same form pre-filled with its
-  current fields.
+  current fields, except that the id is read-only: an edit never renames a ticket.
 - **Delete** — an eligible ticket's detail view offers a delete action guarded by a
   confirmation step.
 
@@ -164,10 +164,11 @@ Create and edit both save through a **preview → confirm** flow: submitting the
 first sends a dry-run request and opens a diff-preview modal showing the exact unified
 diff that would be written — nothing is written yet. Confirming from that modal sends
 the same request again without `dryRun`, applying the write; canceling discards it and
-returns to the form unchanged. The first write in a session prompts for the write token
-described above; a token rejected because the server restarted is discarded and asked
-for again, and confirming resumes the edit automatically once you paste the current one
-(a pending delete is not auto-resumed — see above).
+returns to the form unchanged. The first write in a browser tab prompts for the write
+token; if that token is later rejected because the server restarted, pasting the current
+one resumes the parked create or edit on its own, with no second confirm — see
+["Using the token from the UI"](#using-the-token-from-the-ui) above for the full rule,
+including why a pending delete asks for its confirmation again instead.
 
 ### Global search
 
@@ -205,7 +206,9 @@ the app degrades gracefully to the manual **Reload** button.
 
 Captured from the real UI by the Playwright screenshots pipeline against the
 `with_run_state` fixture — see the ["Screenshots"](../README.md#screenshots)
-section of the root README to regenerate them.
+section of the root README to regenerate them. The editing flow (create/edit +
+diff-preview) isn't captured yet; adding it means extending the same pipeline with a
+`/tickets/new` (or edit) capture, not a new mechanism.
 
 ![Ticket list](screenshots/list.png)
 
@@ -222,10 +225,6 @@ _The `CAD-125` dependency neighborhood listing its direct deps._
 ![Global search results](screenshots/search.png)
 
 _Full-text search for `idempotent` at `/search`, matching two ticket bodies._
-
-The editing flow (create/edit + diff-preview) isn't captured in this gallery yet —
-adding it means extending the same Playwright pipeline with a `/tickets/new` (or edit)
-capture, not a new mechanism.
 
 ![Dependency graph](screenshots/graph.png)
 
