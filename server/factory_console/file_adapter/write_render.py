@@ -39,6 +39,7 @@ from factory_console.file_adapter.manifest import (
     MalformedManifest,
     load_manifest,
     provides_to_list,
+    validate_manifest_shape,
 )
 from factory_console.file_adapter.path_safety import PathTraversal
 from factory_console.file_adapter.roadmap_parse import _LIST_ITEM_RE, _extract_ticket_id
@@ -219,17 +220,23 @@ def _read_manifest_source(path: Path) -> tuple[str, dict[str, Any]]:
     re-serialize the WHOLE object with those keys preserved we re-read the raw
     JSON here. ``load_manifest`` validated the manifest moments earlier, but the
     console runs beside a live App Factory that can rewrite ``tickets.json``
-    between the two reads, so this read is guarded the same way rather than
-    trusting the earlier validation to still hold.
+    between the two reads, so this read is guarded by the SAME checks
+    (:func:`~factory_console.file_adapter.manifest.validate_manifest_shape`) —
+    read/decode AND structural — rather than trusting the earlier validation to
+    still hold: a valid-but-wrong-shape rewrite (e.g. a non-object ``tickets``
+    entry) would otherwise reach ``manifest_obj["tickets"][index]`` below and raise
+    an unmapped ``TypeError``/``KeyError`` instead of the documented envelope.
     """
     try:
         raw_text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise MalformedManifest(path, cause=exc) from exc
     try:
-        return raw_text, json.loads(raw_text)
+        parsed = json.loads(raw_text)
     except json.JSONDecodeError as exc:
         raise MalformedManifest(path, cause=exc) from exc
+    validate_manifest_shape(parsed, path)
+    return raw_text, parsed
 
 
 def _find_entry_index(entries: list[dict[str, Any]], ticket_id: str) -> int | None:
@@ -344,13 +351,22 @@ def _merge_edit(existing: Mapping[str, Any], edit: TicketEdit) -> dict[str, Any]
     """Overlay an edit's fields onto the EXISTING raw manifest entry.
 
     Starts from a copy of the existing entry so unknown fields (e.g. ``estimate``)
-    and the entry's ``id`` / ``status`` survive; only the editable fields
-    (:func:`_edit_mirror`) are overwritten — except ``provides``, which is kept at
-    its existing raw shape when :func:`_provides_unchanged` says the edit never
-    touched it, so an existing multi-entry list survives an edit of another field.
+    and the entry's ``id`` / ``status`` survive. Only overwrites a mirrored key the
+    edit actually SUPPLIED (``edit.model_fields_set``) — the same guard
+    :func:`_overlay_front_matter` already applies to the ``.md`` header. Without it,
+    an edit that omits an optional field (``track``/``milestone`` default to
+    ``None``, ``dependsOn``/``files`` to ``[]``) would NULL it in the manifest while
+    the ``.md`` written in the same change-set keeps the real value — desyncing the
+    two coupled files permanently, since every later edit re-bases off the nulled
+    manifest copy. ``provides`` gets one more guard on top: the SPA always sends it
+    (it has no "omit me" default the way ``track``/``milestone`` do), so
+    :func:`_provides_unchanged` tells an untouched resend apart from a genuine
+    retype and keeps an existing multi-entry list intact either way.
     """
-    merged = {**existing, **_edit_mirror(edit)}
-    if _provides_unchanged(existing.get("provides"), edit.provides):
+    supplied = edit.model_fields_set
+    merged = dict(existing)
+    merged.update({key: value for key, value in _edit_mirror(edit).items() if key in supplied})
+    if "provides" in supplied and _provides_unchanged(existing.get("provides"), edit.provides):
         merged["provides"] = existing.get("provides")
     return merged
 

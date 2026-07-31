@@ -69,35 +69,20 @@ def provides_to_list(value: object) -> list[str]:
     return []
 
 
-def load_manifest(manifest_path: Path) -> tuple[str | None, list[dict[str, Any]]]:
-    """Read and parse ``tickets.json``, returning ``(schemaVersion, tickets)``.
+def validate_manifest_shape(parsed: object, manifest_path: Path) -> list[dict[str, Any]]:
+    """Validate an already-``json.loads``-parsed manifest value, returning its tickets list.
 
-    ``schemaVersion`` is coerced to ``str`` when present (the fixtures carry it as
-    the int ``1`` -> ``"1"``) and ``None`` when absent — surfaced, never enforced.
-    ``tickets`` is the raw list of entry dicts, each later turned into a
-    :class:`Ticket` stub by :func:`manifest_entry_to_ticket_stub`.
+    Factored out of :func:`load_manifest` so a SECOND, later read of the same file
+    (:func:`~factory_console.file_adapter.write_render._read_manifest_source`, taken
+    to re-serialize the whole object during a write) is guarded by the identical
+    structural checks — not just the read/decode ones — rather than trusting the
+    first read's validation to still hold moments later.
 
     Raises:
-        MalformedManifest: if the file cannot be read as UTF-8 text (a non-UTF-8
-            manifest, a permission-denied read, or a vanished file), if it is not
-            valid JSON, if the top level is not a JSON object, if ``tickets`` is
-            missing or not a list, if any ``tickets`` entry is not a JSON object,
-            or if two entries carry the same ticket ``id``.
+        MalformedManifest: if the top level is not a JSON object, if ``tickets`` is
+            missing or not a list, if any ``tickets`` entry is not a JSON object, or
+            if two entries carry the same ticket ``id``.
     """
-    # Guard the read itself, not just json.loads: a non-UTF-8 manifest raises
-    # UnicodeDecodeError and a permission-denied/vanished file raises OSError, and
-    # neither is a JSONDecodeError — so without this they would escape as an
-    # unmapped error (CLI exit 1 instead of the documented 3, a raw 500 on the
-    # request path). Mirrors read_ticket_md's read guard.
-    try:
-        with open(manifest_path, encoding="utf-8") as manifest_file:
-            raw_text = manifest_file.read()
-    except (OSError, UnicodeDecodeError) as exc:
-        raise MalformedManifest(manifest_path, cause=exc) from exc
-    try:
-        parsed = json.loads(raw_text)
-    except json.JSONDecodeError as exc:
-        raise MalformedManifest(manifest_path, cause=exc) from exc
     if not isinstance(parsed, dict):
         cause = ValueError(f"manifest top level must be a JSON object, got {type(parsed).__name__}")
         raise MalformedManifest(manifest_path, cause=cause) from cause
@@ -132,6 +117,39 @@ def load_manifest(manifest_path: Path) -> tuple[str | None, list[dict[str, Any]]
             )
             raise MalformedManifest(manifest_path, cause=cause) from cause
         seen_ids[entry_id] = index
+    return tickets
+
+
+def load_manifest(manifest_path: Path) -> tuple[str | None, list[dict[str, Any]]]:
+    """Read and parse ``tickets.json``, returning ``(schemaVersion, tickets)``.
+
+    ``schemaVersion`` is coerced to ``str`` when present (the fixtures carry it as
+    the int ``1`` -> ``"1"``) and ``None`` when absent — surfaced, never enforced.
+    ``tickets`` is the raw list of entry dicts, each later turned into a
+    :class:`Ticket` stub by :func:`manifest_entry_to_ticket_stub`.
+
+    Raises:
+        MalformedManifest: if the file cannot be read as UTF-8 text (a non-UTF-8
+            manifest, a permission-denied read, or a vanished file), if it is not
+            valid JSON, if the top level is not a JSON object, if ``tickets`` is
+            missing or not a list, if any ``tickets`` entry is not a JSON object,
+            or if two entries carry the same ticket ``id``.
+    """
+    # Guard the read itself, not just json.loads: a non-UTF-8 manifest raises
+    # UnicodeDecodeError and a permission-denied/vanished file raises OSError, and
+    # neither is a JSONDecodeError — so without this they would escape as an
+    # unmapped error (CLI exit 1 instead of the documented 3, a raw 500 on the
+    # request path). Mirrors read_ticket_md's read guard.
+    try:
+        with open(manifest_path, encoding="utf-8") as manifest_file:
+            raw_text = manifest_file.read()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise MalformedManifest(manifest_path, cause=exc) from exc
+    try:
+        parsed = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        raise MalformedManifest(manifest_path, cause=exc) from exc
+    tickets = validate_manifest_shape(parsed, manifest_path)
     schema_version = parsed.get("schemaVersion")
     schema_version_str = None if schema_version is None else str(schema_version)
     return schema_version_str, tickets

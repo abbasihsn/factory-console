@@ -19,6 +19,7 @@ import pytest
 from factory_console.domain import Project
 from factory_console.domain.write import TicketDraft, TicketEdit
 from factory_console.errors import to_error_response
+from factory_console.file_adapter.manifest import MalformedManifest
 from factory_console.file_adapter.path_safety import PathTraversal
 from factory_console.file_adapter.ticket_md import TicketFileUnreadable
 from factory_console.file_adapter.write_render import (
@@ -312,6 +313,31 @@ def test_edit_merges_and_preserves_unknown_estimate_field(tmp_path: Path) -> Non
     assert entry["status"] == "todo"  # untouched field survives
 
 
+def test_edit_omitting_an_optional_field_leaves_the_manifest_value_alone(tmp_path: Path) -> None:
+    # TicketEdit.track/milestone/dependsOn/files all have defaults, so a client that
+    # never sends them (e.g. a bare curl PUT with just title+bodyMarkdown) must NOT
+    # null them in the manifest — the .md header already guards this the same way
+    # (see test_edit_omitting_track_and_milestone_keeps_the_headers_values).
+    project = _make_project(tmp_path)
+    _seed(project)
+
+    sparse_edit = TicketEdit(title="Public trail-status REST endpoint (v2)", bodyMarkdown="# x\n")
+
+    changes = render_edit(project, "TM-015", sparse_edit)
+
+    entry = next(
+        t
+        for t in json.loads(_by_rel(changes, _MANIFEST_REL).newText)["tickets"]
+        if t["id"] == "TM-015"
+    )
+    assert entry["title"] == "Public trail-status REST endpoint (v2)"  # supplied, changed
+    assert entry["track"] == "api"  # not supplied, untouched
+    assert entry["milestone"] == "v1"  # not supplied, untouched
+    assert entry["dependsOn"] == ["TM-001"]  # not supplied, untouched
+    assert entry["provides"] == "GET /api/v1/trails/{slug}/status"  # not supplied, untouched
+    assert entry["files"] == ["server/trailmark/api/trail_status.py"]  # not supplied, untouched
+
+
 def test_edit_preserves_a_multi_entry_provides_list_when_untouched(tmp_path: Path) -> None:
     # The SPA's edit form seeds its (scalar) provides field by joining an existing
     # list with ", " — an edit that never touches provides re-sends that same
@@ -529,6 +555,30 @@ def test_edit_reindexes_against_a_concurrent_manifest_write(tmp_path, monkeypatc
     untouched = next(t for t in tickets if t["id"] == "TM-001")
     assert edited["title"] == "Public trail-status REST endpoint (v2)"
     assert untouched["title"] == "Ingest trail reports"
+
+
+def test_edit_raises_malformed_manifest_when_a_concurrent_write_breaks_the_shape(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # A concurrent factory write can leave tickets.json valid JSON but structurally
+    # broken (e.g. mid-rewrite). load_manifest (the first read) still reports the
+    # old, valid entries, but the file the second (raw) read sees has since changed
+    # shape — that read must raise the documented MalformedManifest, not an
+    # unmapped TypeError/KeyError.
+    project = _make_project(tmp_path)
+    _seed(project)
+
+    import factory_console.file_adapter.write_render as write_render_module
+
+    real_load_manifest = write_render_module.load_manifest
+    schema_version, entries = real_load_manifest(project.ticketsManifestPath)
+    monkeypatch.setattr(
+        write_render_module, "load_manifest", lambda path: (schema_version, entries)
+    )
+    project.ticketsManifestPath.write_text(json.dumps({"tickets": "not-a-list"}), encoding="utf-8")
+
+    with pytest.raises(MalformedManifest):
+        render_edit(project, "TM-015", _edit())
 
 
 # --------------------------------------------------------------------------- #
