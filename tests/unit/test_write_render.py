@@ -312,6 +312,45 @@ def test_edit_merges_and_preserves_unknown_estimate_field(tmp_path: Path) -> Non
     assert entry["status"] == "todo"  # untouched field survives
 
 
+def test_edit_preserves_a_multi_entry_provides_list_when_untouched(tmp_path: Path) -> None:
+    # The SPA's edit form seeds its (scalar) provides field by joining an existing
+    # list with ", " — an edit that never touches provides re-sends that same
+    # joined string, and must not collapse the on-disk list to one fused entry.
+    project = _make_project(tmp_path)
+    manifest = json.loads(json.dumps(_MANIFEST))  # deep copy
+    manifest["tickets"][1]["provides"] = ["GET /api/v1/trails/{slug}/status", "Trail SDK"]
+    _seed(project, manifest=manifest)
+
+    changes = render_edit(
+        project, "TM-015", _edit(provides="GET /api/v1/trails/{slug}/status, Trail SDK")
+    )
+
+    entry = next(
+        t
+        for t in json.loads(_by_rel(changes, _MANIFEST_REL).newText)["tickets"]
+        if t["id"] == "TM-015"
+    )
+    assert entry["provides"] == ["GET /api/v1/trails/{slug}/status", "Trail SDK"]
+
+
+def test_edit_still_overwrites_provides_when_the_edit_actually_changes_it(
+    tmp_path: Path,
+) -> None:
+    project = _make_project(tmp_path)
+    manifest = json.loads(json.dumps(_MANIFEST))  # deep copy
+    manifest["tickets"][1]["provides"] = ["GET /api/v1/trails/{slug}/status", "Trail SDK"]
+    _seed(project, manifest=manifest)
+
+    changes = render_edit(project, "TM-015", _edit(provides="A brand new capability"))
+
+    entry = next(
+        t
+        for t in json.loads(_by_rel(changes, _MANIFEST_REL).newText)["tickets"]
+        if t["id"] == "TM-015"
+    )
+    assert entry["provides"] == "A brand new capability"
+
+
 def test_edit_md_renders_against_current_on_disk_text(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     _seed(project)
@@ -460,6 +499,38 @@ def test_edit_raises_unknown_ticket(tmp_path: Path) -> None:
     assert to_error_response(exc_info.value)["error"]["details"] == {"ticketId": "TM-999"}
 
 
+def test_edit_reindexes_against_a_concurrent_manifest_write(tmp_path, monkeypatch) -> None:
+    # The console runs beside a live App Factory that can rewrite tickets.json
+    # BETWEEN render_edit's two manifest reads. Simulate that by making the first
+    # read (load_manifest) return a STALE entries list — as if an entry were
+    # inserted ahead of TM-015 — while the real on-disk file (read by the second,
+    # raw read) never changed. The fix re-derives the index from that second read,
+    # so the right ticket is still edited instead of the wrong one (or a crash).
+    project = _make_project(tmp_path)
+    _seed(project)
+
+    import factory_console.file_adapter.write_render as write_render_module
+
+    real_load_manifest = write_render_module.load_manifest
+    stale_entries = [
+        {"id": "TM-999", "title": "just inserted by the factory"},
+        *real_load_manifest(project.ticketsManifestPath)[1],
+    ]
+    monkeypatch.setattr(
+        write_render_module,
+        "load_manifest",
+        lambda path: (real_load_manifest(path)[0], stale_entries),
+    )
+
+    changes = render_edit(project, "TM-015", _edit())
+
+    tickets = json.loads(_by_rel(changes, _MANIFEST_REL).newText)["tickets"]
+    edited = next(t for t in tickets if t["id"] == "TM-015")
+    untouched = next(t for t in tickets if t["id"] == "TM-001")
+    assert edited["title"] == "Public trail-status REST endpoint (v2)"
+    assert untouched["title"] == "Ingest trail reports"
+
+
 # --------------------------------------------------------------------------- #
 # render_delete
 # --------------------------------------------------------------------------- #
@@ -507,6 +578,32 @@ def test_delete_raises_unknown_ticket(tmp_path: Path) -> None:
         render_delete(project, "TM-999")
 
     assert exc_info.value.status == 404
+
+
+def test_delete_reindexes_against_a_concurrent_manifest_write(tmp_path, monkeypatch) -> None:
+    # Same race as render_edit's: the first (load_manifest) read is stale, the
+    # second (raw) read reflects the real on-disk file. The fix re-derives the
+    # index from the second read, so delete removes the right ticket.
+    project = _make_project(tmp_path)
+    _seed(project)
+
+    import factory_console.file_adapter.write_render as write_render_module
+
+    real_load_manifest = write_render_module.load_manifest
+    stale_entries = [
+        {"id": "TM-999", "title": "just inserted by the factory"},
+        *real_load_manifest(project.ticketsManifestPath)[1],
+    ]
+    monkeypatch.setattr(
+        write_render_module,
+        "load_manifest",
+        lambda path: (real_load_manifest(path)[0], stale_entries),
+    )
+
+    changes = render_delete(project, "TM-015")
+
+    tickets = json.loads(_by_rel(changes, _MANIFEST_REL).newText)["tickets"]
+    assert {t["id"] for t in tickets} == {"TM-001"}
 
 
 # --------------------------------------------------------------------------- #

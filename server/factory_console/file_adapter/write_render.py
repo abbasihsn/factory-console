@@ -35,7 +35,11 @@ from factory_console.domain.project import Project
 from factory_console.domain.ticket import TICKET_ID_PATTERN
 from factory_console.domain.write import TicketDraft, TicketEdit
 from factory_console.errors import FactoryConsoleError
-from factory_console.file_adapter.manifest import load_manifest
+from factory_console.file_adapter.manifest import (
+    MalformedManifest,
+    load_manifest,
+    provides_to_list,
+)
 from factory_console.file_adapter.path_safety import PathTraversal
 from factory_console.file_adapter.roadmap_parse import _LIST_ITEM_RE, _extract_ticket_id
 from factory_console.file_adapter.ticket_md import (
@@ -213,12 +217,19 @@ def _read_manifest_source(path: Path) -> tuple[str, dict[str, Any]]:
     :func:`load_manifest` intentionally drops the manifest's top-level keys
     (``project``, ``schemaVersion``), returning only the tickets list — so to
     re-serialize the WHOLE object with those keys preserved we re-read the raw
-    JSON here. ``load_manifest`` has already validated (valid UTF-8, valid JSON,
-    a dict carrying a ``tickets`` list) at every call site before this runs, so
-    ``read_text`` / ``json.loads`` will not raise on structure.
+    JSON here. ``load_manifest`` validated the manifest moments earlier, but the
+    console runs beside a live App Factory that can rewrite ``tickets.json``
+    between the two reads, so this read is guarded the same way rather than
+    trusting the earlier validation to still hold.
     """
-    raw_text = path.read_text(encoding="utf-8")
-    return raw_text, json.loads(raw_text)
+    try:
+        raw_text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise MalformedManifest(path, cause=exc) from exc
+    try:
+        return raw_text, json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        raise MalformedManifest(path, cause=exc) from exc
 
 
 def _find_entry_index(entries: list[dict[str, Any]], ticket_id: str) -> int | None:
@@ -315,14 +326,33 @@ def _client_front_matter(front_matter: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _provides_unchanged(existing_provides: object, edit_provides: str) -> bool:
+    """Whether an edit's scalar ``provides`` is the untouched existing value.
+
+    :class:`TicketEdit` mirrors the write-boundary schema, so it can only ever carry
+    a single scalar — never a genuine multi-entry list — and the SPA's edit form
+    seeds that field by joining the existing list with ``", "`` (see
+    ``ticketForm.ts``). Comparing against that same join is how a title-only (or
+    otherwise provides-untouched) edit is told apart from one that intentionally
+    retypes ``provides``, so :func:`_merge_edit` can leave an existing multi-entry
+    list intact instead of collapsing it to one fused string.
+    """
+    return edit_provides == ", ".join(provides_to_list(existing_provides))
+
+
 def _merge_edit(existing: Mapping[str, Any], edit: TicketEdit) -> dict[str, Any]:
     """Overlay an edit's fields onto the EXISTING raw manifest entry.
 
     Starts from a copy of the existing entry so unknown fields (e.g. ``estimate``)
     and the entry's ``id`` / ``status`` survive; only the editable fields
-    (:func:`_edit_mirror`) are overwritten.
+    (:func:`_edit_mirror`) are overwritten — except ``provides``, which is kept at
+    its existing raw shape when :func:`_provides_unchanged` says the edit never
+    touched it, so an existing multi-entry list survives an edit of another field.
     """
-    return {**existing, **_edit_mirror(edit)}
+    merged = {**existing, **_edit_mirror(edit)}
+    if _provides_unchanged(existing.get("provides"), edit.provides):
+        merged["provides"] = existing.get("provides")
+    return merged
 
 
 # --------------------------------------------------------------------------- #
@@ -751,11 +781,17 @@ def render_edit(project: Project, ticket_id: str, edit: TicketEdit) -> list[Plan
     md_path = _safe_resolve(project, ticket_id)
     manifest_path = project.ticketsManifestPath
     _schema_version, entries = load_manifest(manifest_path)
-    index = _find_entry_index(entries, ticket_id)
-    if index is None:
+    if _find_entry_index(entries, ticket_id) is None:
         raise UnknownTicket(ticket_id)
 
+    # Re-derive the index from THIS read's own list rather than reusing the one
+    # above: the console runs beside a live App Factory that can insert/remove
+    # manifest entries between the two reads, and applying a stale index to a
+    # shifted list would edit the wrong ticket.
     manifest_raw, manifest_obj = _read_manifest_source(manifest_path)
+    index = _find_entry_index(manifest_obj["tickets"], ticket_id)
+    if index is None:
+        raise UnknownTicket(ticket_id)
     manifest_obj["tickets"][index] = _merge_edit(manifest_obj["tickets"][index], edit)
 
     # One read backs both halves of the .md change, so the diff's "current" and the
@@ -796,11 +832,17 @@ def render_delete(project: Project, ticket_id: str) -> list[PlannedChange]:
     md_path = _safe_resolve(project, ticket_id)
     manifest_path = project.ticketsManifestPath
     _schema_version, entries = load_manifest(manifest_path)
-    index = _find_entry_index(entries, ticket_id)
-    if index is None:
+    if _find_entry_index(entries, ticket_id) is None:
         raise UnknownTicket(ticket_id)
 
+    # Re-derive the index from THIS read's own list rather than reusing the one
+    # above: the console runs beside a live App Factory that can insert/remove
+    # manifest entries between the two reads, and applying a stale index to a
+    # shifted list would delete the wrong ticket.
     manifest_raw, manifest_obj = _read_manifest_source(manifest_path)
+    index = _find_entry_index(manifest_obj["tickets"], ticket_id)
+    if index is None:
+        raise UnknownTicket(ticket_id)
     del manifest_obj["tickets"][index]
 
     changes = [

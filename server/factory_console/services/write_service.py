@@ -27,6 +27,7 @@ from factory_console.domain import Project
 from factory_console.domain.write import DiffPreview, TicketDraft, TicketEdit, WriteResult
 from factory_console.errors import FactoryConsoleError
 from factory_console.file_adapter.protocol import FileAdapter
+from factory_console.file_adapter.ticket_md import TicketFileMissing
 from factory_console.file_adapter.writer_protocol import FileWriter
 from factory_console.services.ticket_service import TicketNotFound
 
@@ -95,7 +96,7 @@ class WriteService:
         through the writer and returns its :class:`WriteResult` carrying the re-read
         ticket (see :meth:`_with_reread`).
         """
-        if self._adapter.get_ticket(project, payload.id) is not None:
+        if self._exists(project, payload.id):
             raise WriteConflict(payload.id)
         if dry_run:
             return self._dry_run_result(payload.id, self._writer.preview_create(project, payload))
@@ -115,7 +116,7 @@ class WriteService:
         (409) for a non-todo ticket — that propagates unchanged — then re-reads the
         edited ticket through the adapter (see :meth:`_with_reread`).
         """
-        if self._adapter.get_ticket(project, ticket_id) is None:
+        if not self._exists(project, ticket_id):
             raise TicketNotFound(ticket_id)
         if dry_run:
             return self._dry_run_result(
@@ -140,11 +141,27 @@ class WriteService:
         result already carries the pre-delete snapshot ticket, so it is returned
         verbatim.
         """
-        if self._adapter.get_ticket(project, ticket_id) is None:
+        if not self._exists(project, ticket_id):
             raise TicketNotFound(ticket_id)
         if dry_run:
             return self._dry_run_result(ticket_id, self._writer.preview_delete(project, ticket_id))
         return self._writer.delete_ticket(project, ticket_id)
+
+    def _exists(self, project: Project, ticket_id: str) -> bool:
+        """Whether ``ticket_id`` has a manifest entry, tolerant of a missing ``.md``.
+
+        ``get_ticket`` is a full enrich-and-render read, so a manifest entry whose
+        ``.md`` is absent (an orphan left by a partial factory write) makes it RAISE
+        ``TicketFileMissing`` rather than return ``None``. Used only as a presence
+        test here, so that case means "present, body absent" — the writer's own
+        create/edit/delete paths already treat a missing body as a create-like edit,
+        not a failure — never "absent"; otherwise the orphan could never be edited,
+        deleted, or recreated.
+        """
+        try:
+            return self._adapter.get_ticket(project, ticket_id) is not None
+        except TicketFileMissing:
+            return True
 
     def _dry_run_result(self, ticket_id: str, preview: DiffPreview) -> WriteResult:
         """Wrap a writer ``preview_*`` :class:`DiffPreview` as an ``applied=False`` result.

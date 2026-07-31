@@ -53,7 +53,7 @@ class MalformedManifest(FactoryConsoleError):
         self.cause = cause
 
 
-def _provides_to_list(value: object) -> list[str]:
+def provides_to_list(value: object) -> list[str]:
     """Coerce a manifest ``provides`` value into ``Ticket.provides``' ``list[str]``.
 
     WHY: the manifest schema stores ``provides`` as a single scalar string, but the
@@ -156,7 +156,7 @@ def manifest_entry_to_ticket_stub(entry: dict[str, Any], tickets_dir: Path) -> T
         track=entry.get("track"),
         milestone=entry.get("milestone"),
         dependsOn=entry.get("dependsOn", []),
-        provides=_provides_to_list(entry.get("provides")),
+        provides=provides_to_list(entry.get("provides")),
         files=entry.get("files", []),
         filePath=tickets_dir / f"{entry_id}.md",
         bodyMarkdown="",

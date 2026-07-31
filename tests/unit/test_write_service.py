@@ -28,6 +28,7 @@ from factory_console.domain.write import DiffPreview, TicketDraft, TicketEdit, W
 from factory_console.errors import to_error_response
 from factory_console.file_adapter.fake_writer import FakeFileWriter
 from factory_console.file_adapter.manifest import manifest_entry_to_ticket_stub
+from factory_console.file_adapter.ticket_md import TicketFileMissing
 from factory_console.file_adapter.write_gate import TicketNotMutable
 from factory_console.services.ticket_service import TicketNotFound
 from factory_console.services.write_service import (
@@ -70,6 +71,26 @@ class _StatefulAdapter:
                 run_state = self._writer._run_states.get(ticket_id, RunState.unknown)
                 return stub.model_copy(update={"bodyMarkdown": body, "runState": run_state})
         return None
+
+
+class _OrphanAdapter:
+    """Wraps another ``FileAdapter``, making ``get_ticket`` RAISE for one id.
+
+    Mimics ``RealFileAdapter.get_ticket``'s documented behavior for a manifest
+    entry whose ``.md`` is absent (an orphan left by a partial factory write): it
+    raises ``TicketFileMissing`` rather than returning ``None``. ``WriteService``
+    uses ``get_ticket`` purely as a presence test, so this reproduces the case its
+    ``_exists`` helper has to tolerate.
+    """
+
+    def __init__(self, inner, orphan_id: str) -> None:
+        self._inner = inner
+        self._orphan_id = orphan_id
+
+    def get_ticket(self, project: Project, ticket_id: str) -> Ticket | None:
+        if ticket_id == self._orphan_id:
+            raise TicketFileMissing(ticket_id)
+        return self._inner.get_ticket(project, ticket_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -180,6 +201,20 @@ def test_create_on_existing_id_raises_write_conflict_and_commits_nothing(dry_run
     assert _ids(writer) == before
 
 
+def test_create_on_an_orphaned_id_raises_write_conflict_not_ticket_file_missing() -> None:
+    # A manifest entry with no .md makes get_ticket RAISE (TicketFileMissing)
+    # rather than return None; create must still treat that id as taken (409
+    # write_conflict), not let the raise escape as an unrelated 404.
+    project = _make_project()
+    writer = FakeFileWriter(manifest=[_entry("TM-001")], bodies={})
+    service = WriteService(writer, _OrphanAdapter(_StatefulAdapter(writer, project), "TM-001"))
+
+    with pytest.raises(WriteConflict) as exc_info:
+        service.create(project, _draft(id="TM-001"), dry_run=True)
+
+    assert exc_info.value.code == "write_conflict"
+
+
 # --------------------------------------------------------------------------- #
 # create — dry-run vs apply
 # --------------------------------------------------------------------------- #
@@ -230,6 +265,19 @@ def test_edit_absent_id_raises_ticket_not_found(dry_run: bool) -> None:
         service.edit(project, "TM-999", _edit(), dry_run=dry_run)
     assert exc_info.value.code == "ticket_not_found"
     assert exc_info.value.status == 404
+
+
+def test_edit_dry_run_tolerates_an_orphaned_manifest_entry() -> None:
+    # A manifest entry with no .md makes get_ticket RAISE (TicketFileMissing)
+    # rather than return None; edit must treat that as PRESENT (not TicketNotFound)
+    # so an orphan is still editable instead of permanently stuck.
+    project = _make_project()
+    writer = FakeFileWriter(manifest=[_entry("TM-001")], bodies={})
+    service = WriteService(writer, _OrphanAdapter(_StatefulAdapter(writer, project), "TM-001"))
+
+    result = service.edit(project, "TM-001", _edit(), dry_run=True)
+
+    assert result.applied is False
 
 
 @pytest.mark.parametrize("state", [RunState.in_flight, RunState.ready, RunState.merged])
@@ -291,6 +339,18 @@ def test_delete_absent_id_raises_ticket_not_found(dry_run: bool) -> None:
         service.delete(project, "TM-999", dry_run=dry_run)
     assert exc_info.value.code == "ticket_not_found"
     assert exc_info.value.status == 404
+
+
+def test_delete_dry_run_tolerates_an_orphaned_manifest_entry() -> None:
+    # Same orphan case as edit's: a manifest entry with no .md must stay
+    # deletable (the only way to clean it up), not permanently 404.
+    project = _make_project()
+    writer = FakeFileWriter(manifest=[_entry("TM-001")], bodies={})
+    service = WriteService(writer, _OrphanAdapter(_StatefulAdapter(writer, project), "TM-001"))
+
+    result = service.delete(project, "TM-001", dry_run=True)
+
+    assert result.applied is False
 
 
 @pytest.mark.parametrize("state", [RunState.in_flight, RunState.ready, RunState.merged])
