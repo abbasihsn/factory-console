@@ -31,7 +31,9 @@ from _read_only_guard import (
 from factory_console.domain import RunStateSource
 from factory_console.file_adapter import runs as runs_module
 from factory_console.file_adapter.path_safety import PathTraversal
+from factory_console.file_adapter.run_state import probe_ticket_state
 from factory_console.file_adapter.runs import (
+    find_last_stop_file,
     find_receipts_dir,
     find_results_dir,
     has_receipt,
@@ -270,6 +272,106 @@ def test_path_traversal_uses_the_uniform_invalid_ticket_id_contract() -> None:
     from factory_console.file_adapter.run_state import PathTraversal as RunStatePathTraversal
 
     assert PathTraversal is RunStatePathTraversal
+
+
+def test_the_run_state_read_path_refuses_a_bare_dot_segment_identically(tmp_path: Path) -> None:
+    # ``runs`` and ``run_state`` share ONE segment rule, so they cannot drift on
+    # what they reject or on the envelope they reject it with. (``ticket_md`` and
+    # ``write_render`` still check the pattern only — see path_safety's docstring;
+    # aligning them changes write-endpoint status codes and is not T81's call.)
+    run_state_dir = tmp_path / ".factory" / "run-state"
+    run_state_dir.mkdir(parents=True)
+    refusers: list[Callable[[str], object]] = [
+        lambda tid: read_result(tmp_path, tid),
+        lambda tid: has_receipt(tmp_path, tid),
+        lambda tid: probe_ticket_state(run_state_dir, tid),
+    ]
+    for bad in ("..", ".", "../etc/passwd", "T01\n"):
+        for refuse in refusers:
+            with pytest.raises(PathTraversal) as excinfo:
+                refuse(bad)
+            assert excinfo.value.status == 400
+            assert excinfo.value.code == "invalid_ticket_id"
+
+
+# --------------------------------------------------------------------------- #
+# Containment — a validated id bounds the JOIN, not what the join RESOLVES to
+# --------------------------------------------------------------------------- #
+
+
+def test_a_symlinked_results_directory_is_not_read(tmp_path: Path) -> None:
+    # The id is perfectly safe; the DIRECTORY is the escape. Without a resolved
+    # containment check, ``is_dir()`` follows the link and the out-of-root lane
+    # result is surfaced in a response that still reports an in-root path.
+    outside = tmp_path / "outside" / "results"
+    outside.mkdir(parents=True)
+    shutil.copy2(LANE_RESULT_FIXTURE, outside / "TM-001.json")
+
+    root = tmp_path / "project"
+    (root / ".factory").mkdir(parents=True)
+    (root / ".factory" / "results").symlink_to(outside, target_is_directory=True)
+
+    assert find_results_dir(root) is None
+    assert read_result(root, "TM-001") is None
+
+
+def test_a_symlinked_result_file_inside_an_in_root_directory_is_not_read(tmp_path: Path) -> None:
+    # Narrower escape: the results directory is genuinely in-root, only the one
+    # entry points out. The per-ticket join needs its own containment check.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    escapee = outside / "TM-001.json"
+    shutil.copy2(LANE_RESULT_FIXTURE, escapee)
+
+    root = tmp_path / "project"
+    results = root / ".factory" / "results"
+    results.mkdir(parents=True)
+    (results / "TM-001.json").symlink_to(escapee)
+
+    assert find_results_dir(root) == results
+    assert read_result(root, "TM-001") is None
+
+
+def test_a_symlinked_receipt_is_not_counted_as_present(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    escapee = outside / "TM-001.json"
+    shutil.copy2(RECEIPT_FIXTURE, escapee)
+
+    root = tmp_path / "project"
+    receipts = root / ".factory" / "receipts"
+    receipts.mkdir(parents=True)
+    (receipts / "TM-001.json").symlink_to(escapee)
+
+    assert has_receipt(root, "TM-001") is False
+
+
+def test_a_symlinked_last_stop_is_not_read(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    escapee = outside / "last-stop.json"
+    shutil.copy2(LAST_STOP_FIXTURE, escapee)
+
+    root = tmp_path / "project"
+    (root / ".factory").mkdir(parents=True)
+    (root / ".factory" / "last-stop.json").symlink_to(escapee)
+
+    assert find_last_stop_file(root) is None
+    assert read_last_stop(root) is None
+
+
+def test_an_in_root_symlink_is_still_read(tmp_path: Path) -> None:
+    # Containment, not a blanket ban on symlinks: a link that stays inside the
+    # project root resolves in-root and must still be readable.
+    root = tmp_path / "project"
+    real = root / "artifacts"
+    real.mkdir(parents=True)
+    shutil.copy2(LANE_RESULT_FIXTURE, real / "TM-001.json")
+    (root / ".factory").mkdir()
+    (root / ".factory" / "results").symlink_to(real, target_is_directory=True)
+
+    assert find_results_dir(root) is not None
+    assert read_result(root, "TM-001") is not None
 
 
 # --------------------------------------------------------------------------- #

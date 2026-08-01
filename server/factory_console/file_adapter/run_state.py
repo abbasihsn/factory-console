@@ -27,17 +27,23 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from collections.abc import Callable
 from pathlib import Path
 
-from factory_console.domain import TICKET_ID_PATTERN, RunState
+from factory_console.domain import RunState
 from factory_console.domain.run_state_source import (
     RUN_STATE_SOURCE_LOCATIONS,
     JsonRunState,
     RunStateSource,
 )
-from factory_console.file_adapter.path_safety import PathTraversal
+
+# Re-exported, not merely imported: this module's ``Raises:`` contract names
+# ``PathTraversal``, and a test pins that the class callers catch from HERE is the
+# same object ``path_safety`` defines — one unsafe-id exception, not one per module.
+from factory_console.file_adapter.path_safety import PathTraversal as PathTraversal
+from factory_console.file_adapter.path_safety import (
+    require_safe_ticket_id_segment,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -164,13 +170,10 @@ def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
         return RunState.unknown
 
     # Defense-in-depth: this id was already validated at the API boundary, but it
-    # is about to be used as a filesystem path segment, so re-validate here.
-    # ``fullmatch`` (not ``match``) so a trailing newline cannot sneak past the
-    # ``$`` anchor. TICKET_ID_PATTERN allows ``.`` as a character, so bare ``.``
-    # and ``..`` pass the regex yet are single-segment traversals — reject them
-    # explicitly per the ARCHITECTURE run-state directory contract.
-    if re.fullmatch(TICKET_ID_PATTERN, ticket_id) is None or ticket_id in (".", ".."):
-        raise PathTraversal(ticket_id)
+    # is about to be used as a filesystem path segment, so re-validate here —
+    # through the ONE shared rule in ``path_safety``, per the ARCHITECTURE
+    # run-state directory contract.
+    require_safe_ticket_id_segment(ticket_id)
 
     for state in _MARKER_PRECEDENCE:
         # ``.exists()`` covers a marker present as either a file or a directory.

@@ -17,13 +17,19 @@ Schema-provenance note (read before adding a field)
 The result and receipt schemas belong to the FACTORY, not to this console, so
 this module models a small NAMED SUBSET and treats the rest as opaque
 (``extra="ignore"``). Which fields are modelled, and why they are the ones
-modelled, is documented on :class:`RunResultSummary` and :class:`LastStop` — the
-short version is that no real ``.factory/results`` / ``.factory/receipts`` /
-``.factory/last-stop.json`` file was reachable from the sandboxed build
-environment this was written in, so :class:`RunResultSummary` is grounded in the
-factory's own documented ``===LANE_RESULT===`` persistence contract (the format
-the team-lead lane writes ``.factory/results/<ID>.json`` from) and nothing
-beyond it is guessed at.
+modelled, is documented on :class:`RunResultSummary` and :class:`LastStop`.
+
+The short version, stated as the unverified claim it is: no real
+``.factory/results`` / ``.factory/receipts`` / ``.factory/last-stop.json`` file
+was reachable from the sandboxed build environment this was written in, and this
+REPOSITORY documents no schema for any of them. :class:`RunResultSummary`'s field
+list is taken from the App Factory's ``===LANE_RESULT===`` block — a contract
+that lives in the FACTORY's own source, not here — so nothing in this repository
+can confirm it. T81's Verification section asks for fields checked against a real
+file; that check has not been performed, and until it is, a field here is
+"believed to exist", not "shown to exist". Treat this module's provenance notes
+as sourcing, not as verification, and re-derive the subset against a real lane
+result when one becomes reachable.
 """
 
 from __future__ import annotations
@@ -64,14 +70,18 @@ class RunResultSummary(BaseModel):
       written: ``.factory/`` is gitignored, so it exists only on the host that
       actually ran the factory and is not present in a build worktree.
       ``ARCHITECTURE.md`` documents no schema for it either. The fields below are
-      therefore taken from the factory's OWN documented persistence contract for
-      this file — the ``===LANE_RESULT===`` block the team-lead lane emits and
-      persists to ``.factory/results/<ID>.json``, whose keys are ``id``,
-      ``status``, ``pr_url``, ``route``, ``review_iterations``, ``verdict``,
-      ``built``, ``review_summary``, ``unresolved``, ``handoff``, ``worktree``,
-      ``spend``. Nothing outside that list is modelled, and nothing in it is
-      guessed at: a key this console cannot point at in that contract is not a
-      field here.
+      therefore taken from the App Factory's ``===LANE_RESULT===`` block — the
+      block the team-lead lane emits and persists to
+      ``.factory/results/<ID>.json``, whose keys are ``id``, ``status``,
+      ``pr_url``, ``route``, ``review_iterations``, ``verdict``, ``built``,
+      ``review_summary``, ``unresolved``, ``handoff``, ``worktree``, ``spend``.
+      Nothing outside that list is modelled and nothing in it is invented — but
+      that list is NOT checkable from this repository (it lives in the factory's
+      source, and the string appears nowhere here outside T81's own files), so it
+      is an unverified source, not a verified one. If the real file disagrees,
+      every modelled field degrades to ``None`` via the ``ValidationError`` branch
+      in :func:`~factory_console.file_adapter.runs.read_result` and no test here
+      would notice. Re-derive against a real lane result before relying on it.
     - Of those keys only the five below are SUMMARY material — the ones a runs
       list has to show. ``built`` / ``review_summary`` / ``unresolved`` /
       ``handoff`` / ``spend`` are lane-report prose and detail, and ``worktree``

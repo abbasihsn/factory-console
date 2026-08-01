@@ -331,6 +331,45 @@ def test_a_result_for_an_id_outside_the_manifest_contributes_no_record(tmp_path:
     assert client.get("/api/v1/runs/TM-999").status_code == 404
 
 
+def test_a_manifest_ticket_with_no_markdown_body_still_has_a_run_record(tmp_path: Path) -> None:
+    # Membership is a MANIFEST question. Answering it by loading the ticket body
+    # made a missing ``.md`` surface as 404 ``ticket_file_missing`` — an error
+    # about a markdown file, from an endpoint that never reads one.
+    root = _fully_populated(tmp_path)
+    (root / "docs" / "planning" / "tickets" / "TM-001.md").unlink()
+    client = TestClient(_app(root))
+
+    resp = client.get("/api/v1/runs/TM-001")
+
+    assert resp.status_code == 200
+    assert resp.json()["ticketId"] == "TM-001"
+    assert resp.json()["runState"] == "merged"
+    # The 404 is still reachable — for an id the manifest genuinely does not name.
+    assert client.get("/api/v1/runs/TM-999").status_code == 404
+
+
+def test_one_path_unsafe_manifest_id_does_not_fail_the_whole_list(tmp_path: Path) -> None:
+    # ``TICKET_ID_PATTERN`` admits a bare ``..``, which the artifact readers
+    # refuse as a single-segment traversal. That must degrade THAT record, not
+    # 400 the listing of its neighbours — the rule ``RealFileAdapter``'s
+    # ``_safe_run_state`` already applies to run-state.
+    root = _fully_populated(tmp_path)
+    manifest_path = root / "docs" / "planning" / "tickets.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["tickets"].append(dict(manifest["tickets"][0], id=".."))
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    client = TestClient(_app(root))
+
+    resp = client.get("/api/v1/runs")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [run["ticketId"] for run in body["runs"]] == [*TICKET_IDS, ".."]
+    # The neighbours are unharmed, and the bad id reports every source silent.
+    assert _record(body, "TM-001")["unavailable"] == []
+    assert set(_record(body, "..")["unavailable"]) == {"runState", "results", "receipts"}
+
+
 # --------------------------------------------------------------------------- #
 # Frozen OpenAPI shape (what the frontend codegen freezes against)
 # --------------------------------------------------------------------------- #

@@ -17,17 +17,27 @@ deliberate rather than sloppy:
   sandboxed worktree this was built in, and `docs/planning/ARCHITECTURE.md`
   documents no schema for any of the three (it covers only the run-state
   directory). So there was nothing to copy.
-- `lane-result.json` is therefore written from the factory's **own documented
-  persistence contract** for `.factory/results/<ID>.json` — the
-  `===LANE_RESULT===` block the team-lead lane emits, whose keys are `id`,
-  `status`, `pr_url`, `route`, `review_iterations`, `verdict`, `built`,
-  `review_summary`, `unresolved`, `handoff`, `worktree`, `spend`. Every key here
-  comes from that list and no key was invented. Like the run-state fixture, it is
-  written from the FACTORY's format rather than from what the console's parser
-  happens to accept, and it carries keys the console deliberately does NOT model
-  (`built`, `review_summary`, `unresolved`, `handoff`, `spend`, and `worktree` —
-  an absolute host path the endpoint must never surface), so a parser that
-  quietly requires a narrower shape, or that leaks the worktree path, fails here.
+- `lane-result.json` is therefore written from the App Factory's
+  `===LANE_RESULT===` block for `.factory/results/<ID>.json` — the block the
+  team-lead lane emits, whose keys are `id`, `status`, `pr_url`, `route`,
+  `review_iterations`, `verdict`, `built`, `review_summary`, `unresolved`,
+  `handoff`, `worktree`, `spend`. Every key here comes from that list and no key
+  was invented. Like the run-state fixture, it is written from the FACTORY's
+  format rather than from what the console's parser happens to accept, and it
+  carries keys the console deliberately does NOT model (`built`,
+  `review_summary`, `unresolved`, `handoff`, `spend`, and `worktree` — an
+  absolute host path the endpoint must never surface), so a parser that quietly
+  requires a narrower shape, or that leaks the worktree path, fails here.
+
+  **But be clear about what this fixture does and does not prove.** That key list
+  lives in the factory's own source, not in this repository — grep for
+  `LANE_RESULT` here and the only hits are T81's own files. So the fixture and the
+  parser it exercises were derived from the SAME unverified assumption, and a test
+  asserting one against the other cannot detect that the assumption is wrong.
+  T81's Verification section asks for a real file precisely to break that circle;
+  it has not been broken. **This is an open gap, not a solved one** — when a real
+  `.factory/results/<ID>.json` becomes reachable, replace this file with it and
+  re-check every modelled field.
 - `last-stop.json` has no factory-side contract this repo can point at at all, so
   the console models exactly one field — `reason`, from the one-line description
   in `docs/planning/v2.1-PLAN.md` — and this fixture carries two extra keys

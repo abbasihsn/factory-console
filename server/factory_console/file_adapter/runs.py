@@ -6,7 +6,8 @@ reads the first, and this module reads the other three:
 
 1. ``run-state.json`` — state + ``pr_url`` per ticket (T78's
    :mod:`~factory_console.file_adapter.run_state`; :func:`read_pr_urls` here
-   reuses that ONE parser rather than opening the file a second time).
+   calls that ONE parser rather than reading the format itself — see its
+   docstring for what that does and does not buy).
 2. ``results/<ticket_id>.json`` — the lane result, read as the named subset
    :class:`~factory_console.domain.run_record.RunResultSummary`.
 3. ``receipts/<ticket_id>.json`` — review receipt, read for PRESENCE ONLY.
@@ -17,10 +18,17 @@ receipts, or results and no last-stop, and in a fresh clone all four are absent
 because ``.factory/`` is gitignored. So nothing here raises on absence — a
 missing or malformed artifact yields ``None``/``False`` and a ``warning`` log,
 exactly as :func:`~factory_console.file_adapter.run_state.read_json_run_state`
-does. The one exception is an UNSAFE TICKET ID: ids arrive from a URL path
+does. :func:`read_last_stop` is the one deliberate exception to the ``None``
+half of that rule: a last-stop file that is PRESENT but unreadable yields an
+empty :class:`~factory_console.domain.run_record.LastStop`, because presence is
+a fact the caller reports and collapsing it into "absent" would lose it.
+
+The other exception is an UNSAFE TICKET ID: ids arrive from a URL path
 segment and are about to be joined into a path, so they are validated and
 rejected with :class:`~factory_console.file_adapter.path_safety.PathTraversal`
-BEFORE any filesystem access.
+BEFORE any filesystem access. Validating the id bounds the join; :func:`_probe`
+separately bounds what the join RESOLVES to, so a symlink cannot walk an
+artifact read out of the project root.
 
 The console MUST NOT write, create, or delete anything here — a guard test
 asserts this module contains no filesystem-mutating call.
@@ -30,15 +38,14 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
 
-from factory_console.domain import TICKET_ID_PATTERN, RunStateSource
+from factory_console.domain import RunStateSource
 from factory_console.domain.run_record import LastStop, RunResultSummary
-from factory_console.file_adapter.path_safety import PathTraversal
+from factory_console.file_adapter.path_safety import require_safe_ticket_id_segment
 from factory_console.file_adapter.run_state import read_json_run_state
 
 _LOGGER = logging.getLogger(__name__)
@@ -53,41 +60,63 @@ LAST_STOP_RELATIVE = Path(".factory") / "last-stop.json"
 """Project-relative location of the "why the last run stopped" file."""
 
 
-def _require_safe_ticket_id(ticket_id: str) -> str:
-    """Return ``ticket_id`` if it is safe to use as ONE path segment, else raise.
+def _contained(candidate: Path, project_root: Path) -> bool:
+    """True if ``candidate`` really resolves inside ``project_root``.
 
-    The same rule :func:`~factory_console.file_adapter.run_state.probe_ticket_state`
-    applies, for the same reason: ``fullmatch`` (not ``match``) so a trailing
-    newline cannot slip past the ``$`` anchor, plus an explicit rejection of bare
-    ``.``/``..``, which satisfy :data:`TICKET_ID_PATTERN` (it allows ``.``) yet
-    are single-segment traversals.
-
-    Raises:
-        PathTraversal: (``invalid_ticket_id``, 400) before any path is joined.
+    Validating the ticket id bounds what the JOIN can produce; it says nothing
+    about what the join RESOLVES to. ``is_dir()``/``is_file()`` follow symlinks,
+    so a symlinked ``.factory/results`` (or a single symlinked entry inside it)
+    would otherwise be read from outside the project root and its contents
+    surfaced in a response — and silently, since the endpoint reports the LEXICAL
+    path, which still looks in-root. The NFR is that nothing out-of-root reaches
+    a response, so containment is checked on the RESOLVED path, mirroring
+    :func:`~factory_console.file_adapter.ticket_md._safe_resolve`. Both sides are
+    resolved so a symlinked temp root (``/tmp``, macOS ``/var/folders``) is not a
+    false negative.
     """
-    if re.fullmatch(TICKET_ID_PATTERN, ticket_id) is None:
-        raise PathTraversal.from_pattern_violation(ticket_id)
-    if ticket_id in (".", ".."):
-        raise PathTraversal(ticket_id)
-    return ticket_id
+    try:
+        return candidate.resolve(strict=False).is_relative_to(project_root.resolve())
+    except (OSError, RuntimeError):
+        # ``RuntimeError`` and not only ``OSError``: ``resolve(strict=False)``
+        # raises ``RuntimeError("Symlink loop from ...")`` for a cyclic link, which
+        # is not an ``OSError``. Reaching it needs a loop in a component the
+        # is_dir/is_file check did not already walk, but this module's contract is
+        # that it never raises for a bad artifact, and an uncaught RuntimeError
+        # would 500 the endpoint. Cannot prove containment -> do not read it.
+        return False
+
+
+def _probe(candidate: Path, project_root: Path, artifact: str, *, want_dir: bool) -> Path | None:
+    """Return ``candidate`` if it is an in-root directory/file, else ``None``.
+
+    Out-of-root resolution is reported as ABSENT rather than raised: this module
+    never raises for an artifact problem (only for an unsafe ticket id), and
+    "there is no run data here" is the honest answer for an artifact the console
+    is not allowed to read. It is logged so the degradation is attributable.
+    """
+    if not (candidate.is_dir() if want_dir else candidate.is_file()):
+        return None
+    if not _contained(candidate, project_root):
+        _LOGGER.warning(
+            "%s: %s resolves outside the project root; treating it as absent", artifact, candidate
+        )
+        return None
+    return candidate
 
 
 def find_results_dir(project_root: Path) -> Path | None:
-    """Return ``<project_root>/.factory/results`` if it is a directory, else ``None``."""
-    candidate = project_root / RESULTS_RELATIVE
-    return candidate if candidate.is_dir() else None
+    """Return ``<project_root>/.factory/results`` if it is an in-root directory, else ``None``."""
+    return _probe(project_root / RESULTS_RELATIVE, project_root, "results", want_dir=True)
 
 
 def find_receipts_dir(project_root: Path) -> Path | None:
-    """Return ``<project_root>/.factory/receipts`` if it is a directory, else ``None``."""
-    candidate = project_root / RECEIPTS_RELATIVE
-    return candidate if candidate.is_dir() else None
+    """Return ``<project_root>/.factory/receipts`` if it is an in-root directory, else ``None``."""
+    return _probe(project_root / RECEIPTS_RELATIVE, project_root, "receipts", want_dir=True)
 
 
 def find_last_stop_file(project_root: Path) -> Path | None:
-    """Return ``<project_root>/.factory/last-stop.json`` if it is a file, else ``None``."""
-    candidate = project_root / LAST_STOP_RELATIVE
-    return candidate if candidate.is_file() else None
+    """Return ``<project_root>/.factory/last-stop.json`` if it is an in-root file, else ``None``."""
+    return _probe(project_root / LAST_STOP_RELATIVE, project_root, "last-stop", want_dir=False)
 
 
 def _load_json_object(path: Path, artifact: str) -> dict[str, Any] | None:
@@ -132,12 +161,12 @@ def read_result(project_root: Path, ticket_id: str) -> RunResultSummary | None:
         PathTraversal: if ``ticket_id`` is not a single path-safe segment, raised
             BEFORE the results path is joined or probed.
     """
-    _require_safe_ticket_id(ticket_id)
+    require_safe_ticket_id_segment(ticket_id)
     results_dir = find_results_dir(project_root)
     if results_dir is None:
         return None
-    path = results_dir / f"{ticket_id}.json"
-    if not path.is_file():
+    path = _probe(results_dir / f"{ticket_id}.json", project_root, "lane result", want_dir=False)
+    if path is None:
         return None
     document = _load_json_object(path, "lane result")
     if document is None:
@@ -165,11 +194,12 @@ def has_receipt(project_root: Path, ticket_id: str) -> bool:
         PathTraversal: if ``ticket_id`` is not a single path-safe segment, raised
             BEFORE the receipts path is joined or probed.
     """
-    _require_safe_ticket_id(ticket_id)
+    require_safe_ticket_id_segment(ticket_id)
     receipts_dir = find_receipts_dir(project_root)
     if receipts_dir is None:
         return False
-    return (receipts_dir / f"{ticket_id}.json").is_file()
+    receipt = receipts_dir / f"{ticket_id}.json"
+    return _probe(receipt, project_root, "receipt", want_dir=False) is not None
 
 
 def read_last_stop(project_root: Path) -> LastStop | None:
@@ -203,6 +233,14 @@ def read_pr_urls(source: RunStateSource | None) -> dict[str, str]:
     Delegates to T78's :func:`~factory_console.file_adapter.run_state.read_json_run_state`
     so ``run-state.json`` keeps exactly ONE parser — a second reader here would be
     a second authority on the factory's format, free to drift from the first.
+
+    That buys one INTERPRETATION of the format, not one read of the file: this
+    call parses the file itself, so a caller that also resolves run-state parses
+    it twice (see :meth:`~factory_console.services.run_service.RunService.list_records`,
+    which documents the count). The duplicate read is cheap and the two parses
+    cannot disagree about the format; they can, in principle, observe different
+    revisions of a file the factory rewrites mid-request.
+
     Only the JSON form carries PR urls; a marker-directory source (or no source at
     all) has none, so the answer is empty.
     """
