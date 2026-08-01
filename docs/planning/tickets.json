@@ -1122,7 +1122,7 @@
       "depends_on": [
         "T78"
       ],
-      "provides": "RunState.absent; ensure_mutable refuses a ticket a present run-state does not list, while a project with no run-state source stays fully editable.",
+      "provides": "RunState.absent; ensure_mutable refuses a ticket a present run-state does not list, while a project with no run-state source stays fully editable. AMENDED 2026-08-01: a vacuous run-state source resolves unknown rather than absent, and delete is permitted on absent via ensure_deletable — the two high findings from T80's own review, folded in because they must be fixed before this ticket merges.",
       "path": "docs/planning/tickets/v2.1/T80-write-gate-absent-vs-unsourced.md",
       "status": "todo"
     },
@@ -1199,23 +1199,10 @@
         "T82",
         "T83",
         "T84",
-        "T85",
-        "T87"
+        "T85"
       ],
       "provides": "architecture.md corrected on the run-state source and state vocabulary; usage.md gains runs, spend and the changed editability rule; README reflects the new views.",
       "path": "docs/planning/tickets/v2.1/T86-v2.1-docs.md",
-      "status": "todo"
-    },
-    {
-      "id": "T87",
-      "title": "Two gaps in T80's absent gate — a vacuous run-state source, and a ticket the console just created",
-      "track": "backend",
-      "milestone": "v2.1",
-      "depends_on": [
-        "T80"
-      ],
-      "provides": "A run-state source that lists nothing resolves unknown rather than absent, so an untouched project stays editable; and a ticket the run-state does not track can be deleted, so a mistyped creation is recoverable. T80's rule for a populated source is unchanged.",
-      "path": "docs/planning/tickets/v2.1/T87-absent-vacuous-source-and-created-ticket.md",
       "status": "todo"
     },
     {
