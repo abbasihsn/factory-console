@@ -447,6 +447,36 @@ async def test_edit_on_json_sourced_merged_ticket_is_ticket_not_mutable_409(
     assert _snapshot(root) == before
 
 
+async def test_edit_on_a_ticket_the_json_source_does_not_list_is_absent_409(
+    tmp_path: Path,
+) -> None:
+    # T80's end-to-end proof, the counterpart of the `merged` case above: the JSON
+    # source resolves and simply has no entry for CAD-131, so the gate answers
+    # RunState.absent — refused, where pre-T80 it resolved the mutable `unknown` and
+    # this PUT succeeded. Asserted through the real app because the `absent` branch
+    # of TicketNotMutable (and the source path it puts in `message`) was otherwise
+    # only ever exercised at the exception-construction level.
+    app, root = _real_app(tmp_path)
+    run_state_json = root / ".factory" / "run-state.json"
+    run_state_json.write_text(
+        '{"version": 1, "tickets": {"CAD-100": {"status": "merged", "pr_url": null}}}',
+        encoding="utf-8",
+    )
+    before = _snapshot(root)
+    async with _client(app) as client:
+        resp = await client.put("/api/v1/tickets/CAD-131", json=_edit_body(), headers=AUTH)
+
+    assert resp.status_code == 409
+    error = resp.json()["error"]
+    assert error["code"] == "ticket_not_mutable"
+    assert error["details"] == {"ticketId": "CAD-131", "runState": "absent"}
+    # The operator needs to know WHICH file was consulted — the whole point of the
+    # distinct `absent` wording is that the answer is "the file you are not looking
+    # at" (T80 step 4).
+    assert str(run_state_json) in error["message"]
+    assert _snapshot(root) == before
+
+
 @pytest.mark.parametrize("ticket_id", NON_TODO_IDS)
 async def test_dry_run_still_previews_a_non_todo_ticket_and_writes_nothing(
     ticket_id: str, tmp_path: Path

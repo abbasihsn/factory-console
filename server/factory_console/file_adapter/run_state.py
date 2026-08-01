@@ -156,12 +156,23 @@ def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
     - A present run-state directory with no matching marker -> :attr:`RunState.absent`
       (the directory resolved, and it does not list this ticket).
     - A ``run_state_dir`` that is no longer a directory when probed (it vanished or
-      was atomically replaced between discovery in ``load_project`` and this call)
-      -> :attr:`RunState.unknown`, NOT ``absent``. This mirrors the JSON form's
-      ``readable=False`` rule in :func:`read_json_run_state`: a source that cannot be
-      trusted must never be read as "definitively lists nothing", which here would
-      turn a transient disappearance into a project-wide read-only lockout (every
-      ticket ``absent``, so every write 409s) instead of the mutable ``unknown``.
+      was atomically replaced between discovery in ``load_project`` and this call),
+      or that cannot be read at all (e.g. the factory created it mode-0700 under a
+      different uid, so stat'ing a marker raises ``EACCES``) -> :attr:`RunState.unknown`,
+      NOT ``absent``. This mirrors the JSON form's ``readable=False`` rule in
+      :func:`read_json_run_state`: a source that cannot be trusted must never be read
+      as "definitively lists nothing", which here would turn a transient
+      disappearance into a project-wide read-only lockout (every ticket ``absent``,
+      so every write 409s) instead of the mutable ``unknown``.
+
+      The ``OSError`` guard around the marker loop is what makes that mirroring real
+      rather than partial: ``Path.exists()`` only swallows ``ENOENT``/``ENOTDIR``/
+      ``EBADF``/``ELOOP``, so on ``EACCES`` it RAISES. Without the guard a
+      permission-restricted run-state directory would escape this read-only prober
+      as an unmapped 500 on every list/read/write request — the one outcome the
+      "NEVER raises for a source-level problem" rule exists to prevent. Only
+      :class:`PathTraversal`, raised above before any filesystem access, still
+      propagates.
 
     Raises:
         PathTraversal: if ``ticket_id`` is not a single path-safe segment. This
@@ -179,12 +190,23 @@ def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
     if re.fullmatch(TICKET_ID_PATTERN, ticket_id) is None or ticket_id in (".", ".."):
         raise PathTraversal(ticket_id)
 
-    for state in _MARKER_PRECEDENCE:
-        # ``.exists()`` covers a marker present as either a file or a directory.
-        if (run_state_dir / state / ticket_id).exists():
-            return RunState(state)
+    try:
+        for state in _MARKER_PRECEDENCE:
+            # ``.exists()`` covers a marker present as either a file or a directory.
+            if (run_state_dir / state / ticket_id).exists():
+                return RunState(state)
 
-    if not run_state_dir.is_dir():
+        readable = run_state_dir.is_dir()
+    except OSError:
+        # The directory cannot be stat'ed (EACCES and friends). Same answer as a
+        # vanished directory below, for the same reason: an unreadable source is
+        # "I could not tell", never "the source lists nothing".
+        _LOGGER.warning(
+            "run-state: %s could not be read; every ticket resolves unknown", run_state_dir
+        )
+        return RunState.unknown
+
+    if not readable:
         # The directory went away after discovery: "I could not tell" (mutable
         # unknown), never "the source lists nothing" (absent, which refuses).
         _LOGGER.warning(
@@ -313,6 +335,16 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
     once per ticket; a directory source keeps probing per ticket, which is what
     reading a marker layout means. Both forms funnel through this one function so
     the single-ticket and whole-manifest answers cannot disagree.
+
+    The SOURCE-level question ("can this source be read at all?") is settled once
+    here for both forms, and only the PER-TICKET question is left to the closure.
+    That is what keeps the two kinds symmetric in log volume: the JSON form reports
+    an unreadable file once because it parses once, so the directory form must not
+    report an unreadable directory once per ticket — a 200-ticket list request
+    against a run-state directory the console cannot stat would otherwise emit 200
+    identical warnings. Resolving the source's readability up front collapses that
+    to one line and one constant ``unknown`` answer. :func:`probe_ticket_state`
+    keeps its own equivalent guard for direct single-ticket callers.
     """
     if source is None:
         return lambda _ticket_id: RunState.unknown
@@ -327,4 +359,22 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
             return RunState.absent
 
         return resolve_json
+
+    try:
+        # ``is_dir()`` alone is not enough: it stats the directory ENTRY from the
+        # parent, which still succeeds for a directory the console has no search
+        # permission on. Stat one path INSIDE it — the same shape the marker loop
+        # probes — so an EACCES surfaces here, once, instead of once per ticket.
+        directory_readable = source.path.is_dir()
+        if directory_readable:
+            # Called for the OSError, not the answer — bind it so this does not read
+            # as a no-op line someone deletes.
+            _ = (source.path / _MARKER_PRECEDENCE[0]).exists()
+    except OSError:
+        directory_readable = False
+    if not directory_readable:
+        _LOGGER.warning(
+            "run-state: %s is not a readable directory; every ticket resolves unknown", source.path
+        )
+        return lambda _ticket_id: RunState.unknown
     return lambda ticket_id: probe_ticket_state(source.path, ticket_id)

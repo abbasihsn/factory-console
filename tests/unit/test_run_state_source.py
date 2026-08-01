@@ -313,6 +313,19 @@ def test_an_entry_without_a_usable_status_is_skipped_but_its_siblings_survive(
     parsed = read_json_run_state(path)
     assert parsed.states == {"T01": RunState.merged}
     assert parsed.unrecognised == []
+    # T80: a skipped entry still HAD an entry, so its id must land in
+    # ``known_ticket_ids`` — that is the only thing separating "listed under
+    # something we could not classify" (unknown, mutable) from "not listed at all"
+    # (absent, refused 409).
+    assert parsed.known_ticket_ids == frozenset({"T01", "T02", "T03", "T04"})
+
+    # ...and it must resolve that way end to end, not merely be recorded. Moving the
+    # ``known_ticket_ids.add`` below the ``continue`` would flip these three real
+    # tickets from editable to 409 with no other test failing.
+    source = RunStateSource(kind="json", path=path)
+    for ticket_id in ("T02", "T03", "T04"):
+        assert probe_ticket_state_from_source(source, ticket_id) is RunState.unknown
+    assert probe_ticket_state_from_source(source, "T99-no-entry-at-all") is RunState.absent
 
 
 def test_an_unreadable_json_source_yields_unknown(tmp_path: Path) -> None:

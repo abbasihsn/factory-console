@@ -1,8 +1,13 @@
 """The single write-path chokepoint: is a ticket mutable in its run-state?
 
 The core v2 safety invariant is that a ticket may be edited ONLY when its factory
-run-state is ``todo`` (or ``unknown``, when no run-state source is present);
-every other state — ``in-flight``/``ready``/``merged`` from the directory form,
+run-state is ``todo`` or ``unknown``. Read ``unknown`` as "no answer this console
+can trust", which is BROADER than "no source on disk": it also covers a source
+that could not be read or parsed, and a source that lists the ticket under a
+status outside
+:data:`~factory_console.file_adapter.run_state.FACTORY_STATUS_ALIASES` (see
+:func:`~factory_console.file_adapter.run_state.run_state_resolver` for the
+three-way split). Every other state — ``in-flight``/``ready``/``merged`` from the directory form,
 ``in_progress``/``in_part``/``in_submilestone``/``flagged``/``failed``/
 ``needs_human`` from the factory's ``run-state.json``, and ``absent`` (a run-state
 source resolved and does not list the ticket at all) — is read-only, matching
@@ -30,9 +35,11 @@ from factory_console.errors import FactoryConsoleError
 from factory_console.file_adapter.run_state import probe_ticket_state_from_source
 
 # The ONLY editable predicate: a ticket is mutable exactly when its resolved
-# run-state is ``todo`` or ``unknown`` (no run-state source on disk). Every
-# other state is read-only. Single source of truth for the write-authorization
-# decision — see ARCHITECTURE.md "Factory run-state directory (read-only)".
+# run-state is ``todo`` or ``unknown`` — the latter meaning "no source to ask, or
+# no answer from it this console can trust", NOT merely "no run-state source on
+# disk" (see the module docstring). Every other state is read-only. Single source
+# of truth for the write-authorization decision — see ARCHITECTURE.md "Factory
+# run-state directory (read-only)".
 MUTABLE_STATES = (RunState.todo, RunState.unknown)
 
 

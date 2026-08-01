@@ -129,8 +129,17 @@ class FakeFileWriter:
         :class:`~factory_console.file_adapter.write_render.UnknownTicket`, 404, for
         an absent id), then enforces the todo-only mutability gate over the SEEDED
         run-state (raising :class:`~factory_console.file_adapter.write_gate.TicketNotMutable`,
-        409, for a non-mutable state) — mirroring how the real write path composes
-        the render check and the gate.
+        409, for a non-mutable state).
+
+        That existence-first order matches :class:`RealFileWriter` ONLY for a project
+        with no run-state source; since T80 it is NOT a general mirror of it. The real
+        writer gates FIRST, and against a resolved source an id it does not list
+        answers :attr:`RunState.absent` (409) rather than the mutable ``unknown`` — so
+        for an unheard-of id the real writer raises ``TicketNotMutable`` where this
+        fake raises ``UnknownTicket``, and a just-created id is refused here only if
+        seeded ``absent``. See :meth:`_ensure_mutable` for the full divergence note;
+        pin order-sensitive and create-then-edit expectations against
+        :class:`RealFileWriter`, not this fake.
         """
         planned = self._plan_edit(project, ticket_id, edit)  # validates id + existence
         self._ensure_mutable(ticket_id)
@@ -157,7 +166,9 @@ class FakeFileWriter:
         """Delete ``ticket_id`` from memory and return the applied :class:`WriteResult`.
 
         Validates existence FIRST (:class:`UnknownTicket`, 404) then the todo-only
-        gate (:class:`TicketNotMutable`, 409), exactly like :meth:`edit_ticket`.
+        gate (:class:`TicketNotMutable`, 409), exactly like :meth:`edit_ticket` —
+        including that method's T80 divergence from :class:`RealFileWriter`, which
+        gates first and refuses :attr:`RunState.absent`.
         """
         planned = self._plan_delete(project, ticket_id)  # validates id + existence
         self._ensure_mutable(ticket_id)

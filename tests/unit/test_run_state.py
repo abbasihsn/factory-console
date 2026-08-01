@@ -8,6 +8,7 @@ target source and asserts the read-only invariant: it contains no
 filesystem-mutating call.
 """
 
+import os
 from pathlib import Path
 
 import pytest
@@ -17,12 +18,14 @@ from _read_only_guard import (
 )
 
 from factory_console.domain import RunState
+from factory_console.domain.run_state_source import RunStateSource
 from factory_console.file_adapter import run_state as run_state_module
 from factory_console.file_adapter.run_state import (
     PathTraversal,
     find_run_state_dir,
     is_run_state_marker,
     probe_ticket_state,
+    run_state_resolver,
 )
 
 # Each on-disk state directory name paired with the enum member it must map to
@@ -79,6 +82,45 @@ def test_a_vanished_dir_resolves_to_unknown_not_absent(tmp_path: Path) -> None:
     not_a_dir = tmp_path / "run-state-file"
     not_a_dir.write_text("not a directory", encoding="utf-8")
     assert probe_ticket_state(not_a_dir, "CAD-118") is RunState.unknown
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
+def test_an_unreadable_dir_resolves_to_unknown_not_absent(tmp_path: Path) -> None:
+    # The same "cannot be trusted -> unknown" rule for a directory that EXISTS but
+    # cannot be stat'ed (the factory created it mode-0700 under a different uid).
+    # ``Path.exists()`` only swallows ENOENT/ENOTDIR/EBADF/ELOOP, so on EACCES it
+    # RAISES — without the OSError guard in probe_ticket_state this escapes the
+    # read-only prober and 500s every list/read/write request for the project.
+    run_state_dir = tmp_path / "run-state"
+    (run_state_dir / "todo").mkdir(parents=True)
+    run_state_dir.chmod(0o000)
+    try:
+        assert probe_ticket_state(run_state_dir, "CAD-118") is RunState.unknown
+    finally:
+        run_state_dir.chmod(0o755)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
+def test_an_unreadable_dir_is_reported_once_per_resolver_not_once_per_ticket(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Log-volume symmetry with the JSON form, which parses once and so reports an
+    # unreadable file once. The directory form probes per ticket, so the SOURCE-level
+    # readability question is settled once in run_state_resolver: a 200-ticket list
+    # projection against an unstattable run-state dir must not emit 200 identical
+    # warnings. Every ticket must still answer the mutable `unknown`.
+    run_state_dir = tmp_path / "run-state"
+    (run_state_dir / "todo").mkdir(parents=True)
+    run_state_dir.chmod(0o000)
+    try:
+        with caplog.at_level("WARNING", logger=run_state_module._LOGGER.name):
+            resolve = run_state_resolver(RunStateSource(kind="directory", path=run_state_dir))
+            states = [resolve(f"CAD-{n}") for n in range(20)]
+    finally:
+        run_state_dir.chmod(0o755)
+
+    assert states == [RunState.unknown] * 20
+    assert len([r for r in caplog.records if "run-state" in r.getMessage()]) == 1
 
 
 # --------------------------------------------------------------------------- #

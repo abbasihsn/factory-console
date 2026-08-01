@@ -171,6 +171,10 @@ def test_ensure_mutable_refuses_a_ticket_absent_from_the_directory_source() -> N
     assert exc.code == "ticket_not_mutable"
     assert exc.status == 409
     assert exc.details == {"ticketId": _ABSENT_DIRECTORY_ID, "runState": RunState.absent.value}
+    # T80 step 4 mandates naming the consulted source for `absent` — for BOTH source
+    # kinds, not just JSON. Without this, threading `source_path` through only the
+    # json branch of `ensure_mutable` would still pass the suite.
+    assert str(_FIXTURE_RUN_STATE_DIR) in exc.message
 
 
 def test_ensure_mutable_refuses_a_ticket_absent_from_the_json_source() -> None:
