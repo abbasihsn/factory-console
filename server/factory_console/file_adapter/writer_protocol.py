@@ -10,10 +10,21 @@ used by tests — exactly as ``FakeFileAdapter`` mirrors the read port.
 
 The six methods pair up: each ``preview_*`` computes a pure, side-effect-free
 :class:`~factory_console.domain.write.DiffPreview` of what a create/edit/delete
-WOULD change, while its apply sibling enforces the todo-only mutability gate,
-performs the write, and returns a :class:`~factory_console.domain.write.WriteResult`.
+WOULD change, while its apply sibling enforces the run-state write gate, performs
+the write, and returns a :class:`~factory_console.domain.write.WriteResult`.
 Every method takes the resolved :class:`~factory_console.domain.project.Project`
 first, mirroring ``FileAdapter``'s shape.
+
+Edit and delete do NOT share one gate, and this port is where that must be stated,
+because it is the contract every implementation is written against: ``edit_ticket``
+authorizes over
+:data:`~factory_console.file_adapter.write_gate.MUTABLE_STATES` (``todo``/
+``unknown``), while ``delete_ticket`` authorizes over
+:data:`~factory_console.file_adapter.write_gate.DELETABLE_STATES`, which ADDITIONALLY
+permits :attr:`~factory_console.domain.run_state.RunState.absent` — otherwise the
+ungated ``create_ticket`` could mint a ticket no implementation would ever delete
+(T80 amendment, gap 2). An implementation that gates delete like edit is not a
+conforming ``FileWriter``.
 """
 
 from __future__ import annotations
@@ -33,8 +44,9 @@ class FileWriter(Protocol):
     :class:`~factory_console.domain.project.Project` for the request first. The
     ``preview_*`` methods are pure — they compute a
     :class:`~factory_console.domain.write.DiffPreview` and mutate nothing — while
-    the apply methods enforce the todo-only mutability gate before writing and
-    return a :class:`~factory_console.domain.write.WriteResult`. ``@runtime_checkable``
+    the apply methods enforce their run-state gate before writing (``MUTABLE_STATES``
+    for edit, the wider ``DELETABLE_STATES`` for delete — see the module docstring)
+    and return a :class:`~factory_console.domain.write.WriteResult`. ``@runtime_checkable``
     lets tests assert an implementation satisfies the port with ``isinstance`` — a
     structural check on method presence only, not on signatures.
     """
@@ -52,7 +64,12 @@ class FileWriter(Protocol):
         ...
 
     def edit_ticket(self, project: Project, ticket_id: str, edit: TicketEdit) -> WriteResult:
-        """Apply ``edit`` to ``ticket_id`` (todo-only gate) and return its :class:`WriteResult`."""
+        """Apply ``edit`` to ``ticket_id`` and return its :class:`WriteResult`.
+
+        Gated on :data:`~factory_console.file_adapter.write_gate.MUTABLE_STATES`
+        (``todo``/``unknown``): a ticket a resolved run-state source does not list
+        (``absent``) is REFUSED here, unlike in :meth:`delete_ticket`.
+        """
         ...
 
     def preview_delete(self, project: Project, ticket_id: str) -> DiffPreview:
@@ -60,5 +77,14 @@ class FileWriter(Protocol):
         ...
 
     def delete_ticket(self, project: Project, ticket_id: str) -> WriteResult:
-        """Delete ``ticket_id`` (todo-only gate) and return the applied :class:`WriteResult`."""
+        """Delete ``ticket_id`` and return the applied :class:`WriteResult`.
+
+        Gated on :data:`~factory_console.file_adapter.write_gate.DELETABLE_STATES` —
+        :data:`~factory_console.file_adapter.write_gate.MUTABLE_STATES` PLUS
+        :attr:`~factory_console.domain.run_state.RunState.absent`. Delete is
+        deliberately wider than edit: ``create_ticket`` is ungated, so a ticket the
+        console just minted resolves ``absent`` in any project with a populated
+        run-state source, and refusing the delete would leave it unrecoverable
+        through the very UI that created it (T80 amendment, gap 2).
+        """
         ...

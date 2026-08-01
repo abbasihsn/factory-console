@@ -89,12 +89,16 @@ class RealFileWriter:
     def create_ticket(self, project: Project, draft: TicketDraft) -> WriteResult:
         """Create ``draft`` on disk and return the applied :class:`WriteResult`.
 
-        No mutability gate: a brand-new id is not in any run-state source, so nothing
-        the gate could consult claims a lane owns it. Note what that id then resolves
-        to, because it is NOT uniform (T80): with no run-state source at all it is the
-        mutable ``unknown``, but in a project WITH a resolved source it is
-        :attr:`~factory_console.domain.run_state.RunState.absent` — the source was
-        consulted and does not list an id the factory has never seeded. Creating is
+        No mutability gate: create is ungated by design, and a brand-new id's
+        run-state is not consulted at all. Note what that id then resolves to on the
+        NEXT request, because it is NOT uniform (T80): with no run-state source at
+        all — or with one that is resolved but VACUOUS (an empty run-state directory,
+        or ``run-state.json`` with an empty ``tickets`` object) — it is the mutable
+        ``unknown``, because a source that names nobody claims nothing about anybody.
+        Only in a project with a resolved and POPULATED source is it
+        :attr:`~factory_console.domain.run_state.RunState.absent` — that source was
+        consulted, lists other tickets, and does not list an id the factory has never
+        seeded. Creating is
         therefore always allowed, while a follow-up :meth:`edit_ticket` on that same
         fresh id is refused 409 until the factory seeds it. That is the ticket's
         accepted consequence of refusing ``absent`` (T80 step 6, "a ticket in
@@ -123,15 +127,23 @@ class RealFileWriter:
         Enforces the todo-only gate FIRST (ticket step 4): a non-todo run-state
         fails fast with :class:`~factory_console.file_adapter.write_gate.TicketNotMutable`
         (409) BEFORE any render or write. Gate-first vs the fake's existence-first
-        order is observationally equivalent ONLY when the project has no run-state
-        source: an id absent from a resolved source now (T80) answers
-        :attr:`~factory_console.domain.run_state.RunState.absent` — not the mutable
-        ``unknown`` — so for a project WITH a run-state source, an id that is also
-        absent from the manifest is refused by THIS gate (409) before it ever
-        reaches the :class:`~factory_console.file_adapter.write_render.UnknownTicket`
-        (404) that :func:`~factory_console.file_adapter.write_render.render_edit`
-        would otherwise raise for it. That is intentional: "not known to the
-        run-state" is the honest answer the gate has for such an id.
+        order is observationally equivalent whenever the project's run-state source is
+        missing or VACUOUS, since both answer the mutable ``unknown``. It diverges for
+        a resolved, POPULATED source: an id such a source does not list now (T80)
+        answers :attr:`~factory_console.domain.run_state.RunState.absent`, so an id
+        that is also absent from the manifest is refused by THIS gate (409) before it
+        ever reaches the
+        :class:`~factory_console.file_adapter.write_render.UnknownTicket` (404) that
+        :func:`~factory_console.file_adapter.write_render.render_edit` would otherwise
+        raise for it. That is intentional: "not known to the run-state" is the honest
+        answer the gate has for such an id.
+
+        That 409-before-404 ordering is not reachable through the wired API:
+        :class:`~factory_console.services.write_service.WriteService` checks manifest
+        existence and raises the canonical 404 before calling in here, so an id in
+        neither the manifest nor the run-state is a 404 end-to-end. The ordering is
+        observable only to a caller that drives this writer directly (the unit tests
+        do), and is documented because the port permits both call orders.
         """
         write_gate.ensure_mutable(project, ticket_id)
         planned = write_render.render_edit(project, ticket_id, edit)  # validates id + existence

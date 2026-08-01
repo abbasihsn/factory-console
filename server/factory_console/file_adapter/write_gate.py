@@ -142,8 +142,9 @@ def ensure_deletable(project: Project, ticket_id: str) -> RunState:
     :data:`DELETABLE_STATES`, which additionally allows :attr:`RunState.absent`.
     Delete is the one write the console must still offer for a ticket a resolved
     run-state source does not list, because ``create_ticket`` is ungated: a ticket
-    the console just created resolves ``absent`` in any project whose source the
-    factory has not re-seeded, and without this gate the console could create a
+    the console just created resolves ``absent`` in any project with a POPULATED
+    source the factory has not re-seeded (a vacuous source answers the mutable
+    ``unknown``), and without this gate the console could create a
     ticket it could never remove. Edit remains refused for ``absent`` via
     :func:`ensure_mutable`; the two allowlists are separate precisely so widening
     delete cannot widen edit.

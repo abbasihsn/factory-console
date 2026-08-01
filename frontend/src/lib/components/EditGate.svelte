@@ -1,17 +1,19 @@
 <script lang="ts">
 	import type { RunState } from '$lib/api';
-	import { isEditable } from '$lib/forms/editability';
+	import { isDeletable, isEditable } from '$lib/forms/editability';
 
 	// Presentational only: no `$app/*` imports and no fetch, so it renders
 	// deterministically under vitest/jsdom with a supplied run-state.
 	//
 	// The UI mirror of the server write-gate: it explains WHY the edit/delete
-	// affordances beside it are inert. It shares the one predicate
-	// (`isEditable`) with the buttons it explains, so the banner and the disabled
-	// state can never disagree.
+	// affordances beside it are inert. It shares its predicates (`isEditable`,
+	// `isDeletable`) with the buttons it explains, so the banner and the disabled
+	// state can never disagree — which since T80 means mirroring BOTH server
+	// allowlists, because `absent` disables Edit while leaving Delete enabled.
 	let { runState }: { runState: RunState } = $props();
 
 	const readOnly = $derived(!isEditable(runState));
+	const deletable = $derived(isDeletable(runState));
 </script>
 
 {#if readOnly}
@@ -25,17 +27,21 @@
 		<!-- The RAW run-state value, not the humanized label: this sentence sits next
 		     to the header's `RunStateBadge`, which already carries the label, and the
 		     raw value is what the server gate and the run-state directory speak. -->
-		This ticket's run-state is <span class="font-mono">{runState}</span>, so editing and deleting
-		are disabled —
+		<!-- WHICH writes are disabled is not uniform (T80): `absent` refuses the edit
+		     but permits the delete, so this clause must follow `isDeletable` rather
+		     than assert both. -->
+		This ticket's run-state is <span class="font-mono">{runState}</span>, so
+		{#if deletable}editing is disabled{:else}editing and deleting are disabled{/if} —
 		<!-- `absent` needs its OWN reason (T80): no lane owns such a ticket, the
 		     resolved run-state source simply never names it, so the lane-ownership
 		     sentence would send the operator looking for a lane that does not exist.
 		     Mirrors the server's `TicketNotMutable` wording for the same state. -->
 		{#if runState === 'absent'}
-			the project's run-state source does not list this ticket, so the console will not write it.
+			the project's run-state source does not list this ticket, so the console will not edit it. You
+			can still delete it.
 		{:else}
 			a factory lane owns a ticket once it leaves <span class="font-mono">todo</span>.
 		{/if}
-		The server enforces the same gate and would reject the write anyway.
+		The server enforces the same gate and would reject the {deletable ? 'edit' : 'write'} anyway.
 	</div>
 {/if}

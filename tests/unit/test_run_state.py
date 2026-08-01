@@ -174,6 +174,72 @@ def test_an_unreadable_dir_is_reported_once_per_resolver_not_once_per_ticket(
     assert len([r for r in caplog.records if "run-state" in r.getMessage()]) == 1
 
 
+def test_scaffolding_files_do_not_make_a_vacuous_dir_non_vacuous(tmp_path: Path) -> None:
+    # A `.gitkeep` is how an otherwise-empty state subdirectory gets committed to git;
+    # `.DS_Store` and editor swap files arrive the same way. None of them names a
+    # TICKET, so none of them may flip the source from vacuous to authoritative — if
+    # one did, every ticket in the project would resolve `absent` and every write
+    # would 409, which is precisely the project-wide read-only lockout the vacuous
+    # rule exists to prevent. Asserted as the resolved STATE, not as a helper's
+    # return value.
+    run_state_dir = tmp_path / "run-state"
+    for state in ("merged", "ready", "in-flight", "todo"):
+        (run_state_dir / state).mkdir(parents=True)
+    (run_state_dir / "todo" / ".gitkeep").write_text("", encoding="utf-8")
+    (run_state_dir / "merged" / ".DS_Store").write_text("", encoding="utf-8")
+
+    assert probe_ticket_state(run_state_dir, "CAD-118") is RunState.unknown
+
+    # And the batch form must agree, or a list projection would paint every ticket
+    # read-only while the single-ticket gate let the write through.
+    resolve = run_state_resolver(RunStateSource(kind="directory", path=run_state_dir))
+    assert resolve("CAD-118") is RunState.unknown
+
+    # One REAL marker still makes it authoritative — the guard against over-correcting
+    # into "a directory is never non-vacuous".
+    _place_marker(run_state_dir, "todo", "CAD-1", as_dir=False)
+    assert probe_ticket_state(run_state_dir, "CAD-118") is RunState.absent
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
+def test_unenumerable_state_dirs_do_not_read_as_vacuous(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The gate-bypass guard. State subdirectories that are traversable but NOT
+    # readable (mode 0711 — the factory running under a different uid) pass every
+    # `exists()`/`is_dir()` check, because those need only `+x` on the parent, while
+    # `iterdir()` raises EACCES. Reading that as "lists nobody" made the resolver
+    # short-circuit to a constant mutable `unknown` for EVERY ticket, silently
+    # disabling the write gate on a project whose markers say `merged`.
+    run_state_dir = tmp_path / "run-state"
+    for state in ("merged", "ready", "in-flight", "todo"):
+        (run_state_dir / state).mkdir(parents=True)
+    _place_marker(run_state_dir, "merged", "CAD-1", as_dir=False)
+    for state in ("merged", "ready", "in-flight", "todo"):
+        (run_state_dir / state).chmod(0o111)
+    try:
+        with caplog.at_level("WARNING", logger=run_state_module._LOGGER.name):
+            resolve = run_state_resolver(RunStateSource(kind="directory", path=run_state_dir))
+            # The marker is still readable by `exists()`, so the ticket a lane owns
+            # must keep its read-only state rather than fall into the mutable set.
+            merged_state = resolve("CAD-1")
+            # An id with no marker stays the mutable `unknown`: "I could not tell"
+            # never hardens into the refusing `absent`.
+            unmarked_state = resolve("CAD-118")
+            probed = probe_ticket_state(run_state_dir, "CAD-1")
+    finally:
+        for state in ("merged", "ready", "in-flight", "todo"):
+            (run_state_dir / state).chmod(0o755)
+
+    assert merged_state is RunState.merged
+    assert unmarked_state is RunState.unknown
+    # The single-ticket prober must agree with the batch form, as everywhere else.
+    assert probed is RunState.merged
+    # A degradation that widens the write gate has to leave a trace — unlike the
+    # ordinary vacuous case, which is deliberately silent.
+    assert [r for r in caplog.records if "could not be enumerated" in r.getMessage()]
+
+
 # --------------------------------------------------------------------------- #
 # probe_ticket_state — a marker as a FILE or a DIR maps to the right enum
 # --------------------------------------------------------------------------- #
