@@ -70,15 +70,32 @@ describe('RunStateBadge', () => {
 		const { container } = render(RunStateBadge, { props: { runState: 'unknown' } });
 
 		const pill = screen.getByText('Unknown');
-		expect(pill.getAttribute('title')).toBe(
-			'No run-state source present, or this ticket is not in it'
-		);
+		expect(pill.getAttribute('title')).toBe('No run-state source present for this project');
 		expect(container.querySelector('span')).toMatchInlineSnapshot(`
 			<span
 			  class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-slate-100 text-slate-500"
-			  title="No run-state source present, or this ticket is not in it"
+			  title="No run-state source present for this project"
 			>
 			  Unknown
+			</span>
+		`);
+	});
+
+	// T80: absent is DISTINCT from unknown — a run-state source WAS resolved and
+	// simply does not list this ticket, unlike unknown's "no source at all".
+	it('renders the absent variant with an explanatory title tooltip', () => {
+		const { container } = render(RunStateBadge, { props: { runState: 'absent' } });
+
+		const pill = screen.getByText('Not listed');
+		expect(pill.getAttribute('title')).toBe(
+			'A run-state source exists but does not list this ticket'
+		);
+		expect(container.querySelector('span')).toMatchInlineSnapshot(`
+			<span
+			  class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-slate-200 text-slate-600"
+			  title="A run-state source exists but does not list this ticket"
+			>
+			  Not listed
 			</span>
 		`);
 	});

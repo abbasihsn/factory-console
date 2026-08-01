@@ -33,7 +33,8 @@
 		flagged: '#ef4444', // red-500
 		failed: '#b91c1c', // red-700
 		needs_human: '#dc2626', // red-600
-		unknown: '#94a3b8' // slate-400
+		unknown: '#94a3b8', // slate-400
+		absent: '#64748b' // slate-500
 	};
 
 	// The container the cytoscape canvas mounts into (client-only; see onMount).

@@ -32,7 +32,8 @@
 		flagged: 'bg-red-100 text-red-800',
 		failed: 'bg-red-200 text-red-900',
 		needs_human: 'bg-red-100 text-red-900 ring-1 ring-red-400',
-		unknown: 'bg-slate-100 text-slate-500'
+		unknown: 'bg-slate-100 text-slate-500',
+		absent: 'bg-slate-200 text-slate-600'
 	};
 	const STATE_LABELS: Record<RunState, string> = {
 		todo: 'To do',
@@ -45,7 +46,8 @@
 		flagged: 'Flagged',
 		failed: 'Failed',
 		needs_human: 'Needs human',
-		unknown: 'Unknown'
+		unknown: 'Unknown',
+		absent: 'Not listed'
 	};
 	const STATE_TITLES: Record<RunState, string> = {
 		todo: 'Queued — no factory lane has started this ticket yet',
@@ -58,7 +60,8 @@
 		flagged: 'The lane finished but flagged a problem — needs a look',
 		failed: 'The lane failed — the ticket did not get built',
 		needs_human: 'Blocked: the factory cannot proceed without a human decision',
-		unknown: 'No run-state source present, or this ticket is not in it'
+		unknown: 'No run-state source present for this project',
+		absent: 'A run-state source exists but does not list this ticket'
 	};
 </script>
 

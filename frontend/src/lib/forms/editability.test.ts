@@ -18,7 +18,11 @@ describe('isEditable', () => {
 		['in_submilestone', false],
 		['flagged', false],
 		['failed', false],
-		['needs_human', false]
+		['needs_human', false],
+		// T80: absent is refused too — distinct from unknown, which stays
+		// editable (no run-state source at all vs. a source that resolved and
+		// simply does not list this ticket).
+		['absent', false]
 	] as const)('%s -> %s', (runState: RunState, expected: boolean) => {
 		expect(isEditable(runState)).toBe(expected);
 	});
