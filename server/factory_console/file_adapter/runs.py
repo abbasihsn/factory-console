@@ -1,13 +1,15 @@
 # READ-ONLY: this module MUST NOT write, create, or delete. Enforced by tests.
 """Read the factory's per-ticket run artifacts that sit beside ``run-state.json``.
 
-The App Factory leaves four things under ``<project>/.factory/``; T78 already
-reads the first, and this module reads the other three:
+The App Factory leaves four things under ``<project>/.factory/``. T78 owns the
+PARSING of the first; this module reads the other three outright and takes the
+``pr_url`` half of the first through T78's parser:
 
 1. ``run-state.json`` — state + ``pr_url`` per ticket (T78's
    :mod:`~factory_console.file_adapter.run_state`; :func:`read_pr_urls` here
    calls that ONE parser rather than reading the format itself — see its
-   docstring for what that does and does not buy).
+   docstring for what that does and does not buy). Its LOCATION is bounded here
+   like every other artifact's, by :func:`find_run_state_path`.
 2. ``results/<ticket_id>.json`` — the lane result, read as the named subset
    :class:`~factory_console.domain.run_record.RunResultSummary`.
 3. ``receipts/<ticket_id>.json`` — review receipt, read for PRESENCE ONLY.
@@ -45,7 +47,7 @@ from pydantic import ValidationError
 
 from factory_console.domain import RunStateSource
 from factory_console.domain.run_record import LastStop, RunResultSummary
-from factory_console.file_adapter.path_safety import require_safe_ticket_id_segment
+from factory_console.file_adapter.path_safety import is_contained, require_safe_ticket_id_segment
 from factory_console.file_adapter.run_state import read_json_run_state
 
 _LOGGER = logging.getLogger(__name__)
@@ -60,34 +62,12 @@ LAST_STOP_RELATIVE = Path(".factory") / "last-stop.json"
 """Project-relative location of the "why the last run stopped" file."""
 
 
-def _contained(candidate: Path, project_root: Path) -> bool:
-    """True if ``candidate`` really resolves inside ``project_root``.
-
-    Validating the ticket id bounds what the JOIN can produce; it says nothing
-    about what the join RESOLVES to. ``is_dir()``/``is_file()`` follow symlinks,
-    so a symlinked ``.factory/results`` (or a single symlinked entry inside it)
-    would otherwise be read from outside the project root and its contents
-    surfaced in a response — and silently, since the endpoint reports the LEXICAL
-    path, which still looks in-root. The NFR is that nothing out-of-root reaches
-    a response, so containment is checked on the RESOLVED path, mirroring
-    :func:`~factory_console.file_adapter.ticket_md._safe_resolve`. Both sides are
-    resolved so a symlinked temp root (``/tmp``, macOS ``/var/folders``) is not a
-    false negative.
-    """
-    try:
-        return candidate.resolve(strict=False).is_relative_to(project_root.resolve())
-    except (OSError, RuntimeError):
-        # ``RuntimeError`` and not only ``OSError``: ``resolve(strict=False)``
-        # raises ``RuntimeError("Symlink loop from ...")`` for a cyclic link, which
-        # is not an ``OSError``. Reaching it needs a loop in a component the
-        # is_dir/is_file check did not already walk, but this module's contract is
-        # that it never raises for a bad artifact, and an uncaught RuntimeError
-        # would 500 the endpoint. Cannot prove containment -> do not read it.
-        return False
-
-
 def _probe(candidate: Path, project_root: Path, artifact: str, *, want_dir: bool) -> Path | None:
     """Return ``candidate`` if it is an in-root directory/file, else ``None``.
+
+    Containment is :func:`~factory_console.file_adapter.path_safety.is_contained`'s
+    rule, not a copy of it: this function adds the node-type check, the "absent"
+    degradation and the log around that one shared primitive.
 
     Out-of-root resolution is reported as ABSENT rather than raised: this module
     never raises for an artifact problem (only for an unsafe ticket id), and
@@ -96,7 +76,7 @@ def _probe(candidate: Path, project_root: Path, artifact: str, *, want_dir: bool
     """
     if not (candidate.is_dir() if want_dir else candidate.is_file()):
         return None
-    if not _contained(candidate, project_root):
+    if not is_contained(candidate, project_root):
         _LOGGER.warning(
             "%s: %s resolves outside the project root; treating it as absent", artifact, candidate
         )
@@ -149,20 +129,23 @@ def _load_json_object(path: Path, artifact: str) -> dict[str, Any] | None:
     return document
 
 
-def read_result(project_root: Path, ticket_id: str) -> RunResultSummary | None:
-    """Return the lane result for ``ticket_id``, or ``None`` when there is none.
+def read_result_in(
+    results_dir: Path | None, project_root: Path, ticket_id: str
+) -> RunResultSummary | None:
+    """Return the lane result for ``ticket_id`` from an ALREADY-RESOLVED results dir.
 
-    ``None`` covers every "no answer" case — no ``results`` directory, no file for
-    this ticket, an unreadable or non-object file — because the caller reports the
-    reason by NAMING the source in ``RunRecord.unavailable`` rather than by
-    distinguishing null from null.
+    The directory-taking half of :func:`read_result`, split out so a caller
+    composing many tickets resolves ``.factory/results`` ONCE per request instead
+    of once per ticket (each resolution is a stat plus two ``Path.resolve()``
+    calls, so the per-ticket form costs O(N) redundant syscalls on the list path).
+    ``None`` for ``results_dir`` means the directory itself was absent or
+    out-of-root, which is just another "no answer".
 
     Raises:
         PathTraversal: if ``ticket_id`` is not a single path-safe segment, raised
             BEFORE the results path is joined or probed.
     """
     require_safe_ticket_id_segment(ticket_id)
-    results_dir = find_results_dir(project_root)
     if results_dir is None:
         return None
     path = _probe(results_dir / f"{ticket_id}.json", project_root, "lane result", want_dir=False)
@@ -172,7 +155,7 @@ def read_result(project_root: Path, ticket_id: str) -> RunResultSummary | None:
     if document is None:
         return None
     try:
-        return RunResultSummary.model_validate(document)
+        summary = RunResultSummary.model_validate(document)
     except ValidationError:
         # A modelled key present with the WRONG type (``review_iterations:
         # "two"``). Rare, but the factory owns this file, so a type change there
@@ -182,6 +165,59 @@ def read_result(project_root: Path, ticket_id: str) -> RunResultSummary | None:
             "lane result: %s does not match the expected shape; treating it as absent", path
         )
         return None
+    if not summary.model_fields_set:
+        # A document that set NO modelled field. ``extra="ignore"`` plus five
+        # optional fields means a lane result whose keys simply differ from the
+        # assumed ``===LANE_RESULT===`` names validates CLEANLY into an all-null
+        # summary — and a non-``None`` summary is one the caller reports as an
+        # answered source, so the response becomes exactly the "every field null,
+        # nothing named in ``unavailable``" shape this endpoint exists to prevent.
+        # A renamed key never raises ``ValidationError`` (only a wrong TYPE on a
+        # modelled key does), so the branch above cannot catch it. The schema is
+        # unverified against a real file (see :class:`RunResultSummary`), which
+        # makes this the likeliest form of disagreement, not a hypothetical one.
+        _LOGGER.warning(
+            "lane result: %s carries none of the modelled fields; treating it as absent", path
+        )
+        return None
+    return summary
+
+
+def read_result(project_root: Path, ticket_id: str) -> RunResultSummary | None:
+    """Return the lane result for ``ticket_id``, or ``None`` when there is none.
+
+    ``None`` covers every "no answer" case — no ``results`` directory, no file for
+    this ticket, an unreadable or non-object file, or a file that names none of
+    the modelled fields — because the caller reports the reason by NAMING the
+    source in ``RunRecord.unavailable`` rather than by distinguishing null from
+    null.
+
+    Resolves the results directory itself; a caller reading many tickets should
+    resolve it once and use :func:`read_result_in` instead.
+
+    Raises:
+        PathTraversal: if ``ticket_id`` is not a single path-safe segment, raised
+            BEFORE the results path is joined or probed.
+    """
+    require_safe_ticket_id_segment(ticket_id)
+    return read_result_in(find_results_dir(project_root), project_root, ticket_id)
+
+
+def has_receipt_in(receipts_dir: Path | None, project_root: Path, ticket_id: str) -> bool:
+    """True if ``<receipts_dir>/<ticket_id>.json`` exists, for an ALREADY-RESOLVED dir.
+
+    The directory-taking half of :func:`has_receipt`, split out for the same
+    per-request-not-per-ticket reason as :func:`read_result_in`.
+
+    Raises:
+        PathTraversal: if ``ticket_id`` is not a single path-safe segment, raised
+            BEFORE the receipts path is joined or probed.
+    """
+    require_safe_ticket_id_segment(ticket_id)
+    if receipts_dir is None:
+        return False
+    receipt = receipts_dir / f"{ticket_id}.json"
+    return _probe(receipt, project_root, "receipt", want_dir=False) is not None
 
 
 def has_receipt(project_root: Path, ticket_id: str) -> bool:
@@ -195,11 +231,7 @@ def has_receipt(project_root: Path, ticket_id: str) -> bool:
             BEFORE the receipts path is joined or probed.
     """
     require_safe_ticket_id_segment(ticket_id)
-    receipts_dir = find_receipts_dir(project_root)
-    if receipts_dir is None:
-        return False
-    receipt = receipts_dir / f"{ticket_id}.json"
-    return _probe(receipt, project_root, "receipt", want_dir=False) is not None
+    return has_receipt_in(find_receipts_dir(project_root), project_root, ticket_id)
 
 
 def read_last_stop(project_root: Path) -> LastStop | None:
@@ -227,7 +259,24 @@ def read_last_stop(project_root: Path) -> LastStop | None:
         return LastStop()
 
 
-def read_pr_urls(source: RunStateSource | None) -> dict[str, str]:
+def find_run_state_path(source: RunStateSource | None, project_root: Path) -> Path | None:
+    """Return the run-state source's path if it is in-root, else ``None``.
+
+    :func:`~factory_console.file_adapter.run_state.find_run_state_source` resolves
+    WHICH artifact a project has, but checks only ``is_file()``/``is_dir()`` —
+    both of which follow symlinks — so it cannot bound where that artifact lives.
+    Run-state is the fourth artifact this module surfaces, and it goes through the
+    same :func:`_probe` as the other three so the module's stated invariant holds
+    for ALL of them: a symlinked ``.factory/run-state.json`` pointing outside the
+    project root is neither read nor reported as found, rather than being read
+    while the endpoint renders its LEXICAL, still-in-root-looking path.
+    """
+    if source is None:
+        return None
+    return _probe(source.path, project_root, "run-state", want_dir=source.kind == "directory")
+
+
+def read_pr_urls(source: RunStateSource | None, project_root: Path) -> dict[str, str]:
     """Return ``{ticket_id: pr_url}`` from the project's run-state source.
 
     Delegates to T78's :func:`~factory_console.file_adapter.run_state.read_json_run_state`
@@ -236,14 +285,19 @@ def read_pr_urls(source: RunStateSource | None) -> dict[str, str]:
 
     That buys one INTERPRETATION of the format, not one read of the file: this
     call parses the file itself, so a caller that also resolves run-state parses
-    it twice (see :meth:`~factory_console.services.run_service.RunService.list_records`,
-    which documents the count). The duplicate read is cheap and the two parses
+    it at least twice (see
+    :meth:`~factory_console.services.run_service.RunService.list_records` and
+    :meth:`~factory_console.services.run_service.RunService.get_record`, which
+    each document their own count). The duplicate read is cheap and the parses
     cannot disagree about the format; they can, in principle, observe different
     revisions of a file the factory rewrites mid-request.
 
-    Only the JSON form carries PR urls; a marker-directory source (or no source at
-    all) has none, so the answer is empty.
+    Only the JSON form carries PR urls; a marker-directory source, no source at
+    all, or a source that resolves out-of-root has none, so the answer is empty.
     """
     if source is None or source.kind != "json":
         return {}
-    return read_json_run_state(source.path).pr_urls
+    path = find_run_state_path(source, project_root)
+    if path is None:
+        return {}
+    return read_json_run_state(path).pr_urls

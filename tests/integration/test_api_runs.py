@@ -34,6 +34,7 @@ from factory_console.app import create_app
 from factory_console.domain import Project, RunState, Ticket
 from factory_console.file_adapter import FakeFileAdapter
 from factory_console.file_adapter.real import RealFileAdapter
+from factory_console.file_adapter.real_runs import RealRunArtifactReader
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 MINIMAL = FIXTURES / "projects" / "minimal"
@@ -70,7 +71,12 @@ def _fake_app() -> FastAPI:
         ],
         run_states={"FAKE-1": RunState.ready},
     )
-    return create_app(adapter, version="0.0.0", project_root=Path("/factory/demo-project"))
+    return create_app(
+        adapter,
+        version="0.0.0",
+        project_root=Path("/factory/demo-project"),
+        run_artifact_reader=RealRunArtifactReader(),
+    )
 
 
 def _project(tmp_path: Path) -> Path:
@@ -108,7 +114,12 @@ def _place_last_stop(root: Path) -> None:
 
 
 def _app(root: Path) -> FastAPI:
-    return create_app(RealFileAdapter(), version="0.0.0", project_root=root)
+    return create_app(
+        RealFileAdapter(),
+        version="0.0.0",
+        project_root=root,
+        run_artifact_reader=RealRunArtifactReader(),
+    )
 
 
 def _fully_populated(tmp_path: Path) -> Path:

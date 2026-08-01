@@ -24,14 +24,23 @@ and predates this function; converting those three changes write-endpoint status
 codes, which is a separate ticket's call to make, not this one's.
 
 A caller that builds a path still owes a second, different check — that the join
-RESOLVES inside the project root (``ticket_md``/``write_render``'s containment
-check, ``runs``'s ``_probe``). This function bounds the SEGMENT; it cannot bound
-what a symlink does with it.
+RESOLVES inside the project root. That rule lives here too, in
+:func:`is_contained`: :func:`require_safe_ticket_id_segment` bounds the SEGMENT
+and cannot bound what a symlink does with it, so the two are owned side by side
+rather than one here and one restated per module.
+:mod:`~factory_console.file_adapter.runs` calls :func:`is_contained` directly.
+:mod:`~factory_console.file_adapter.ticket_md` and
+:mod:`~factory_console.file_adapter.write_render` still inline the same check —
+converting them is the same follow-up as converting them to the segment rule
+above, because they RAISE where this returns a bool, and folding in this
+function's ``OSError``/``RuntimeError`` guard would turn their symlink-loop 500
+into a 400. That is a status-code change, so it is a separate ticket's call.
 """
 
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from factory_console.domain.ticket import TICKET_ID_PATTERN
 from factory_console.errors import FactoryConsoleError
@@ -95,3 +104,26 @@ def require_safe_ticket_id_segment(ticket_id: str) -> str:
     if ticket_id in (".", ".."):
         raise PathTraversal(ticket_id)
     return ticket_id
+
+
+def is_contained(candidate: Path, project_root: Path) -> bool:
+    """True if ``candidate`` really resolves inside ``project_root``.
+
+    The single owner of the CONTAINMENT rule, the companion to
+    :func:`require_safe_ticket_id_segment`'s segment rule. Validating an id bounds
+    what a JOIN can produce; it says nothing about what the join RESOLVES to.
+    ``is_dir()``/``is_file()`` follow symlinks, so a symlinked artifact would
+    otherwise be read from outside the project root and its contents surfaced in a
+    response — and silently, since an endpoint reports the LEXICAL path, which
+    still looks in-root. So containment is checked on the RESOLVED path.
+
+    Both sides are resolved, so a symlinked temp root (``/tmp``, macOS
+    ``/var/folders``) is not a false negative. Returns ``False`` rather than
+    raising when containment cannot be PROVEN: ``resolve(strict=False)`` raises
+    ``RuntimeError("Symlink loop from ...")`` for a cyclic link, which is not an
+    ``OSError``, and a caller that cannot prove containment must not read.
+    """
+    try:
+        return candidate.resolve(strict=False).is_relative_to(project_root.resolve())
+    except (OSError, RuntimeError):
+        return False

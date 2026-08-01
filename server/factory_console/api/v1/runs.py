@@ -21,7 +21,7 @@ The handlers do no error handling of their own. An invalid ``ticket_id`` is
 rejected at the FastAPI ``Path`` boundary against ``TICKET_ID_PATTERN`` and
 re-mapped to the ``invalid_ticket_id`` (400) envelope before the handler runs, so
 no filesystem access happens for one; a
-:class:`~factory_console.services.run_service.RunTicketNotFound` propagates to
+:class:`~factory_console.services.ticket_service.TicketNotFound` propagates to
 the domain-error handler as the 404 envelope.
 """
 
@@ -32,7 +32,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict
 
-from factory_console.api.deps import TicketIdPath, get_file_adapter
+from factory_console.api.deps import TicketIdPath, get_file_adapter, get_run_artifact_reader
 from factory_console.domain import Project
 from factory_console.domain.run_record import (
     SOURCE_LAST_STOP,
@@ -43,6 +43,7 @@ from factory_console.domain.run_record import (
     RunRecord,
 )
 from factory_console.file_adapter.protocol import FileAdapter
+from factory_console.file_adapter.runs_protocol import RunArtifactReader
 from factory_console.services.run_service import RunService
 
 # The package ``__init__`` owns the ``/api/v1`` prefix; this sub-router only names
@@ -104,6 +105,7 @@ def _relative_to(path: Path | None, root: Path) -> SourceInfo:
 async def list_runs(
     request: Request,
     adapter: FileAdapter = Depends(get_file_adapter),
+    runs: RunArtifactReader = Depends(get_run_artifact_reader),
 ) -> RunListResponse:
     """Return one run record per manifest ticket, with the sources they came from.
 
@@ -115,7 +117,7 @@ async def list_runs(
     """
     root: Path = request.app.state.project_root
     project: Project = adapter.load_project(root)
-    service = RunService(adapter)
+    service = RunService(adapter, runs)
     sources = service.source_paths(project)
     return RunListResponse(
         sources=RunSources(
@@ -134,6 +136,7 @@ async def get_run(
     ticket_id: TicketIdPath,
     request: Request,
     adapter: FileAdapter = Depends(get_file_adapter),
+    runs: RunArtifactReader = Depends(get_run_artifact_reader),
 ) -> RunRecord:
     """Return the :class:`RunRecord` for ``ticket_id``.
 
@@ -145,4 +148,4 @@ async def get_run(
     """
     root: Path = request.app.state.project_root
     project = adapter.load_project(root)
-    return RunService(adapter).get_record(project, ticket_id)
+    return RunService(adapter, runs).get_record(project, ticket_id)

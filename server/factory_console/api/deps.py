@@ -19,6 +19,14 @@ bound on ``app.state.file_writer``, so the v2 write endpoints obtain the writer
 through ``Depends(get_file_writer)`` without importing a concrete writer. Like the
 adapter seam (and unlike the opt-in watcher), a missing writer is a wiring bug, so
 the provider raises rather than returning ``None``.
+
+:func:`get_run_artifact_reader` is the same seam for T81's sibling read port
+:class:`~factory_console.file_adapter.runs_protocol.RunArtifactReader`, which
+covers the factory's ``.factory/`` run artifacts that the fixed eight-method
+``FileAdapter`` contract does not. It returns what ``create_app`` bound on
+``app.state.run_artifact_reader`` and raises when unbound, for the same reason as
+the writer: the runs endpoints cannot answer without it, so an unbound reader is a
+wiring bug rather than a degraded mode.
 """
 
 from __future__ import annotations
@@ -30,6 +38,7 @@ from fastapi import Request
 
 from factory_console.domain.ticket import TICKET_ID_PATTERN
 from factory_console.file_adapter.protocol import FileAdapter
+from factory_console.file_adapter.runs_protocol import RunArtifactReader
 from factory_console.file_adapter.watcher import FileWatcher
 from factory_console.file_adapter.writer_protocol import FileWriter
 
@@ -93,3 +102,23 @@ def get_file_writer(request: Request) -> FileWriter:
             "build the app with create_app(file_writer=...)."
         )
     return writer
+
+
+def get_run_artifact_reader(request: Request) -> RunArtifactReader:
+    """Return the :class:`RunArtifactReader` bound to the app at boot.
+
+    Reads ``request.app.state.run_artifact_reader``, which ``create_app`` sets
+    from its ``run_artifact_reader`` argument, and is the target of
+    ``Depends(get_run_artifact_reader)`` in the runs handlers. Raises
+    :class:`RuntimeError` when the reader is unbound or ``None`` — a programmer
+    error meaning the app was built without this DI seam wired, never a
+    client-triggerable condition (exactly like :func:`get_file_adapter` and
+    :func:`get_file_writer`, not the opt-in :func:`get_file_watcher`).
+    """
+    reader = getattr(request.app.state, "run_artifact_reader", None)
+    if reader is None:
+        raise RuntimeError(
+            "No RunArtifactReader bound on app.state.run_artifact_reader; "
+            "build the app with create_app(run_artifact_reader=...)."
+        )
+    return reader

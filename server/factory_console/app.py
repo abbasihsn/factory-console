@@ -28,10 +28,10 @@ served last, unchanged from the walking skeleton.
 :func:`create_dev_app` is the zero-arg factory ``scripts/dev.sh``'s
 ``uvicorn --factory`` invocation targets; it discovers the project root and
 instantiates the filesystem-backed ``RealFileAdapter``, the watchdog-backed
-``RealFileWatcher``, and the ``RealFileWriter`` lazily, so importing this module
-never imports ``real.py``, ``watcher_real.py``, or ``real_writer.py`` (and never
-pulls in ``watchdog``) — their only runtime users are this dev shortcut and T25's
-production CLI.
+``RealFileWatcher``, the ``RealFileWriter``, and the ``RealRunArtifactReader``
+lazily, so importing this module never imports ``real.py``, ``watcher_real.py``,
+``real_writer.py``, or ``real_runs.py`` (and never pulls in ``watchdog``) — their
+only runtime users are this dev shortcut and T25's production CLI.
 """
 
 from __future__ import annotations
@@ -59,6 +59,7 @@ from factory_console.api.v1 import router as v1_router
 from factory_console.api.write_token import publish_write_token_scheme
 from factory_console.config import WRITE_TOKEN_HEADER
 from factory_console.file_adapter.protocol import FileAdapter
+from factory_console.file_adapter.runs_protocol import RunArtifactReader
 from factory_console.file_adapter.watcher import FileWatcher
 from factory_console.file_adapter.writer_protocol import FileWriter
 from factory_console.logging import request_log_line
@@ -220,6 +221,7 @@ def create_app(
     project_root: Path,
     file_watcher: FileWatcher | None = None,
     file_writer: FileWriter | None = None,
+    run_artifact_reader: RunArtifactReader | None = None,
     write_token: str | None = None,
 ) -> FastAPI:
     """Build the Factory Console app around an injected ``FileAdapter``.
@@ -235,7 +237,11 @@ def create_app(
     ``app.state.file_writer`` for the ``Depends(get_file_writer)`` seam; it is
     stateless, so it drives no lifespan, and leaving it ``None`` keeps the app
     write-free until a write route asks for it (then a missing writer is a wiring
-    bug the seam raises on).
+    bug the seam raises on). The optional ``run_artifact_reader`` (T81's
+    :class:`RunArtifactReader` port, the read-side sibling of ``FileWriter``) is
+    stashed on ``app.state.run_artifact_reader`` for the
+    ``Depends(get_run_artifact_reader)`` seam the runs endpoints consume, on the
+    same terms: stateless, no lifespan, and ``None`` until a runs route asks.
 
     ``write_token`` pins the per-session write secret every v2 mutation must present
     in the :data:`~factory_console.config.WRITE_TOKEN_HEADER` header (an operator
@@ -267,6 +273,7 @@ def create_app(
     app.state.version = version
     app.state.file_watcher = file_watcher
     app.state.file_writer = file_writer
+    app.state.run_artifact_reader = run_artifact_reader
     token = write_token or secrets.token_urlsafe(_WRITE_TOKEN_BYTES)
     app.state.write_token = token
     # ``generated`` mirrors the ``or`` above exactly rather than testing ``is None``:
@@ -290,11 +297,12 @@ def create_dev_app() -> FastAPI:
     plus the watchdog-backed
     :class:`~factory_console.file_adapter.watcher_real.RealFileWatcher` rooted at
     that same root and the filesystem-backed
-    :class:`~factory_console.file_adapter.real_writer.RealFileWriter`. The imports
-    are lazy so importing this module never pulls in ``real.py``,
-    ``watcher_real.py``, or ``real_writer.py`` (and never imports ``watchdog``) —
-    the only runtime users of the concrete adapter/watcher/writer are this dev
-    shortcut and T25's CLI.
+    :class:`~factory_console.file_adapter.real_writer.RealFileWriter` and
+    :class:`~factory_console.file_adapter.real_runs.RealRunArtifactReader`. The
+    imports are lazy so importing this module never pulls in ``real.py``,
+    ``watcher_real.py``, ``real_writer.py``, or ``real_runs.py`` (and never
+    imports ``watchdog``) — the only runtime users of the concrete
+    adapter/watcher/writer/reader are this dev shortcut and T25's CLI.
 
     The write token comes from ``FACTORY_CONSOLE_WRITE_TOKEN`` via
     :func:`~factory_console.config.read_write_token` so a dev loop can pin it across
@@ -310,6 +318,7 @@ def create_dev_app() -> FastAPI:
     from factory_console.config import read_write_token
     from factory_console.file_adapter.discovery import discover_project
     from factory_console.file_adapter.real import RealFileAdapter
+    from factory_console.file_adapter.real_runs import RealRunArtifactReader
     from factory_console.file_adapter.real_writer import RealFileWriter
     from factory_console.file_adapter.watcher_real import RealFileWatcher
 
@@ -330,5 +339,6 @@ def create_dev_app() -> FastAPI:
         project_root=root,
         file_watcher=RealFileWatcher(root),
         file_writer=RealFileWriter(),
+        run_artifact_reader=RealRunArtifactReader(),
         write_token=write_token,
     )

@@ -93,6 +93,8 @@ Base: `http://127.0.0.1:<port>/api/v1`. JSON camelCase, ISO-8601, errors as `{ e
 - `GET /api/v1/search?q=&limit=` → `{ items: SearchHit[], total }` — full-text over id/title/`provides`/body (distinct from the `tickets?q=` id+title filter); blank `q` → empty; `limit` 1–200, default 50.
 - `GET /api/v1/roadmap` → `Roadmap | { present: false }` — the full rendered body (`bodyMarkdown` + `bodyHtml`) plus structured `milestones[]`, or the `{ present: false }` envelope when the project has no roadmap.
 - `GET /api/v1/graph` → `TicketGraph` (`{ nodes, edges }`) — the whole-project run-state-coloured dependency DAG; one node per ticket, one edge per resolved `dependsOn` (self-loops and dangling ids omitted).
+- `GET /api/v1/runs` → `{ sources, runs: RunRecord[], lastStop }` — what the factory did, one record per MANIFEST ticket (a run artifact naming an unknown id contributes nothing); `sources` reports each `.factory/` artifact's presence and project-relative path, and each record's `unavailable` names the sources that did not answer for it, so every null is attributable.
+- `GET /api/v1/runs/{id}` → `RunRecord` — 404 when the manifest has no such ticket; a manifest ticket with no run data is a 200 whose `unavailable` names each silent source.
 - `GET /api/v1/health` → `{ ok, version, projectRoot }`.
 - `GET /api/v1/openapi.json` — auto-generated schema; SPA regenerates TS types from it.
 
@@ -110,6 +112,20 @@ Python `Protocol`, read-only, eight methods (all but `load_project` take a `Proj
 - `get_graph(project) → TicketGraph` (whole-project run-state-coloured dependency DAG; resolved-only edges, self-loops and dangling ids omitted)
 
 Two implementations: `RealFileAdapter` (hits real FS) and `FakeFileAdapter` (in-memory for tests). Handlers depend on the Protocol, wired via `FastAPI.Depends()`. This is the seam the file-adapter track owns; backend never touches `open()` directly.
+
+The eight methods above are the **whole** contract. A read that this port does not cover gets a narrow **sibling port**, not a ninth method — see `RunArtifactReader` below and `FileWriter` (the write-side mirror), each with its own Real/Fake pair and `Depends()` provider. Widening `FileAdapter` would force every implementation to grow for one surface's needs.
+
+### RunArtifactReader port
+Python `Protocol`, read-only, five methods, all taking the resolved `Project` first. Covers the factory's per-run `.factory/` artifacts (lane results, receipts, last-stop, and the `pr_url` half of run-state) that `FileAdapter` does not:
+- `source_paths(project) → Mapping[str, Path | None]` (keyed by the four source names; a path only where the artifact would actually be READ, so `found` cannot disagree with what was read)
+- `read_last_stop(project) → LastStop | None`
+- `read_pr_urls(project) → Mapping[str, str]`
+- `read_results(project, ticket_ids) → Mapping[str, RunResultSummary]`
+- `receipts_present(project, ticket_ids) → frozenset[str]`
+
+The last two are **batched** rather than per-ticket: the two artifact directories are the same for every ticket in a request, so a per-ticket method would force each implementation to re-resolve (and re-containment-check) them once per ticket. An id that could not be read — absent, unreadable, or path-unsafe — is simply absent from the result; the caller reports it by naming the source in `RunRecord.unavailable`.
+
+Two implementations: `RealRunArtifactReader` (hits real FS) and `FakeRunArtifactReader` (in-memory for tests), wired via `Depends(get_run_artifact_reader)`. Consumed by `GET /api/v1/runs` and `GET /api/v1/runs/{id}`.
 
 ### Factory run-state directory (read-only)
 Fallback probe order: `<root>/.factory/run-state/`, then `<root>/docs/planning/.run-state/`. Per-ticket state via marker file or subdirectory:
@@ -147,7 +163,7 @@ factory-console [PATH] [--port N] [--host 127.0.0.1] [--no-browser] [--log-level
 
 ## Testing strategy
 
-- **Unit (Python)** — pure functions in `file_adapter/` (manifest, ticket .md, discovery, run-state) against `tmp_path` fixtures; `services/` against `FakeFileAdapter`. Target >90% on `file_adapter/` + `services/`. Overall gate 85%.
+- **Unit (Python)** — pure functions in `file_adapter/` (manifest, ticket .md, discovery, run-state) against `tmp_path` fixtures; `services/` against the fake of every port it depends on (`FakeFileAdapter`, plus `FakeRunArtifactReader` for `RunService`). Target >90% on `file_adapter/` + `services/`. Overall gate 85%.
 - **Integration (Python)** — `httpx.AsyncClient` against the FastAPI app with `FakeFileAdapter` for happy paths and `RealFileAdapter` against `tests/fixtures/projects/*` for realism.
 - **CLI integration** — subprocess-launch `factory-console` on a fixture, parse printed port, hit `/health`, SIGINT, assert clean exit.
 - **Frontend unit (Vitest)** — components render given fixture props; store logic covered.

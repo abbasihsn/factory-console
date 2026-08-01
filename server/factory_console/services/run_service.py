@@ -1,31 +1,29 @@
 """Runs list + detail application service.
 
-:class:`RunService` composes the factory's four ``.factory/`` artifacts into one
+:class:`RunService` composes the factory's ``.factory/`` artifacts into one
 :class:`~factory_console.domain.run_record.RunRecord` per MANIFEST ticket, so the
-HTTP handlers stay thin. It owns :class:`RunTicketNotFound` — the 404 for an id
-the manifest does not name — co-located here per the ``errors.py`` convention
-that a :class:`~factory_console.errors.FactoryConsoleError` subclass lives where
-it is raised.
+HTTP handlers stay thin.
 
-Two sources, deliberately: the manifest and run-state come through the read-only
-:class:`~factory_console.file_adapter.protocol.FileAdapter`, while the run
-artifacts come from the file-adapter's :mod:`~factory_console.file_adapter.runs`
-module directly — the ``FileAdapter`` protocol is a fixed eight-method contract
-in ``ARCHITECTURE.md`` that does not cover them, and widening a shared port (plus
-both implementations) for one read-only v2.1 surface would be a bigger change
-than the seam is worth.
+Two injected ports, no concrete implementations: the manifest and run-state come
+through the read-only
+:class:`~factory_console.file_adapter.protocol.FileAdapter`, and the run
+artifacts through the sibling
+:class:`~factory_console.file_adapter.runs_protocol.RunArtifactReader`.
+``ARCHITECTURE.md`` fixes ``FileAdapter`` at eight methods that do not cover the
+run artifacts, so widening it is not the move; the move is the narrow sibling
+port :mod:`~factory_console.file_adapter.writer_protocol` already established for
+the write path, which keeps this service on the same "domain models + Protocols
+only" footing ``PROJECT_STRUCTURE.md`` requires of the backend track — and keeps
+it unit-testable against fakes, like every sibling service.
 
-Be clear about what that costs, because it is NOT the pattern used elsewhere:
-:mod:`~factory_console.services.events_service` and
-:mod:`~factory_console.services.write_service` each depend on an injected
-abstraction (``FileWatcher`` via ``Depends(get_file_watcher)``, ``FileWriter``
-via ``Depends(get_file_writer)``) and import the file-adapter only for its TYPE.
-This module is the first service to import a file-adapter IMPLEMENTATION module
-and call its functions, with no DI seam — so the run artifacts always come from
-the real filesystem regardless of which adapter is injected, and they cannot be
-faked. The established alternative, if this surface grows, is a sibling port
-(:mod:`~factory_console.file_adapter.writer_protocol` is the worked example) with
-its own fake and ``deps`` provider, not a wider ``FileAdapter``.
+The 404 for an id the manifest does not name is
+:class:`~factory_console.services.ticket_service.TicketNotFound`, IMPORTED rather
+than restated: it is the same fact ("this project has no such ticket") with the
+same ``ticket_not_found`` code at the same status, and
+:mod:`~factory_console.services.deps_service` and
+:mod:`~factory_console.services.write_service` already reuse it the same way. A
+second class for one fact could only drift from the first, and would slip past
+any ``except TicketNotFound``.
 """
 
 from __future__ import annotations
@@ -35,69 +33,43 @@ from pathlib import Path
 
 from factory_console.domain import Project, RunState
 from factory_console.domain.run_record import (
-    SOURCE_LAST_STOP,
     SOURCE_RECEIPTS,
     SOURCE_RESULTS,
     SOURCE_RUN_STATE,
     LastStop,
+    PerTicketRunSourceName,
     RunRecord,
+    RunResultSummary,
 )
-from factory_console.errors import FactoryConsoleError
-from factory_console.file_adapter import runs as runs_adapter
-from factory_console.file_adapter.path_safety import PathTraversal
 from factory_console.file_adapter.protocol import FileAdapter
-
-
-class RunTicketNotFound(FactoryConsoleError):
-    """Raised when a run record is asked for an id absent from the manifest.
-
-    Carries the ``ticket_not_found`` code at HTTP 404 — the SAME code
-    :class:`~factory_console.services.ticket_service.TicketNotFound` uses, because
-    it is the same fact ("this project has no such ticket") and a client should not
-    have to special-case the endpoint it asked. Distinct from a ticket the manifest
-    DOES name but the run-state does not: that is a 200 with a record whose
-    ``unavailable`` names ``runState``.
-    """
-
-    def __init__(self, ticket_id: str) -> None:
-        super().__init__(
-            code="ticket_not_found",
-            message=f"Ticket {ticket_id!r} not found",
-            status=404,
-            details=None,
-        )
+from factory_console.file_adapter.runs_protocol import RunArtifactReader
+from factory_console.services.ticket_service import TicketNotFound
 
 
 class RunService:
     """Composes run-state, lane results and receipts into per-ticket run records.
 
-    Constructed per request with the injected adapter; holds no state beyond it.
+    Constructed per request with the injected ports; holds no state beyond them.
     """
 
-    def __init__(self, adapter: FileAdapter) -> None:
+    def __init__(self, adapter: FileAdapter, runs: RunArtifactReader) -> None:
         self._adapter = adapter
+        self._runs = runs
 
     def source_paths(self, project: Project) -> Mapping[str, Path | None]:
         """Return each run artifact's absolute path, or ``None`` where it is absent.
 
         Keyed by :data:`~factory_console.domain.run_record.RUN_SOURCE_NAMES`. The
         caller renders these project-RELATIVE; the absolute paths never leave the
-        server. ``runState`` reports the source the project resolved at discovery
-        (the factory's JSON or a legacy marker directory), so "found" here means
-        the artifact this console would actually read.
+        server. "Found" means the artifact this console would actually READ — the
+        reader reports a source it would refuse (one resolving outside the project
+        root) as absent, so ``found`` cannot disagree with what was read.
         """
-        root = project.rootPath
-        source = project.runStateSource
-        return {
-            SOURCE_RUN_STATE: source.path if source is not None else None,
-            SOURCE_RESULTS: runs_adapter.find_results_dir(root),
-            SOURCE_RECEIPTS: runs_adapter.find_receipts_dir(root),
-            SOURCE_LAST_STOP: runs_adapter.find_last_stop_file(root),
-        }
+        return self._runs.source_paths(project)
 
     def read_last_stop(self, project: Project) -> LastStop | None:
         """Return the project's :class:`LastStop`, or ``None`` when the file is absent."""
-        return runs_adapter.read_last_stop(project.rootPath)
+        return self._runs.read_last_stop(project)
 
     def list_records(self, project: Project) -> list[RunRecord]:
         """Return one :class:`RunRecord` per manifest ticket, in manifest order.
@@ -117,14 +89,23 @@ class RunService:
 
         Parse count, stated plainly rather than claimed away: for a JSON source
         this reads ``run-state.json`` TWICE per request — once inside
-        ``list_tickets``, once in :func:`~factory_console.file_adapter.runs.read_pr_urls`
-        — because the states reach us through the port while the urls do not.
-        Both go through the one parser, so they cannot disagree about the format.
+        ``list_tickets``, once in the run-artifact reader's ``read_pr_urls`` —
+        because the states reach us through one port while the urls come through
+        the other. Both go through the one parser, so they cannot disagree about
+        the format.
+
+        The artifact reads are BATCHED, not per-ticket: the reader is handed the
+        whole id set once, so ``.factory/results`` and ``.factory/receipts`` are
+        resolved once per request rather than once per ticket.
         """
-        pr_urls = runs_adapter.read_pr_urls(project.runStateSource)
+        summaries = list(self._adapter.list_tickets(project))
+        ticket_ids = [summary.id for summary in summaries]
+        pr_urls = self._runs.read_pr_urls(project)
+        results = self._runs.read_results(project, ticket_ids)
+        receipts = self._runs.receipts_present(project, ticket_ids)
         return [
-            self._compose(project, summary.id, summary.runState, pr_urls)
-            for summary in self._adapter.list_tickets(project)
+            self._compose(project, summary.id, summary.runState, pr_urls, results, receipts)
+            for summary in summaries
         ]
 
     def get_record(self, project: Project, ticket_id: str) -> RunRecord:
@@ -144,16 +125,25 @@ class RunService:
         error about a markdown file it never needed. ``get_deps`` stays inside the
         manifest projection and touches no ``.md`` at all.
 
+        Parse count: for a JSON source this path reads ``run-state.json`` THREE
+        times — once inside ``get_deps``' manifest projection, once in
+        ``read_run_state``, once in the reader's ``read_pr_urls`` — one more than
+        :meth:`list_records`, because the detail path resolves membership and
+        state through two separate adapter calls.
+
         Raises:
-            RunTicketNotFound: when the manifest does not name ``ticket_id``.
+            TicketNotFound: when the manifest does not name ``ticket_id``.
         """
         if self._adapter.get_deps(project, ticket_id) is None:
-            raise RunTicketNotFound(ticket_id)
+            raise TicketNotFound(ticket_id)
+        ticket_ids = [ticket_id]
         return self._compose(
             project,
             ticket_id,
             self._adapter.read_run_state(project, ticket_id),
-            runs_adapter.read_pr_urls(project.runStateSource),
+            self._runs.read_pr_urls(project),
+            self._runs.read_results(project, ticket_ids),
+            self._runs.receipts_present(project, ticket_ids),
         )
 
     def _compose(
@@ -162,33 +152,32 @@ class RunService:
         ticket_id: str,
         run_state: RunState,
         pr_urls: Mapping[str, str],
+        results: Mapping[str, RunResultSummary],
+        receipts: frozenset[str],
     ) -> RunRecord:
         """Build one record, naming in ``unavailable`` every source that did not answer.
 
         A source is "unavailable" for this ticket whenever it produced nothing —
-        the artifact is absent, holds no entry for this id, or could not be read.
-        The three cases are collapsed on purpose: the record's contract is that a
-        null field is attributable to a NAMED source, not that the reason for each
-        null is itemised. ``lastStop`` is never named here — it is a
-        project-level fact, reported once by the list endpoint's ``sources``.
+        the artifact is absent, holds no entry for this id, could not be read, or
+        (for a path-unsafe manifest id) was refused before it was read. The cases
+        are collapsed on purpose: the record's contract is that a null field is
+        attributable to a NAMED source, not that the reason for each null is
+        itemised. ``lastStop`` is never named here — it is a project-level fact,
+        reported once by the list endpoint's ``sources``.
 
-        A path-unsafe manifest id is a FOURTH way to produce nothing, and it is
-        caught rather than raised for the same reason
-        :meth:`~factory_console.file_adapter.real.RealFileAdapter._safe_run_state`
-        catches it: ``TICKET_ID_PATTERN`` admits a bare ``.``/``..``, so one such
-        id in the manifest would otherwise fail the WHOLE list with a 400 naming
-        no bad input, when the honest answer is a record for that ticket with
-        every per-ticket source unavailable. The single-ticket path stays strict —
-        ``get_record``'s id comes from the URL and is rejected at the boundary.
+        ``runState`` is named for a SECOND reason besides an unknown state: only
+        the JSON form of the run-state artifact carries PR urls, so on a project
+        using the legacy marker-directory form ``prUrl`` is null for every ticket
+        no matter what the factory did. Left unnamed, that null would read as "the
+        factory opened no PR" — a fact — when it actually means "this run-state
+        form cannot tell you". Naming the source keeps every null attributable,
+        which is the whole contract of
+        :class:`~factory_console.domain.run_record.RunRecord`.
         """
-        root = project.rootPath
-        try:
-            result = runs_adapter.read_result(root, ticket_id)
-            has_receipt = runs_adapter.has_receipt(root, ticket_id)
-        except PathTraversal:
-            result, has_receipt = None, False
-        unavailable: list[str] = []
-        if run_state is RunState.unknown:
+        result = results.get(ticket_id)
+        has_receipt = ticket_id in receipts
+        unavailable: list[PerTicketRunSourceName] = []
+        if run_state is RunState.unknown or not self._carries_pr_urls(project):
             unavailable.append(SOURCE_RUN_STATE)
         if result is None:
             unavailable.append(SOURCE_RESULTS)
@@ -202,3 +191,13 @@ class RunService:
             hasReceipt=has_receipt,
             unavailable=unavailable,
         )
+
+    @staticmethod
+    def _carries_pr_urls(project: Project) -> bool:
+        """True if the project's run-state form can supply PR urls at all.
+
+        Only the factory's JSON file does; the legacy marker directory records a
+        state per ticket and nothing else.
+        """
+        source = project.runStateSource
+        return source is not None and source.kind == "json"

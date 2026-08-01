@@ -21,6 +21,7 @@ import json
 import shutil
 from collections.abc import Callable
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 from _read_only_guard import (
@@ -29,6 +30,7 @@ from _read_only_guard import (
 )
 
 from factory_console.domain import RunStateSource
+from factory_console.file_adapter import real_runs as real_runs_module
 from factory_console.file_adapter import runs as runs_module
 from factory_console.file_adapter.path_safety import PathTraversal
 from factory_console.file_adapter.run_state import probe_ticket_state
@@ -36,6 +38,7 @@ from factory_console.file_adapter.runs import (
     find_last_stop_file,
     find_receipts_dir,
     find_results_dir,
+    find_run_state_path,
     has_receipt,
     read_last_stop,
     read_pr_urls,
@@ -87,6 +90,60 @@ def test_every_modelled_result_field_reads_back_from_the_fixture(tmp_path: Path)
     assert result.route == on_disk["route"] == "deep"
     assert result.verdict == on_disk["verdict"] == "clean"
     assert result.reviewIterations == on_disk["review_iterations"] == 2
+
+
+def test_a_result_naming_none_of_the_modelled_fields_is_reported_absent(tmp_path: Path) -> None:
+    # The schema is taken from the factory's ``===LANE_RESULT===`` contract and is
+    # NOT verified against a real file, so RENAMED keys are the likeliest form of
+    # disagreement — and they never raise ``ValidationError`` (only a wrong TYPE
+    # on a modelled key does). ``extra="ignore"`` plus five optional fields would
+    # otherwise validate such a file into an all-null summary that the caller
+    # reports as an ANSWERED source: every field null with nothing named in
+    # ``unavailable``, which is precisely what this endpoint exists to prevent.
+    results = tmp_path / ".factory" / "results"
+    results.mkdir(parents=True)
+    (results / "T78.json").write_text(
+        json.dumps({"state": "ready", "pull_request": "https://example.test/pull/1"}),
+        encoding="utf-8",
+    )
+
+    assert read_result(tmp_path, "T78") is None
+
+
+def test_a_result_naming_one_modelled_field_still_answers(tmp_path: Path) -> None:
+    # The guard above must catch "none of the fields", not "not all of them": a
+    # partial result is a real answer, and reporting it absent would lose data.
+    results = tmp_path / ".factory" / "results"
+    results.mkdir(parents=True)
+    (results / "T78.json").write_text(json.dumps({"status": "ready"}), encoding="utf-8")
+
+    result = read_result(tmp_path, "T78")
+
+    assert result is not None
+    assert result.status == "ready"
+    assert result.verdict is None
+
+
+@pytest.mark.parametrize(
+    "hostile_url",
+    ["javascript:alert(1)", "JavaScript:alert(1)", "data:text/html,<script>x</script>", "/pull/1"],
+)
+def test_a_pr_url_with_a_non_http_scheme_is_dropped(hostile_url: str, tmp_path: Path) -> None:
+    # ``pr_url`` is arbitrary text out of a file another process writes, and its
+    # only purpose is to become an ``href``. Without the scheme allowlist a
+    # corrupted or hostile artifact turns "can write under .factory/" into script
+    # execution in the page holding the write token.
+    results = tmp_path / ".factory" / "results"
+    results.mkdir(parents=True)
+    (results / "T78.json").write_text(
+        json.dumps({"status": "ready", "pr_url": hostile_url}), encoding="utf-8"
+    )
+
+    result = read_result(tmp_path, "T78")
+
+    assert result is not None
+    assert result.status == "ready", "the rest of the result must survive a dropped url"
+    assert result.prUrl is None
 
 
 def test_result_ignores_the_fields_the_console_does_not_model(tmp_path: Path) -> None:
@@ -221,7 +278,9 @@ def test_a_present_but_unusable_last_stop_stays_present(payload: str, tmp_path: 
 
 
 def test_pr_urls_come_from_the_committed_factory_run_state_fixture() -> None:
-    urls = read_pr_urls(RunStateSource(kind="json", path=RUN_STATE_FIXTURE))
+    source = RunStateSource(kind="json", path=RUN_STATE_FIXTURE)
+
+    urls = read_pr_urls(source, RUN_STATE_FIXTURE.parent)
 
     assert urls["T01"] == "https://github.com/abbasihsn/factory-console/pull/1"
     assert urls["T74"] == "https://github.com/abbasihsn/factory-console/pull/173"
@@ -230,8 +289,27 @@ def test_pr_urls_come_from_the_committed_factory_run_state_fixture() -> None:
 
 
 def test_pr_urls_are_empty_without_a_json_source(tmp_path: Path) -> None:
-    assert read_pr_urls(None) == {}
-    assert read_pr_urls(RunStateSource(kind="directory", path=tmp_path)) == {}
+    assert read_pr_urls(None, tmp_path) == {}
+    assert read_pr_urls(RunStateSource(kind="directory", path=tmp_path), tmp_path) == {}
+
+
+def test_a_symlinked_run_state_is_not_read_for_pr_urls(tmp_path: Path) -> None:
+    # The fourth artifact gets the same containment guard as the other three:
+    # an out-of-root run-state.json is neither parsed nor reported as found,
+    # rather than being read while the endpoint renders its in-root-looking path.
+    root = tmp_path / "project"
+    (root / ".factory").mkdir(parents=True)
+    outside = tmp_path / "outside-run-state.json"
+    outside.write_text(
+        json.dumps({"tickets": {"T01": {"status": "merged", "pr_url": "https://evil.test/1"}}}),
+        encoding="utf-8",
+    )
+    link = root / ".factory" / "run-state.json"
+    link.symlink_to(outside)
+    source = RunStateSource(kind="json", path=link)
+
+    assert read_pr_urls(source, root) == {}
+    assert find_run_state_path(source, root) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -375,13 +453,15 @@ def test_an_in_root_symlink_is_still_read(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# The module is read-only
+# The module — and the port implementation wrapping it — are read-only
 # --------------------------------------------------------------------------- #
 
 
-def test_module_source_has_no_filesystem_mutation() -> None:
-    assert_module_is_read_only(runs_module)
+@pytest.mark.parametrize("module", [runs_module, real_runs_module], ids=["runs", "real_runs"])
+def test_module_source_has_no_filesystem_mutation(module: ModuleType) -> None:
+    assert_module_is_read_only(module)
 
 
-def test_module_source_carries_the_read_only_header() -> None:
-    assert_module_carries_read_only_header(runs_module)
+@pytest.mark.parametrize("module", [runs_module, real_runs_module], ids=["runs", "real_runs"])
+def test_module_source_carries_the_read_only_header(module: ModuleType) -> None:
+    assert_module_carries_read_only_header(module)
