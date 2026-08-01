@@ -4,7 +4,8 @@ The core v2 safety invariant is that a ticket may be edited ONLY when its factor
 run-state is ``todo`` (or ``unknown``, when no run-state source is present);
 every other state — ``in-flight``/``ready``/``merged`` from the directory form,
 ``in_progress``/``in_part``/``in_submilestone``/``flagged``/``failed``/
-``needs_human`` from the factory's ``run-state.json`` — is read-only, matching
+``needs_human`` from the factory's ``run-state.json``, and ``absent`` (a run-state
+source resolved and does not list the ticket at all) — is read-only, matching
 how ``/factory-reconcile-plan`` treats them (see ``ARCHITECTURE.md`` "Factory
 run-state directory (read-only)"). :func:`ensure_mutable` is the one gate every
 mutating write passes before touching disk, and :class:`TicketNotMutable` is the
@@ -21,6 +22,8 @@ the factory has already merged.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 from factory_console.domain import Project, RunState
 from factory_console.errors import FactoryConsoleError
@@ -42,12 +45,29 @@ class TicketNotMutable(FactoryConsoleError):
     HTTP 409 (the edit conflicts with the ticket's current lifecycle state).
     ``details`` echoes the (user-supplied) ``ticketId`` and the resolved
     ``runState`` — both already-known values, never a resolved filesystem path.
+
+    ``source_path`` is optional and used ONLY to phrase a distinct message for
+    :attr:`RunState.absent`: unlike the other read-only states (which name a real
+    lifecycle a factory lane put the ticket in), ``absent`` means the resolved
+    run-state source was consulted and simply does not mention this ticket — an
+    operator seeing the refusal needs to know WHICH file was consulted, since the
+    answer is "the file you are not looking at". Every other state keeps the
+    generic message; ``details`` is identical in shape either way.
     """
 
-    def __init__(self, ticket_id: str, run_state: RunState) -> None:
+    def __init__(
+        self, ticket_id: str, run_state: RunState, *, source_path: Path | None = None
+    ) -> None:
+        if run_state is RunState.absent and source_path is not None:
+            message = (
+                f"Ticket {ticket_id} is not known to the run-state at {source_path}, "
+                "so the console will not write it"
+            )
+        else:
+            message = f"Ticket {ticket_id} is not editable in run-state '{run_state.value}'"
         super().__init__(
             code="ticket_not_mutable",
-            message=(f"Ticket {ticket_id} is not editable in run-state '{run_state.value}'"),
+            message=message,
             status=409,
             details={"ticketId": ticket_id, "runState": run_state.value},
         )
@@ -79,5 +99,6 @@ def ensure_mutable(project: Project, ticket_id: str) -> RunState:
     """
     run_state = probe_ticket_state_from_source(project.runStateSource, ticket_id)
     if run_state not in MUTABLE_STATES:
-        raise TicketNotMutable(ticket_id, run_state)
+        source_path = project.runStateSource.path if project.runStateSource else None
+        raise TicketNotMutable(ticket_id, run_state, source_path=source_path)
     return run_state

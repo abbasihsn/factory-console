@@ -47,15 +47,26 @@ class JsonRunState(BaseModel):
     ``states`` maps ticket id -> :class:`RunState` for every entry whose factory
     status is in the alias table; ``unrecognised`` collects, de-duplicated and in
     first-seen order, the raw status strings that were NOT (their tickets map to
-    :attr:`RunState.unknown`). A file that could not be parsed at all — or whose
-    ``tickets`` key is missing or is not an object — yields empty ``states``, so
-    every ticket resolves ``unknown`` without the read failing.
+    :attr:`RunState.unknown`). ``known_ticket_ids`` names every id that had SOME
+    entry in the document's ``tickets`` object, whether or not that entry's
+    status was usable — it is what lets a caller tell "this id has an entry with
+    a status we can't classify" (:attr:`RunState.unknown`) apart from "this id
+    has no entry at all" (:attr:`RunState.absent`), a distinction ``states``
+    alone cannot make since both cases are absent from it.
+
+    ``readable`` is ``False`` for a file that could not be parsed at all — or
+    whose ``tickets`` key is missing or is not an object. That degraded case
+    stays ``unknown`` for every ticket queried (not ``absent``): a run-state file
+    the console cannot trust is a source-level problem ("I could not tell"), not
+    grounds to refuse edits to every ticket in the project.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     states: dict[str, RunState] = {}
     unrecognised: list[str] = []
+    known_ticket_ids: frozenset[str] = frozenset()
+    readable: bool = True
 
 
 # The run-state artifact locations, project-relative, in probe order (highest

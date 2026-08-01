@@ -105,12 +105,16 @@ class RealFileWriter:
 
         Enforces the todo-only gate FIRST (ticket step 4): a non-todo run-state
         fails fast with :class:`~factory_console.file_adapter.write_gate.TicketNotMutable`
-        (409) BEFORE any render or write. (Gate-first vs the fake's existence-first
-        order is observationally equivalent — an unknown id resolves to the mutable
-        ``unknown`` state, so the gate never masks the
-        :class:`~factory_console.file_adapter.write_render.UnknownTicket` that
-        :func:`~factory_console.file_adapter.write_render.render_edit` then raises
-        for it.)
+        (409) BEFORE any render or write. Gate-first vs the fake's existence-first
+        order is observationally equivalent ONLY when the project has no run-state
+        source: an id absent from a resolved source now (T80) answers
+        :attr:`~factory_console.domain.run_state.RunState.absent` — not the mutable
+        ``unknown`` — so for a project WITH a run-state source, an id that is also
+        absent from the manifest is refused by THIS gate (409) before it ever
+        reaches the :class:`~factory_console.file_adapter.write_render.UnknownTicket`
+        (404) that :func:`~factory_console.file_adapter.write_render.render_edit`
+        would otherwise raise for it. That is intentional: "not known to the
+        run-state" is the honest answer the gate has for such an id.
         """
         write_gate.ensure_mutable(project, ticket_id)
         planned = write_render.render_edit(project, ticket_id, edit)  # validates id + existence

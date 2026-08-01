@@ -12,10 +12,17 @@ contributed it uses, not one canonical spelling:
   it exists here only because the directory form names it.
 
 ``unknown`` belongs to neither source: it is the "no run-state source present or
-resolvable" answer. Because two vocabularies meet here, NO name is ever
-interpreted by string munging (``in_progress`` and ``in-flight`` differ by
-exactly the kind of character a ``.replace()`` gets away with until it doesn't):
-the file-adapter's explicit alias table
+resolvable" answer. ``absent`` is different again: a run-state source WAS
+resolved, but it does not list the ticket being asked about — a ticket added to
+``tickets.json`` by hand after the last factory run, or a mistyped id. The two
+must never collapse into each other: ``unknown`` is "there is no source to ask";
+``absent`` is "the source answered, and its answer is 'not listed'". Neither is
+mutable in the write gate; ``unknown`` alone stays editable because a project
+with no run-state source at all must remain fully usable in the console. Because
+two vocabularies meet here, NO name is ever interpreted by string munging
+(``in_progress`` and ``in-flight`` differ by exactly the kind of character a
+``.replace()`` gets away with until it doesn't): the file-adapter's explicit
+alias table
 (:data:`~factory_console.file_adapter.run_state.FACTORY_STATUS_ALIASES`) is the
 single place a source's name becomes a member. These values are pinned by a test
 so they cannot silently drift.
@@ -52,3 +59,8 @@ class RunState(str, Enum):  # noqa: UP042
     needs_human = "needs_human"
     # Named by no source: no run-state source present, or it could not be read.
     unknown = "unknown"
+    # Named by no source either — but for a different reason: a run-state source
+    # WAS resolved and read, and it simply does not list this ticket. Distinct
+    # from ``unknown`` so a caller cannot conflate "nothing to ask" with "asked,
+    # and the answer is 'not listed'".
+    absent = "absent"

@@ -153,8 +153,8 @@ def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
       ``in-flight`` > ``todo``; the first state whose ``<state>/<ticket_id>``
       marker exists (as a file OR a directory) wins, mapped to its enum member
       by value.
-    - A present run-state directory with no matching marker -> :attr:`RunState.todo`
-      (the "present-dir-but-missing-marker" default).
+    - A present run-state directory with no matching marker -> :attr:`RunState.absent`
+      (the directory resolved, and it does not list this ticket).
 
     Raises:
         PathTraversal: if ``ticket_id`` is not a single path-safe segment. This
@@ -177,7 +177,7 @@ def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
         if (run_state_dir / state / ticket_id).exists():
             return RunState(state)
 
-    return RunState.todo
+    return RunState.absent
 
 
 def read_json_run_state(path: Path) -> JsonRunState:
@@ -187,23 +187,28 @@ def read_json_run_state(path: Path) -> JsonRunState:
     and maps each ``status`` through :data:`FACTORY_STATUS_ALIASES`. A status the
     table does not name maps to :attr:`RunState.unknown` AND is collected into
     ``unrecognised`` (de-duplicated, first-seen order): a tenth factory state must
-    be visible as a named gap, never silently dropped.
+    be visible as a named gap, never silently dropped. Every id that had SOME
+    entry in ``tickets`` — mapped or not — is recorded in ``known_ticket_ids``, so
+    a caller can tell that apart from an id with no entry at all.
 
     NEVER raises. A run-state file that cannot be trusted is a source-level
     problem, not a request failure — "I could not tell" is the honest answer — so
     an unreadable file, unparseable JSON, a non-object document, an absent
     ``tickets`` key, and a ``tickets`` that is not an object (e.g. a list) all
-    yield an EMPTY :class:`JsonRunState`, i.e. :attr:`RunState.unknown` for every
-    ticket. Each case is logged at ``warning`` so the degradation leaves a trace.
-    Individual entries that are not objects, or that carry a non-string
-    ``status``, are skipped the same way without discarding the entries that are
-    fine.
+    yield a :class:`JsonRunState` with ``readable=False``, i.e. :attr:`RunState.unknown`
+    for every ticket queried, not :attr:`RunState.absent` — a file that cannot be
+    trusted must not be read as "definitively lists nothing". Each case is logged
+    at ``warning`` so the degradation leaves a trace. Individual entries that are
+    not objects, or that carry a non-string ``status``, are skipped the same way
+    without discarding the entries that are fine — but their id still lands in
+    ``known_ticket_ids``, so they resolve ``unknown`` (an entry we could not
+    classify), not ``absent`` (no entry at all).
     """
     try:
         raw = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         _LOGGER.warning("run-state: %s could not be read; every ticket resolves unknown", path)
-        return JsonRunState()
+        return JsonRunState(readable=False)
     try:
         document = json.loads(raw)
     except (ValueError, RecursionError, MemoryError):
@@ -214,7 +219,7 @@ def read_json_run_state(path: Path) -> JsonRunState:
         # escape would break the "NEVER raises" contract above and 500 every
         # list/read/write request until the file changed.
         _LOGGER.warning("run-state: %s is not valid JSON; every ticket resolves unknown", path)
-        return JsonRunState()
+        return JsonRunState(readable=False)
 
     tickets = document.get("tickets") if isinstance(document, dict) else None
     if not isinstance(tickets, dict):
@@ -223,11 +228,13 @@ def read_json_run_state(path: Path) -> JsonRunState:
             path,
             type(tickets).__name__,
         )
-        return JsonRunState()
+        return JsonRunState(readable=False)
 
     states: dict[str, RunState] = {}
     unrecognised: list[str] = []
+    known_ticket_ids: set[str] = set()
     for ticket_id, entry in tickets.items():
+        known_ticket_ids.add(ticket_id)
         status = entry.get("status") if isinstance(entry, dict) else None
         if not isinstance(status, str):
             # ``%r`` (like the status below), never ``%s``: this key is arbitrary
@@ -247,7 +254,9 @@ def read_json_run_state(path: Path) -> JsonRunState:
             )
             continue
         states[ticket_id] = state
-    return JsonRunState(states=states, unrecognised=unrecognised)
+    return JsonRunState(
+        states=states, unrecognised=unrecognised, known_ticket_ids=frozenset(known_ticket_ids)
+    )
 
 
 def probe_ticket_state_from_source(source: RunStateSource | None, ticket_id: str) -> RunState:
@@ -257,12 +266,15 @@ def probe_ticket_state_from_source(source: RunStateSource | None, ticket_id: str
     ``source.kind`` so a JSON-sourced project and a directory-sourced one resolve
     through the same call:
 
-    - ``source is None`` -> :attr:`RunState.unknown`, unchanged from the
-      directory-only behaviour.
-    - ``kind == "json"`` -> the ticket's entry in the parsed file, else
-      :attr:`RunState.unknown` (no entry, unrecognised status, or an unreadable
-      or malformed file).
-    - ``kind == "directory"`` -> :func:`probe_ticket_state`, unchanged.
+    - ``source is None`` -> :attr:`RunState.unknown` — there is no source to ask.
+    - ``kind == "json"`` -> the ticket's entry in the parsed file when one maps
+      to a known state; :attr:`RunState.unknown` when the file could not be
+      trusted at all OR the id has an entry whose status this console does not
+      recognise; :attr:`RunState.absent` when the file parsed fine and simply
+      has no entry for the id — the source resolved and answered "not listed".
+    - ``kind == "directory"`` -> :func:`probe_ticket_state`: :attr:`RunState.absent`
+      when the directory is present but no marker names the id, unchanged
+      otherwise.
 
     Resolving one ticket re-reads the source, matching ``ARCHITECTURE.md``
     "every request re-reads"; a caller resolving MANY tickets should take a
@@ -271,7 +283,8 @@ def probe_ticket_state_from_source(source: RunStateSource | None, ticket_id: str
     Raises:
         PathTraversal: only on the directory path, where ``ticket_id`` becomes a
             filesystem path segment. The JSON path joins no path, so it looks an
-            unsafe id up as an ordinary (absent) key and answers ``unknown``.
+            unsafe id up as an ordinary key and answers ``unknown``/``absent`` like
+            any other unrecognised id, never raising.
     """
     return run_state_resolver(source)(ticket_id)
 
@@ -290,6 +303,14 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
     if source is None:
         return lambda _ticket_id: RunState.unknown
     if source.kind == "json":
-        states = read_json_run_state(source.path).states
-        return lambda ticket_id: states.get(ticket_id, RunState.unknown)
+        parsed = read_json_run_state(source.path)
+
+        def resolve_json(ticket_id: str) -> RunState:
+            if ticket_id in parsed.states:
+                return parsed.states[ticket_id]
+            if not parsed.readable or ticket_id in parsed.known_ticket_ids:
+                return RunState.unknown
+            return RunState.absent
+
+        return resolve_json
     return lambda ticket_id: probe_ticket_state(source.path, ticket_id)
