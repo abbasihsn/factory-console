@@ -52,6 +52,15 @@ MAX_LEDGER_BYTES = 10 * 1024 * 1024
 # be a recognisable prefix and nothing more; see :func:`_excerpt`.
 EXCERPT_MAX_CHARS = 80
 
+# How many DETAILED ``SkippedLine`` records one read may build. MAX_LEDGER_BYTES
+# bounds the input but says nothing about the line count: 10 MiB of newlines is
+# ~10.5M failing lines, and a model per line is >1 GiB — the read is bounded in
+# bytes and unbounded in objects. Past this cap the lines are counted into
+# ``LedgerRead.skipped_omitted`` instead of materialised, so the tally stays
+# exact while the memory does not grow with the corruption. 1000 is far more
+# detail than any human reads and far less than any file can weaponise.
+MAX_SKIPPED_LINES = 1000
+
 # Values redacted out of an excerpt before it is truncated: any ``session_id``
 # value, and any bare UUID-shaped token (the form session ids take), so a
 # malformed line that happens to LEAD with its session id cannot smuggle one out
@@ -92,15 +101,24 @@ def read_ledger(path: Path) -> LedgerRead:
     exception: a failure on the final line when the file has no terminating
     newline is ``partial_line``, the signature of reading mid-append.
 
-    An unreadable file, or one over :data:`MAX_LEDGER_BYTES`, yields zero entries
-    plus a single ``file_too_large``/``not_json`` skip at line 0 — a visible gap
-    rather than a silent empty bill.
+    A file that cannot be read at all yields zero entries plus a single
+    ``unreadable`` skip at line 0; one over :data:`MAX_LEDGER_BYTES` yields a
+    ``file_too_large`` skip the same way — a visible gap rather than a silent
+    empty bill, naming which of the two happened.
+
+    ``skipped`` is capped at :data:`MAX_SKIPPED_LINES` detailed records so a
+    pathological file cannot cost unbounded memory; anything past the cap is
+    COUNTED in ``skipped_omitted`` rather than dropped, so the number of
+    unreadable lines stays exact even when their excerpts do not.
     """
     try:
         size = path.stat().st_size
-    except OSError:
-        _LOGGER.warning("ledger: %s could not be stat'd; reporting it as unreadable", path)
-        return _whole_file_skip(path, "not_json", "ledger file could not be read")
+    except OSError as error:
+        # ``%r`` on the cause, per the rule spelled out in ``run_state.py``: an
+        # OSError's text carries the offending filename, the log formatter is one
+        # record per line, and an unescaped newline in it would forge a record.
+        _LOGGER.warning("ledger: %s could not be stat'd: %r", path, error)
+        return _whole_file_skip(path, "unreadable", "ledger file could not be stat'd")
     if size > MAX_LEDGER_BYTES:
         _LOGGER.warning(
             "ledger: %s is %d bytes, over the %d-byte cap; not read",
@@ -116,9 +134,9 @@ def read_ledger(path: Path) -> LedgerRead:
 
     try:
         raw = path.read_bytes()
-    except OSError:
-        _LOGGER.warning("ledger: %s could not be read; reporting it as unreadable", path)
-        return _whole_file_skip(path, "not_json", "ledger file could not be read")
+    except OSError as error:
+        _LOGGER.warning("ledger: %s could not be read: %s", path, error)
+        return _whole_file_skip(path, "unreadable", "ledger file could not be read")
     # Decode with replacement rather than strictly: a byte-level corruption in one
     # line must cost that line (it will not be JSON) instead of the whole file,
     # which is the same bargain every other failure mode here strikes.
@@ -135,6 +153,20 @@ def read_ledger(path: Path) -> LedgerRead:
 
     entries: list[LedgerEntry] = []
     skipped: list[SkippedLine] = []
+    omitted = 0
+
+    def record_skip(line_no: int, reason: SkipReason, line: str) -> None:
+        """Detail the first :data:`MAX_SKIPPED_LINES` failures; count the rest.
+
+        Past the cap the line is still TALLIED — only its excerpt is dropped — so
+        a caller's count of unreadable lines stays exact however corrupt the file.
+        """
+        nonlocal omitted
+        if len(skipped) < MAX_SKIPPED_LINES:
+            skipped.append(SkippedLine(line_no=line_no, reason=reason, excerpt=_excerpt(line)))
+        else:
+            omitted += 1
+
     for line_no, raw_line in enumerate(lines, start=1):
         line = raw_line.rstrip("\r")
         # The final line of a file with no terminating newline may be a write in
@@ -147,14 +179,21 @@ def read_ledger(path: Path) -> LedgerRead:
             # and json answers pathological input with exceptions outside that
             # type (deep nesting -> RecursionError, huge document -> MemoryError).
             reason: SkipReason = "partial_line" if unterminated_tail else "not_json"
-            skipped.append(SkippedLine(line_no=line_no, reason=reason, excerpt=_excerpt(line)))
+            record_skip(line_no, reason, line)
             continue
         try:
             entries.append(LedgerEntry.model_validate(document))
         except ValidationError:
             reason = "partial_line" if unterminated_tail else "invalid_entry"
-            skipped.append(SkippedLine(line_no=line_no, reason=reason, excerpt=_excerpt(line)))
-    return LedgerRead(path=path, entries=entries, skipped=skipped)
+            record_skip(line_no, reason, line)
+    if omitted:
+        _LOGGER.warning(
+            "ledger: %s had %d unreadable lines; detailing the first %d",
+            path,
+            len(skipped) + omitted,
+            MAX_SKIPPED_LINES,
+        )
+    return LedgerRead(path=path, entries=entries, skipped=skipped, skipped_omitted=omitted)
 
 
 def _whole_file_skip(path: Path, reason: SkipReason, excerpt: str) -> LedgerRead:

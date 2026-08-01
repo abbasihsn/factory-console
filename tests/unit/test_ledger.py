@@ -12,6 +12,7 @@ Covers the parse of a real multi-model entry, forward compatibility
 bounded read, the no-ledger vs empty-ledger distinction, and the read-only guard.
 """
 
+from datetime import timedelta
 from pathlib import Path
 
 from _read_only_guard import (
@@ -24,6 +25,7 @@ from factory_console.file_adapter import ledger as ledger_module
 from factory_console.file_adapter.ledger import (
     EXCERPT_MAX_CHARS,
     MAX_LEDGER_BYTES,
+    MAX_SKIPPED_LINES,
     find_ledger_path,
     read_ledger,
 )
@@ -102,13 +104,40 @@ def test_real_entry_parses_with_by_model_intact_and_exact_cost(tmp_path: Path) -
 
 
 def test_session_id_is_parsed_but_is_not_part_of_any_api_projection(tmp_path: Path) -> None:
-    # The field is read so the record round-trips faithfully; this ticket adds no
-    # API layer, and the id must not leak through one later by accident.
+    # The field is read so the record round-trips faithfully in process, and is
+    # excluded from serialisation so it cannot leak through an API layer later.
+    # This repo returns domain models straight out of its endpoints, so the
+    # second assertion is the one doing the work: without it, a future
+    # ``-> LedgerEntry`` would put a session id on the wire and nothing would say.
     path = _write_ledger(tmp_path, REAL_ENTRY_LINE + "\n")
 
     (entry,) = read_ledger(path).entries
 
     assert entry.session_id == "81dda660-3f1a-4c67-9f0e-2b7c5d9a1e04"
+    assert "session_id" not in entry.model_dump(), "a dumped entry must carry no session id"
+    assert "81dda660" not in entry.model_dump_json(), "nor may the JSON form"
+
+
+def test_a_timestamp_without_an_offset_is_read_as_utc(tmp_path: Path) -> None:
+    # The factory writes "...Z" today. If it ever omits the marker, the value
+    # must still be an instant: a naive datetime would parse fine here and fail
+    # much later, the first time a consumer compared it against a console-built
+    # tz-aware one.
+    line = '{"ts":"2026-07-30T16:33:22","agent":"lead","level":"ticket","cost_usd":1.0}'
+    path = _write_ledger(tmp_path, line + "\n")
+
+    (entry,) = read_ledger(path).entries
+
+    assert entry.ts.tzinfo is not None, "every ts must be comparable"
+    assert entry.ts.utcoffset() == timedelta(0)
+
+
+def test_a_timestamp_with_an_offset_keeps_it(tmp_path: Path) -> None:
+    path = _write_ledger(tmp_path, REAL_ENTRY_LINE + "\n")
+
+    (entry,) = read_ledger(path).entries
+
+    assert entry.ts.utcoffset() == timedelta(0), "the factory's Z is UTC and stays UTC"
 
 
 # --------------------------------------------------------------------------- #
@@ -336,6 +365,49 @@ def test_over_cap_file_is_reported_not_silently_short_read(tmp_path: Path) -> No
         "the cap must be recorded as a reason, never a silent short read"
     )
     assert str(MAX_LEDGER_BYTES) in skip.excerpt
+
+
+def test_an_unreadable_file_is_reported_as_unreadable_not_as_bad_json(tmp_path: Path) -> None:
+    # A directory stat's fine and then fails to read — the shape of any I/O
+    # failure (permission denied, deleted mid-read). The reason must say the file
+    # could not be read, not that its contents were malformed: nothing ever read
+    # the contents, and "not_json" would send a human hunting a syntax error in a
+    # file nothing could open.
+    path = tmp_path / _LEDGER_RELATIVE
+    path.mkdir(parents=True)
+
+    result = read_ledger(path)
+
+    assert result.entries == []
+    (skip,) = result.skipped
+    assert skip.line_no == 0, "a whole-file failure belongs to no line"
+    assert skip.reason == "unreadable"
+
+
+def test_skipped_lines_are_capped_but_still_counted(tmp_path: Path) -> None:
+    # MAX_LEDGER_BYTES bounds the file's BYTES, not its line count — a corrupt
+    # file of short bad lines is under the byte cap and still one model per line.
+    # Past the cap the detail stops; the tally must not.
+    bad_lines = MAX_SKIPPED_LINES + 250
+    path = _write_ledger(tmp_path, "nope\n" * bad_lines)
+
+    result = read_ledger(path)
+
+    assert result.entries == []
+    assert len(result.skipped) == MAX_SKIPPED_LINES, "detail is bounded"
+    assert result.skipped_omitted == 250, "the rest are counted, never silently dropped"
+    assert len(result.skipped) + result.skipped_omitted == bad_lines, (
+        "the count of unreadable lines stays exact however corrupt the file"
+    )
+
+
+def test_an_ordinary_read_omits_nothing(tmp_path: Path) -> None:
+    path = _write_ledger(tmp_path, f"{REAL_ENTRY_LINE}\nnope\n")
+
+    result = read_ledger(path)
+
+    assert len(result.skipped) == 1
+    assert result.skipped_omitted == 0, "the cap must not perturb a normal read"
 
 
 def test_a_file_at_the_cap_is_still_read(tmp_path: Path) -> None:

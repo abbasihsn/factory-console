@@ -25,14 +25,16 @@ gitignored, so it simply has no ledger) as "this project cost nothing".
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-SkipReason = Literal["not_json", "invalid_entry", "partial_line", "file_too_large"]
+SkipReason = Literal["not_json", "invalid_entry", "partial_line", "file_too_large", "unreadable"]
 """Why a line — or the whole file — was not turned into a :class:`LedgerEntry`.
+
+Per-line reasons:
 
 - ``not_json`` — the line is not valid JSON.
 - ``invalid_entry`` — valid JSON that does not validate as a :class:`LedgerEntry`.
@@ -40,8 +42,17 @@ SkipReason = Literal["not_json", "invalid_entry", "partial_line", "file_too_larg
   parse: the shape of a live append caught mid-write. It is named for that
   position only; a bad line anywhere else is ``not_json``/``invalid_entry``,
   because a reader cannot know from position alone what a line was meant to be.
+
+Whole-file reasons, recorded at :attr:`SkippedLine.line_no` ``0`` because the
+failure is the file's and not any one line's:
+
 - ``file_too_large`` — the file exceeded the reader's documented size cap and was
   not read at all. Recorded rather than silently short-read.
+- ``unreadable`` — the file could not be stat'd or read at all (permission
+  denied, deleted between finding it and reading it, an I/O error). Distinct from
+  ``not_json`` on purpose: no content was ever examined, so reporting a syntax
+  reason would send a human looking for a malformed line in a file nothing could
+  open, and the bill is unknown rather than corrupt.
 """
 
 
@@ -88,9 +99,13 @@ class LedgerEntry(BaseModel):
     all lane kinds (a resumed lane has no ``review_tier``, a rolled-up level has
     no single ``model``).
 
-    ``session_id`` is parsed so the record round-trips faithfully, but it is NOT
-    surfaced to any API layer: it identifies a specific agent session and the
-    console has no view that needs it.
+    ``session_id`` is parsed so the record round-trips faithfully in process, but
+    it is NOT surfaced to any API layer: it identifies a specific agent session
+    and the console has no view that needs it. That is enforced by
+    ``exclude=True`` rather than by convention — this repo returns domain models
+    straight out of its endpoints, so a comment asking the next lane not to
+    serialise the field would be one ``-> LedgerEntry`` away from being ignored.
+    The attribute still reads normally; it simply leaves no ``model_dump``.
     """
 
     model_config = ConfigDict(frozen=True, extra="ignore")
@@ -106,9 +121,25 @@ class LedgerEntry(BaseModel):
     tokens: TokenCounts = TokenCounts()
     cost_usd: float
     cost_scope: str | None = None
-    session_id: str | None = None
+    session_id: str | None = Field(default=None, exclude=True)
     review_tier: str | None = None
     by_model: dict[str, ModelSpend] = {}
+
+    @field_validator("ts")
+    @classmethod
+    def _require_an_instant(cls, value: datetime) -> datetime:
+        """Read a naive ``ts`` as UTC so every entry is comparable.
+
+        The factory writes ``...Z`` today, which parses tz-aware — but this is
+        the console's ONLY datetime read from a file it does not own, and every
+        datetime it builds itself is ``datetime.now(UTC)``. A naive ``ts``
+        slipping in would not fail here; it would fail much later, the first time
+        a consumer sorted or compared spend against a console-built instant, with
+        a ``TypeError`` nowhere near the line that caused it. Assuming UTC is the
+        honest reading: the factory's own format says UTC, so a value that omits
+        the marker is missing a marker, not naming another zone.
+        """
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value
 
 
 class SkippedLine(BaseModel):
@@ -134,6 +165,15 @@ class LedgerRead(BaseModel):
     ``entries`` may legitimately be empty — that is an EMPTY ledger, which is a
     different fact from a project having no ledger at all (``find_ledger_path``
     returning ``None``). No code path may collapse the two.
+
+    ``skipped`` holds at most the reader's cap of DETAILED records. A file's byte
+    size is capped, but its line COUNT is not implied by that cap — 10 MiB of
+    newlines is ~10.5 million failing lines, and one model per line is gigabytes
+    of memory for a read that is supposed to be bounded. So the detail list stops
+    and ``skipped_omitted`` counts the rest. It is a count, not a silence: a
+    caller reports ``len(skipped) + skipped_omitted`` unreadable lines and is
+    never wrong about how much of the bill it could not see, only about which
+    lines they were.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -141,3 +181,4 @@ class LedgerRead(BaseModel):
     path: Path
     entries: list[LedgerEntry] = []
     skipped: list[SkippedLine] = []
+    skipped_omitted: int = 0
