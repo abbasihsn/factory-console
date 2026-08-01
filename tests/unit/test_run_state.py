@@ -1,10 +1,11 @@
 """Unit tests for the read-only factory run-state prober.
 
 Exercises :func:`find_run_state_dir` (fallback probe order) and
-:func:`probe_ticket_state` (marker precedence, the ``unknown``/``todo`` defaults,
-and the defense-in-depth path-traversal guard), building run-state trees on the
-fly under ``tmp_path``. A final GUARD test parses this module's target source and
-asserts the read-only invariant: it contains no filesystem-mutating call.
+:func:`probe_ticket_state` (marker precedence, the ``unknown``/``absent``
+defaults, and the defense-in-depth path-traversal guard), building run-state
+trees on the fly under ``tmp_path``. A final GUARD test parses this module's
+target source and asserts the read-only invariant: it contains no
+filesystem-mutating call.
 """
 
 from pathlib import Path
@@ -47,7 +48,7 @@ def _place_marker(run_state_dir: Path, state: str, ticket_id: str, *, as_dir: bo
 
 
 # --------------------------------------------------------------------------- #
-# probe_ticket_state — unknown / todo defaults
+# probe_ticket_state — unknown / absent defaults
 # --------------------------------------------------------------------------- #
 
 
@@ -58,11 +59,12 @@ def test_no_run_state_dir_resolves_to_unknown() -> None:
     )
 
 
-def test_present_dir_without_marker_resolves_to_todo(tmp_path: Path) -> None:
+def test_present_dir_without_marker_resolves_to_absent(tmp_path: Path) -> None:
     run_state_dir = tmp_path / "run-state"
     run_state_dir.mkdir()
-    assert probe_ticket_state(run_state_dir, "CAD-118") == RunState.todo, (
-        "a present run-state dir with no marker for the id must default to RunState.todo"
+    assert probe_ticket_state(run_state_dir, "CAD-118") == RunState.absent, (
+        "a present run-state dir with no marker for the id must resolve RunState.absent "
+        "(the directory resolved and does not list this ticket)"
     )
 
 

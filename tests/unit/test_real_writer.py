@@ -60,6 +60,15 @@ def _load(tmp_path: Path) -> tuple[RealFileWriter, Project]:
     return RealFileWriter(), project
 
 
+def _load_without_run_state(tmp_path: Path) -> tuple[RealFileWriter, Project]:
+    """Like :func:`_load`, but with ``.factory/`` stripped: no run-state source at all."""
+    root = tmp_path / "project"
+    shutil.copytree(WITH_RUN_STATE, root)
+    shutil.rmtree(root / ".factory")
+    project = RealFileAdapter().load_project(root)
+    return RealFileWriter(), project
+
+
 def _hash_tree(root: Path) -> dict[str, str]:
     """Map every file under ``root`` (project-relative POSIX) to its content SHA-256."""
     return {
@@ -206,8 +215,26 @@ def test_edit_merges_unknown_manifest_fields(tmp_path: Path) -> None:
     assert reread.raw["status"] == "todo"  # untouched manifest field survives
 
 
-def test_edit_unknown_id_raises_unknown_ticket(tmp_path: Path) -> None:
+def test_edit_id_absent_from_manifest_and_run_state_raises_ticket_not_mutable(
+    tmp_path: Path,
+) -> None:
+    # T80: the gate runs FIRST (per the module docstring) and a project WITH a
+    # run-state source resolves an id it has never heard of to RunState.absent,
+    # not the mutable ``unknown`` — so the 409 gate masks the manifest's 404 here.
+    # This is intentional per T80: "not mutable" is the honest answer when a
+    # resolved source has nothing to say about the id.
     writer, project = _load(tmp_path)
+    with pytest.raises(TicketNotMutable) as exc_info:
+        writer.edit_ticket(project, "CAD-999", _edit())
+    assert exc_info.value.status == 409
+    assert exc_info.value.details == {"ticketId": "CAD-999", "runState": RunState.absent.value}
+
+
+def test_edit_unknown_id_raises_unknown_ticket_with_no_run_state_source(tmp_path: Path) -> None:
+    # With NO run-state source at all, an unheard-of id resolves the mutable
+    # ``unknown`` (T80 does not touch this), the gate passes it through, and the
+    # manifest lookup downstream is what reports the id does not exist.
+    writer, project = _load_without_run_state(tmp_path)
     with pytest.raises(UnknownTicket) as exc_info:
         writer.edit_ticket(project, "CAD-999", _edit())
     assert exc_info.value.status == 404
@@ -259,8 +286,18 @@ def test_delete_todo_ticket_removes_files_and_returns_snapshot(tmp_path: Path) -
     assert "CAD-131" not in project.roadmapPath.read_text()
 
 
-def test_delete_unknown_id_raises_unknown_ticket(tmp_path: Path) -> None:
+def test_delete_id_absent_from_manifest_and_run_state_raises_ticket_not_mutable(
+    tmp_path: Path,
+) -> None:
+    # See test_edit_id_absent_from_manifest_and_run_state_raises_ticket_not_mutable.
     writer, project = _load(tmp_path)
+    with pytest.raises(TicketNotMutable) as exc_info:
+        writer.delete_ticket(project, "CAD-999")
+    assert exc_info.value.status == 409
+
+
+def test_delete_unknown_id_raises_unknown_ticket_with_no_run_state_source(tmp_path: Path) -> None:
+    writer, project = _load_without_run_state(tmp_path)
     with pytest.raises(UnknownTicket):
         writer.delete_ticket(project, "CAD-999")
 

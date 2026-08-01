@@ -283,9 +283,9 @@ def test_a_malformed_file_yields_unknown_for_every_ticket_without_raising(
     path = _place_json(tmp_path, payload)
 
     parsed = read_json_run_state(path)
-    assert parsed == JsonRunState(), (
+    assert parsed == JsonRunState(readable=False), (
         "a broken run-state file is a source-level problem, not a request failure: "
-        "every ticket must resolve unknown"
+        "every ticket must resolve unknown, not absent (readable=False, not just empty)"
     )
     source = RunStateSource(kind="json", path=path)
     for ticket_id in ("T01", "T02"):
@@ -317,7 +317,7 @@ def test_an_entry_without_a_usable_status_is_skipped_but_its_siblings_survive(
 
 def test_an_unreadable_json_source_yields_unknown(tmp_path: Path) -> None:
     missing = tmp_path / ".factory" / "run-state.json"
-    assert read_json_run_state(missing) == JsonRunState(), (
+    assert read_json_run_state(missing) == JsonRunState(readable=False), (
         "a file that vanished between discovery and read must degrade to unknown, "
         "not raise OSError out of the request"
     )
@@ -332,9 +332,11 @@ def test_a_none_source_resolves_to_unknown() -> None:
     assert probe_ticket_state_from_source(None, "T01") is RunState.unknown
 
 
-def test_a_ticket_absent_from_the_json_resolves_to_unknown() -> None:
+def test_a_ticket_absent_from_the_json_resolves_to_absent() -> None:
+    # T80: the source resolved and simply does not list this id — RunState.absent,
+    # not unknown (which is reserved for "no source to ask" / "could not be read").
     source = RunStateSource(kind="json", path=JSON_FIXTURE)
-    assert probe_ticket_state_from_source(source, "T99-absent") is RunState.unknown
+    assert probe_ticket_state_from_source(source, "T99-absent") is RunState.absent
 
 
 def test_a_directory_source_delegates_to_the_marker_prober(tmp_path: Path) -> None:
@@ -344,8 +346,9 @@ def test_a_directory_source_delegates_to_the_marker_prober(tmp_path: Path) -> No
     source = RunStateSource(kind="directory", path=run_state_dir)
 
     assert probe_ticket_state_from_source(source, "CAD-100") is RunState.merged
-    # The directory form's "present dir, no marker" default is unchanged.
-    assert probe_ticket_state_from_source(source, "CAD-999") is RunState.todo
+    # T80: the directory form's "present dir, no marker" default is RunState.absent,
+    # not RunState.todo — the directory resolved and does not list this id.
+    assert probe_ticket_state_from_source(source, "CAD-999") is RunState.absent
 
 
 def test_the_resolver_agrees_with_the_single_ticket_probe(tmp_path: Path) -> None:

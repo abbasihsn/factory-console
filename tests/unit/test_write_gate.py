@@ -5,11 +5,14 @@ Pins the core v2 safety invariant: :func:`ensure_mutable` RETURNS a ticket's
 canonical :class:`TicketNotMutable` (HTTP 409) for every read-only state — the
 directory form's ``in-flight``/``ready``/``merged`` AND the factory JSON's
 ``in_progress``/``in_part``/``in_submilestone``/``flagged``/``failed``/
-``needs_human``. Exercised against BOTH committed fixtures (read-only): the
-``tests/fixtures/projects/with_run_state`` marker directory and the factory-shaped
-``tests/fixtures/run_state/run-state.json``. A ``PathTraversal`` for an unsafe id
-must propagate unchanged on the directory source, and a final guard asserts the
-gate performs NO filesystem mutation on the fixture's run-state tree.
+``needs_human``, AND (T80) ``absent`` — a resolved source that simply does not
+list the ticket, refused precisely BECAUSE ``unknown`` (no source at all) stays
+mutable and the two must never be conflated. Exercised against BOTH committed
+fixtures (read-only): the ``tests/fixtures/projects/with_run_state`` marker
+directory and the factory-shaped ``tests/fixtures/run_state/run-state.json``. A
+``PathTraversal`` for an unsafe id must propagate unchanged on the directory
+source, and a final guard asserts the gate performs NO filesystem mutation on
+the fixture's run-state tree.
 """
 
 from __future__ import annotations
@@ -32,14 +35,18 @@ from factory_console.file_adapter.write_gate import (
 _FIXTURE_ROOT = Path(__file__).parents[1] / "fixtures" / "projects" / "with_run_state"
 _FIXTURE_RUN_STATE_DIR = _FIXTURE_ROOT / ".factory" / "run-state"
 
-# Fixture ground truth: which ticket id resolves to which run-state. ``CAD-999``
-# is absent from every marker dir, so a present-but-unmarked id defaults to todo.
-_TODO_IDS = ("CAD-131", "CAD-140", "CAD-999-absent")
+# Fixture ground truth: which ticket id resolves to which run-state. Every id in
+# this fixture carries an explicit marker (T80 changed the directory's
+# "present dir, no marker" default from todo to absent — refused).
+_TODO_IDS = ("CAD-131", "CAD-140", "CAD-152")
 _NON_MUTABLE_IDS = {
     "CAD-125": RunState.in_flight,
     "CAD-118": RunState.ready,
     "CAD-100": RunState.merged,
 }
+# CAD-999 has no marker anywhere under the (present) run-state dir: the T80 case
+# this whole ticket exists for — the source resolved and does not list it.
+_ABSENT_DIRECTORY_ID = "CAD-999"
 
 # The factory-shaped JSON fixture and its ground truth for the six states only it
 # can name — the states an operator most needs the gate to refuse.
@@ -52,6 +59,8 @@ _JSON_IDS = {
     RunState.failed: "T75",
     RunState.needs_human: "T76",
 }
+# T99-absent has no entry in the JSON fixture's tickets object at all.
+_ABSENT_JSON_ID = "T99-absent"
 
 
 def _make_project(
@@ -147,6 +156,41 @@ def test_ensure_mutable_allows_a_ticket_the_factory_json_marked_todo() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# ensure_mutable — absent (T80): a resolved source that does not list the ticket
+# --------------------------------------------------------------------------- #
+
+
+def test_ensure_mutable_refuses_a_ticket_absent_from_the_directory_source() -> None:
+    # The directory is present but names no marker for this id anywhere — the
+    # T80 gap: distinct from "no run-state dir at all" (which stays mutable).
+    project = _make_project(run_state_dir=_FIXTURE_RUN_STATE_DIR)
+    with pytest.raises(TicketNotMutable) as exc_info:
+        ensure_mutable(project, _ABSENT_DIRECTORY_ID)
+
+    exc = exc_info.value
+    assert exc.code == "ticket_not_mutable"
+    assert exc.status == 409
+    assert exc.details == {"ticketId": _ABSENT_DIRECTORY_ID, "runState": RunState.absent.value}
+
+
+def test_ensure_mutable_refuses_a_ticket_absent_from_the_json_source() -> None:
+    with pytest.raises(TicketNotMutable) as exc_info:
+        ensure_mutable(_make_json_project(), _ABSENT_JSON_ID)
+
+    exc = exc_info.value
+    assert exc.details == {"ticketId": _ABSENT_JSON_ID, "runState": RunState.absent.value}
+    # The distinct message names the resolved source path — see write_gate.py.
+    assert str(_JSON_FIXTURE) in exc.message
+
+
+def test_ensure_mutable_still_allows_edits_with_no_run_state_source_at_all() -> None:
+    # The regression guard: removing the run-state source entirely must still
+    # leave every ticket mutable via RunState.unknown, never absent.
+    project = _make_project(run_state_dir=None)
+    assert ensure_mutable(project, "CAD-999-anything") == RunState.unknown
+
+
+# --------------------------------------------------------------------------- #
 # Property-style — raises IFF the state is not todo/unknown
 # --------------------------------------------------------------------------- #
 
@@ -156,6 +200,8 @@ def _project_and_id_for(state: RunState) -> tuple[Project, str]:
     if state is RunState.unknown:
         # unknown is only reachable with no run-state dir on disk.
         return _make_project(run_state_dir=None), "CAD-131"
+    if state is RunState.absent:
+        return _make_project(run_state_dir=_FIXTURE_RUN_STATE_DIR), _ABSENT_DIRECTORY_ID
     if state is RunState.todo:
         return _make_project(run_state_dir=_FIXTURE_RUN_STATE_DIR), "CAD-131"
     if state in _JSON_IDS:

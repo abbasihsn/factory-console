@@ -426,6 +426,27 @@ async def test_delete_on_non_todo_ticket_is_ticket_not_mutable_409(
     assert _snapshot(root) == before
 
 
+async def test_edit_on_json_sourced_merged_ticket_is_ticket_not_mutable_409(
+    tmp_path: Path,
+) -> None:
+    # The end-to-end proof T78 exists for: a project whose run-state comes from
+    # the factory's real ``.factory/run-state.json`` (not the legacy marker
+    # directory) refuses an edit to a ticket the factory recorded ``merged``.
+    # Pre-T78 this request succeeded (the JSON was never read, so the ticket
+    # resolved the mutable ``unknown``).
+    app, root = _real_app(tmp_path)
+    (root / ".factory" / "run-state.json").write_text(
+        '{"version": 1, "tickets": {"CAD-131": {"status": "merged", "pr_url": null}}}',
+        encoding="utf-8",
+    )
+    before = _snapshot(root)
+    async with _client(app) as client:
+        resp = await client.put("/api/v1/tickets/CAD-131", json=_edit_body(), headers=AUTH)
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "ticket_not_mutable"
+    assert _snapshot(root) == before
+
+
 @pytest.mark.parametrize("ticket_id", NON_TODO_IDS)
 async def test_dry_run_still_previews_a_non_todo_ticket_and_writes_nothing(
     ticket_id: str, tmp_path: Path

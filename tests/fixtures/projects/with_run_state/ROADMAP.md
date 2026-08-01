@@ -28,6 +28,7 @@ The MVP is done when a member can mark a habit and watch a streak grow.
 ## Run-state note
 
 This fixture ships a `.factory/run-state/` directory so the console can resolve
-each ticket's lane. It deliberately spans every state: two `todo`, one
-`in-flight`, one `ready`, one `merged`, and one ticket with no marker at all
-(which must resolve to `todo` because the run-state directory is present).
+each ticket's lane. It deliberately spans every state: three `todo`, one
+`in-flight`, one `ready`, and one `merged` — every ticket carries a marker, so
+none exercises the directory's "present dir, no marker" default (`absent`); that
+default is covered directly in the unit suite, not via this fixture.
