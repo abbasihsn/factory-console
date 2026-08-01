@@ -45,14 +45,21 @@ class TicketNotMutable(FactoryConsoleError):
     HTTP 409 (the edit conflicts with the ticket's current lifecycle state).
     ``details`` echoes the (user-supplied) ``ticketId`` and the resolved
     ``runState`` — both already-known values, never a resolved filesystem path.
+    That rule is scoped to ``details`` ALONE, and deliberately so since T80: the
+    ``absent`` ``message`` below does carry a resolved path, and both fields ship in
+    the same client-facing envelope (:func:`~factory_console.errors.to_error_response`).
+    Read it as "``details`` stays a stable, machine-readable pair", NOT as "this
+    error never discloses a path" — the path is already public on this API via
+    ``GET /api/v1/project``'s ``runStateSource.path``.
 
     ``source_path`` is optional and used ONLY to phrase a distinct message for
     :attr:`RunState.absent`: unlike the other read-only states (which name a real
     lifecycle a factory lane put the ticket in), ``absent`` means the resolved
     run-state source was consulted and simply does not mention this ticket — an
     operator seeing the refusal needs to know WHICH file was consulted, since the
-    answer is "the file you are not looking at". Every other state keeps the
-    generic message; ``details`` is identical in shape either way.
+    answer is "the file you are not looking at" (T80 step 4 mandates naming it).
+    Every other state keeps the generic message; ``details`` is identical in shape
+    either way, so a client that switches on ``runState`` never has to parse prose.
     """
 
     def __init__(

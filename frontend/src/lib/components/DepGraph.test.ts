@@ -129,4 +129,32 @@ describe('DepGraph run-state palette', () => {
 		for (const hex of [...failure, ...working]) expect(hex).toMatch(/^#[0-9a-f]{6}$/);
 		expect(failure.filter((hex) => working.includes(hex))).toEqual([]);
 	});
+
+	// T80's new state. `Record<RunState, string>` only guarantees the KEY exists —
+	// a wrong or duplicated hex still type-checks and still ships, which is exactly
+	// what the pinning table above exists to catch.
+	it('paints absent its own slate, distinct from unknown', () => {
+		expect(fillFor('absent')).toBe('#64748b');
+		expect(fillFor('unknown')).toBe('#94a3b8');
+		expect(fillFor('absent')).not.toBe(fillFor('unknown'));
+	});
+
+	// `absent`/`unknown` both mean "no lane state to show" and must never be
+	// mistakable for a lane that is working or that failed.
+	it('paints the no-state pair distinctly from the working and failure families', () => {
+		const noState = (['unknown', 'absent'] as const).map(fillFor);
+		const others = (
+			[
+				'in-flight',
+				'in_progress',
+				'in_part',
+				'in_submilestone',
+				'flagged',
+				'failed',
+				'needs_human'
+			] as const
+		).map(fillFor);
+
+		expect(noState.filter((hex) => others.includes(hex))).toEqual([]);
+	});
 });

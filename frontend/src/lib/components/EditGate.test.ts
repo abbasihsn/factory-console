@@ -5,7 +5,7 @@ import EditGate from '$lib/components/EditGate.svelte';
 
 // The gate mirrors `isEditable`: only `todo` and `unknown` are writable, so those
 // two are the only states with nothing to explain.
-const READ_ONLY_STATES: RunState[] = ['in-flight', 'ready', 'merged'];
+const READ_ONLY_STATES: RunState[] = ['in-flight', 'ready', 'merged', 'absent'];
 const EDITABLE_STATES: RunState[] = ['todo', 'unknown'];
 
 describe('EditGate', () => {
@@ -23,6 +23,24 @@ describe('EditGate', () => {
 			expect(text).toContain('editing and deleting are disabled');
 		});
 	}
+
+	// T80: `absent` is read-only for a DIFFERENT reason than the lane-owned states,
+	// and the banner must say so — no lane owns a ticket the run-state source never
+	// listed, so the lane-ownership sentence would misdirect the operator.
+	it('gives absent its own reason instead of blaming a factory lane', () => {
+		render(EditGate, { props: { runState: 'absent' } });
+
+		const text = screen.getByRole('note').textContent?.replace(/\s+/g, ' ') ?? '';
+		expect(text).toContain('run-state source does not list this ticket');
+		expect(text).not.toContain('a factory lane owns a ticket');
+	});
+
+	it('still blames the owning lane for a state a lane really did set', () => {
+		render(EditGate, { props: { runState: 'merged' } });
+
+		const text = screen.getByRole('note').textContent?.replace(/\s+/g, ' ') ?? '';
+		expect(text).toContain('a factory lane owns a ticket');
+	});
 
 	for (const runState of EDITABLE_STATES) {
 		it(`renders nothing for ${runState}`, () => {

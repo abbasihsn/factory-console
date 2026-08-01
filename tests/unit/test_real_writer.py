@@ -170,6 +170,41 @@ def test_create_duplicate_id_raises_already_exists_and_writes_nothing(tmp_path: 
     assert _hash_tree(project.rootPath) == before
 
 
+def test_create_then_edit_is_refused_while_the_source_does_not_list_it(tmp_path: Path) -> None:
+    # T80's sharpest consequence, pinned so it is a DECISION and not a surprise:
+    # create has no gate, but the id it mints is in the manifest and in no run-state
+    # source, so it immediately resolves RunState.absent — and `absent` is refused.
+    # In a project WITH a run-state source the console can therefore create a ticket
+    # it can neither edit nor delete until the factory seeds it. This is the same
+    # case the ticket accepts for a hand-added ticket (T80 step 6); the console's own
+    # create path reaches it too. If this is ever softened (e.g. only refusing
+    # `absent` for ids the manifest does not know), THIS is the test to change.
+    writer, project = _load(tmp_path)
+    assert project.runStateSource is not None  # the fixture ships a marker directory
+
+    created = writer.create_ticket(project, _draft(id="CAD-210", milestone="v2"))
+    assert created.applied is True
+
+    with pytest.raises(TicketNotMutable) as edit_exc:
+        writer.edit_ticket(project, "CAD-210", _edit())
+    assert edit_exc.value.details == {"ticketId": "CAD-210", "runState": RunState.absent.value}
+
+    with pytest.raises(TicketNotMutable) as delete_exc:
+        writer.delete_ticket(project, "CAD-210")
+    assert delete_exc.value.details == {"ticketId": "CAD-210", "runState": RunState.absent.value}
+
+
+def test_create_then_edit_is_allowed_with_no_run_state_source(tmp_path: Path) -> None:
+    # The contrast that shows the refusal above is about the SOURCE, not about
+    # newness: with no run-state source the same fresh id stays mutable `unknown`.
+    writer, project = _load_without_run_state(tmp_path)
+    writer.create_ticket(project, _draft(id="CAD-210", milestone="v2"))
+
+    result = writer.edit_ticket(project, "CAD-210", _edit())
+
+    assert result.applied is True
+
+
 def test_create_rejects_a_slash_id_at_the_draft_boundary() -> None:
     # A traversal id never reaches create: TicketDraft.id is validated against
     # TICKET_ID_PATTERN at construction, so an id with a path separator is refused

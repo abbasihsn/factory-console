@@ -112,6 +112,12 @@ class FakeFileAdapter:
 
         Non-optional: an unseeded id (or a ticket with no seeded run-state) yields
         :attr:`RunState.unknown` rather than ``None``.
+
+        That default diverges from :class:`RealFileAdapter` since T80: against a
+        project with a resolved run-state source the real adapter answers
+        :attr:`RunState.absent` for an id the source does not list, and ``absent`` is
+        refused by the write gate while ``unknown`` is not. Seed the state explicitly
+        when a test's subject is that distinction.
         """
         return self._run_states.get(ticket_id, RunState.unknown)
 

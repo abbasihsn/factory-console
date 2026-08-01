@@ -68,6 +68,19 @@ def test_present_dir_without_marker_resolves_to_absent(tmp_path: Path) -> None:
     )
 
 
+def test_a_vanished_dir_resolves_to_unknown_not_absent(tmp_path: Path) -> None:
+    # The directory-form counterpart of the JSON form's ``readable=False`` rule: a
+    # path discovered by load_project but gone (or replaced by a non-directory) by
+    # the time it is probed cannot be trusted to mean "lists nothing". Answering
+    # ``absent`` here would flip an entire project read-only — every ticket refused
+    # 409 — on a transient disappearance, where ``unknown`` keeps it editable.
+    assert probe_ticket_state(tmp_path / "gone", "CAD-118") is RunState.unknown
+
+    not_a_dir = tmp_path / "run-state-file"
+    not_a_dir.write_text("not a directory", encoding="utf-8")
+    assert probe_ticket_state(not_a_dir, "CAD-118") is RunState.unknown
+
+
 # --------------------------------------------------------------------------- #
 # probe_ticket_state — a marker as a FILE or a DIR maps to the right enum
 # --------------------------------------------------------------------------- #

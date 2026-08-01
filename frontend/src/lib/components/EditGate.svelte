@@ -26,7 +26,16 @@
 		     to the header's `RunStateBadge`, which already carries the label, and the
 		     raw value is what the server gate and the run-state directory speak. -->
 		This ticket's run-state is <span class="font-mono">{runState}</span>, so editing and deleting
-		are disabled — a factory lane owns a ticket once it leaves <span class="font-mono">todo</span>.
+		are disabled —
+		<!-- `absent` needs its OWN reason (T80): no lane owns such a ticket, the
+		     resolved run-state source simply never names it, so the lane-ownership
+		     sentence would send the operator looking for a lane that does not exist.
+		     Mirrors the server's `TicketNotMutable` wording for the same state. -->
+		{#if runState === 'absent'}
+			the project's run-state source does not list this ticket, so the console will not write it.
+		{:else}
+			a factory lane owns a ticket once it leaves <span class="font-mono">todo</span>.
+		{/if}
 		The server enforces the same gate and would reject the write anyway.
 	</div>
 {/if}

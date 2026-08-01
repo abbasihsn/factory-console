@@ -60,7 +60,12 @@
 		flagged: 'The lane finished but flagged a problem — needs a look',
 		failed: 'The lane failed — the ticket did not get built',
 		needs_human: 'Blocked: the factory cannot proceed without a human decision',
-		unknown: 'No run-state source present for this project',
+		// NOT just "no source": the server also answers `unknown` when a source
+		// exists but could not be read or parsed, and when it lists this ticket
+		// under a status this console does not recognise. Naming only the first
+		// case would tell an operator with a corrupt run-state.json that they have
+		// no run-state at all — hiding the degradation the state exists to report.
+		unknown: 'No run-state source for this project, or its source could not be read or understood',
 		absent: 'A run-state source exists but does not list this ticket'
 	};
 </script>

@@ -356,6 +356,15 @@ class FakeFileWriter:
         without ``probe_ticket_state``: an unseeded id resolves to
         :attr:`RunState.unknown` (mutable), any state outside
         :data:`~factory_console.file_adapter.write_gate.MUTABLE_STATES` raises.
+
+        KNOWN DIVERGENCE from the real gate since T80, and the reason this default
+        is not simply "correct": the real gate answers :attr:`RunState.absent`
+        (refused, 409) for an id a RESOLVED run-state source does not list, whereas
+        this fake has no source to resolve and so keeps every unseeded id mutable.
+        Seed ``run_states={id: RunState.absent}`` to exercise the refusal. A test
+        that asserts a write SUCCEEDS for an unseeded id therefore pins the fake's
+        convenience, not production behaviour — assert those against
+        :class:`RealFileWriter`.
         """
         state = self._run_states.get(ticket_id, RunState.unknown)
         if state not in write_gate.MUTABLE_STATES:

@@ -55,7 +55,13 @@ class FileAdapter(Protocol):
         ...
 
     def read_run_state(self, project: Project, ticket_id: str) -> RunState:
-        """Return the :class:`RunState` for ``ticket_id`` (``unknown`` when undetermined)."""
+        """Return the :class:`RunState` for ``ticket_id``.
+
+        ``unknown`` when there is no run-state source to ask or it could not be
+        trusted; ``absent`` when a source resolved and does not list the id. The two
+        are NOT interchangeable at the write gate — ``unknown`` is mutable, ``absent``
+        is refused 409 (T80).
+        """
         ...
 
     def get_roadmap(self, project: Project) -> Roadmap | None:

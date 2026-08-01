@@ -86,8 +86,19 @@ class RealFileWriter:
     def create_ticket(self, project: Project, draft: TicketDraft) -> WriteResult:
         """Create ``draft`` on disk and return the applied :class:`WriteResult`.
 
-        No mutability gate: a brand-new id has no factory run-state (it resolves to
-        the mutable ``unknown``), matching :class:`FakeFileWriter`. Raises
+        No mutability gate: a brand-new id is not in any run-state source, so nothing
+        the gate could consult claims a lane owns it. Note what that id then resolves
+        to, because it is NOT uniform (T80): with no run-state source at all it is the
+        mutable ``unknown``, but in a project WITH a resolved source it is
+        :attr:`~factory_console.domain.run_state.RunState.absent` — the source was
+        consulted and does not list an id the factory has never seeded. Creating is
+        therefore always allowed, while a follow-up :meth:`edit_ticket` /
+        :meth:`delete_ticket` on that same fresh id is refused 409 until the factory
+        seeds it. That is the ticket's accepted consequence of refusing ``absent``
+        (T80 step 6, "a ticket in ``tickets.json`` but not in the run-state ... is now
+        refused"), pinned by ``test_create_then_edit_is_refused_while_the_source_does_not_list_it``;
+        it is called out here because this docstring previously claimed the mutable
+        ``unknown`` for every project. Raises
         :class:`~factory_console.file_adapter.path_safety.PathTraversal` for an
         unsafe id and
         :class:`~factory_console.file_adapter.write_render.TicketAlreadyExists`

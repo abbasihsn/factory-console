@@ -70,11 +70,15 @@ describe('RunStateBadge', () => {
 		const { container } = render(RunStateBadge, { props: { runState: 'unknown' } });
 
 		const pill = screen.getByText('Unknown');
-		expect(pill.getAttribute('title')).toBe('No run-state source present for this project');
+		// The tooltip must cover EVERY way the server answers `unknown` — no source,
+		// or a source it could not read/parse/understand — not just the first.
+		expect(pill.getAttribute('title')).toBe(
+			'No run-state source for this project, or its source could not be read or understood'
+		);
 		expect(container.querySelector('span')).toMatchInlineSnapshot(`
 			<span
 			  class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-slate-100 text-slate-500"
-			  title="No run-state source present for this project"
+			  title="No run-state source for this project, or its source could not be read or understood"
 			>
 			  Unknown
 			</span>
@@ -82,7 +86,7 @@ describe('RunStateBadge', () => {
 	});
 
 	// T80: absent is DISTINCT from unknown — a run-state source WAS resolved and
-	// simply does not list this ticket, unlike unknown's "no source at all".
+	// simply does not list this ticket, unlike unknown's "no usable source to ask".
 	it('renders the absent variant with an explanatory title tooltip', () => {
 		const { container } = render(RunStateBadge, { props: { runState: 'absent' } });
 

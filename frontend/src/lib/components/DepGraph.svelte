@@ -20,8 +20,9 @@
 	// Cytoscape paints to an opaque <canvas> and only understands hex/named colors,
 	// NOT Tailwind class names — so this mirrors RunStateBadge's palette INTENT
 	// (todo=gray, in-progress=amber, ready=green, merged=violet, the failure-ish
-	// states=red, unknown=slate) as concrete solid fills. Keep in sync with
-	// RunStateBadge's STATE_CLASSES.
+	// states=red, and the two no-lane-state answers unknown/absent=slate, in
+	// adjacent shades) as concrete solid fills. Keep in sync with RunStateBadge's
+	// STATE_CLASSES.
 	const RUN_STATE_HEX: Record<RunState, string> = {
 		todo: '#9ca3af', // gray-400
 		'in-flight': '#f59e0b', // amber-500

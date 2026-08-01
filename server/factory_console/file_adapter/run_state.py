@@ -155,6 +155,13 @@ def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
       by value.
     - A present run-state directory with no matching marker -> :attr:`RunState.absent`
       (the directory resolved, and it does not list this ticket).
+    - A ``run_state_dir`` that is no longer a directory when probed (it vanished or
+      was atomically replaced between discovery in ``load_project`` and this call)
+      -> :attr:`RunState.unknown`, NOT ``absent``. This mirrors the JSON form's
+      ``readable=False`` rule in :func:`read_json_run_state`: a source that cannot be
+      trusted must never be read as "definitively lists nothing", which here would
+      turn a transient disappearance into a project-wide read-only lockout (every
+      ticket ``absent``, so every write 409s) instead of the mutable ``unknown``.
 
     Raises:
         PathTraversal: if ``ticket_id`` is not a single path-safe segment. This
@@ -177,6 +184,13 @@ def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
         if (run_state_dir / state / ticket_id).exists():
             return RunState(state)
 
+    if not run_state_dir.is_dir():
+        # The directory went away after discovery: "I could not tell" (mutable
+        # unknown), never "the source lists nothing" (absent, which refuses).
+        _LOGGER.warning(
+            "run-state: %s is no longer a directory; every ticket resolves unknown", run_state_dir
+        )
+        return RunState.unknown
     return RunState.absent
 
 

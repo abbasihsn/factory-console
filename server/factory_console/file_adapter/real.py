@@ -191,7 +191,10 @@ class RealFileAdapter:
         unsafe id propagates per that contract, but ONLY when the resolved source
         is a DIRECTORY — that is the only form that turns the id into a path
         segment. A JSON source joins no path, so it looks an unsafe id up as an
-        ordinary (absent) key and answers ``unknown``.
+        ordinary key and answers it like any other id the file does not name:
+        ``absent`` when the file parsed, ``unknown`` only when it could not be
+        trusted (T80). Callers must not read a returned ``absent`` as mutable — it
+        is refused by :func:`~factory_console.file_adapter.write_gate.ensure_mutable`.
         """
         return probe_ticket_state_from_source(project.runStateSource, ticket_id)
 
