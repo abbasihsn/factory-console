@@ -1,0 +1,14 @@
+{
+  "id": "T78",
+  "status": "ready",
+  "pr_url": "https://github.com/abbasihsn/factory-console/pull/179",
+  "route": "deep",
+  "review_iterations": 2,
+  "verdict": "clean",
+  "built": "Run-state source resolution: the factory's .factory/run-state.json is read first, the legacy marker directory second.",
+  "review_summary": "Two rounds; one high on the alias table resolved, no unresolved findings remain.",
+  "unresolved": [],
+  "handoff": [],
+  "worktree": "/tmp/factory-worktrees/factory-console-2440732749/T78",
+  "spend": { "wall_min": 41.5 }
+}

@@ -50,12 +50,21 @@ class JsonRunState(BaseModel):
     :attr:`RunState.unknown`). A file that could not be parsed at all — or whose
     ``tickets`` key is missing or is not an object — yields empty ``states``, so
     every ticket resolves ``unknown`` without the read failing.
+
+    ``pr_urls`` maps ticket id -> PR url for the entries that carry a non-empty
+    string ``pr_url`` (the factory writes ``null`` for a ticket with no PR, and a
+    ticket with no url is simply absent from the map rather than present as
+    ``None``). It is read here, alongside ``status``, because both live in the
+    same entry of the same file: the T81 runs endpoint needs the url, and having
+    it re-open ``run-state.json`` would make a second parser of the factory's
+    format, free to drift from this one.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     states: dict[str, RunState] = {}
     unrecognised: list[str] = []
+    pr_urls: dict[str, str] = {}
 
 
 # The run-state artifact locations, project-relative, in probe order (highest

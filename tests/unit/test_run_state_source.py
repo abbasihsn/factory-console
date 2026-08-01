@@ -211,6 +211,37 @@ def test_the_committed_factory_fixture_reads_back_as_the_factory_wrote_it() -> N
     assert parsed.unrecognised == []
 
 
+def test_pr_urls_are_read_from_the_same_entries_as_the_statuses() -> None:
+    # The runs endpoint (T81) needs the PR url, and it comes out of THIS parse so
+    # ``run-state.json`` keeps exactly one reader. Asserted against the committed
+    # factory fixture, which carries both ``pr_url`` forms.
+    parsed = read_json_run_state(JSON_FIXTURE)
+
+    assert parsed.pr_urls["T01"] == "https://github.com/abbasihsn/factory-console/pull/1"
+    assert parsed.pr_urls["T74"] == "https://github.com/abbasihsn/factory-console/pull/173"
+    # ``pr_url: null`` is the factory's "no PR yet": absent from the map, never a
+    # key whose value is ``None``.
+    assert "T03" not in parsed.pr_urls
+    assert set(parsed.pr_urls) == {"T01", "T02", "T40", "T74"}
+
+
+def test_a_pr_url_survives_a_status_this_console_does_not_know(tmp_path: Path) -> None:
+    # The url is collected before the status checks can skip the entry: a tenth
+    # factory state must not also lose the PR link.
+    path = _place_json(
+        tmp_path,
+        json.dumps(
+            {"version": 1, "tickets": {"T01": {"status": "in_orbit", "pr_url": "https://x/1"}}}
+        ),
+    )
+
+    parsed = read_json_run_state(path)
+
+    assert parsed.states == {}
+    assert parsed.unrecognised == ["in_orbit"]
+    assert parsed.pr_urls == {"T01": "https://x/1"}
+
+
 def test_the_fixture_is_not_read_as_the_directory_form() -> None:
     # The measured bug: against a JSON-sourced project the directory prober found
     # nothing and reported unknown for tickets the factory had merged.

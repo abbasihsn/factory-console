@@ -189,6 +189,11 @@ def read_json_run_state(path: Path) -> JsonRunState:
     ``unrecognised`` (de-duplicated, first-seen order): a tenth factory state must
     be visible as a named gap, never silently dropped.
 
+    Each entry's ``pr_url`` is collected into ``pr_urls`` when it is a non-empty
+    string (the factory writes ``null`` when a ticket has no PR yet), so callers
+    that need the url — the T81 runs endpoint — read it from THIS parse instead of
+    opening ``run-state.json`` a second time with a second set of assumptions.
+
     NEVER raises. A run-state file that cannot be trusted is a source-level
     problem, not a request failure — "I could not tell" is the honest answer — so
     an unreadable file, unparseable JSON, a non-object document, an absent
@@ -227,8 +232,17 @@ def read_json_run_state(path: Path) -> JsonRunState:
 
     states: dict[str, RunState] = {}
     unrecognised: list[str] = []
+    pr_urls: dict[str, str] = {}
     for ticket_id, entry in tickets.items():
         status = entry.get("status") if isinstance(entry, dict) else None
+        # Collected from the same entry as the status, before the status checks
+        # below can ``continue`` past it: a ticket whose status this console does
+        # not recognise still has a PR url worth surfacing. ``null`` (the
+        # factory's "no PR yet") and any non-string are simply not recorded.
+        if isinstance(entry, dict):
+            pr_url = entry.get("pr_url")
+            if isinstance(pr_url, str) and pr_url:
+                pr_urls[ticket_id] = pr_url
         if not isinstance(status, str):
             # ``%r`` (like the status below), never ``%s``: this key is arbitrary
             # text from a file the console does not own, and the log formatter is
@@ -247,7 +261,7 @@ def read_json_run_state(path: Path) -> JsonRunState:
             )
             continue
         states[ticket_id] = state
-    return JsonRunState(states=states, unrecognised=unrecognised)
+    return JsonRunState(states=states, unrecognised=unrecognised, pr_urls=pr_urls)
 
 
 def probe_ticket_state_from_source(source: RunStateSource | None, ticket_id: str) -> RunState:
