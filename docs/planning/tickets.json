@@ -1122,7 +1122,7 @@
       "depends_on": [
         "T78"
       ],
-      "provides": "RunState.absent; ensure_mutable refuses a ticket a present run-state does not list, while a project with no run-state source stays fully editable.",
+      "provides": "RunState.absent; ensure_mutable refuses a ticket that a POPULATED run-state source does not list, while the separate ensure_deletable (DELETABLE_STATES = MUTABLE_STATES + absent) still permits DELETING it, so the ungated create_ticket cannot mint a ticket the console can never remove. A project with no run-state source — or with a resolved but VACUOUS one (a marker directory holding no ticket marker, or run-state.json with an empty tickets object) — resolves unknown and stays fully editable.",
       "path": "docs/planning/tickets/v2.1/T80-write-gate-absent-vs-unsourced.md",
       "status": "todo"
     },

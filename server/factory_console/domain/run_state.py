@@ -17,8 +17,12 @@ resolved, but it does not list the ticket being asked about — a ticket added t
 ``tickets.json`` by hand after the last factory run, or a mistyped id. The two
 must never collapse into each other: ``unknown`` is "there is no source to ask";
 ``absent`` is "the source answered, and its answer is 'not listed'". Neither is
-mutable in the write gate; ``unknown`` alone stays editable because a project
-with no run-state source at all must remain fully usable in the console. Because
+NAMED by a source, but they are NOT treated alike by the write gate: ``unknown``
+stays editable, because a project with no run-state source at all must remain
+fully usable in the console, while ``absent`` is refused an edit. ``absent`` is
+still DELETABLE (:data:`~factory_console.file_adapter.write_gate.DELETABLE_STATES`),
+since an ungated ``create`` must not mint a ticket the console can never remove.
+Because
 two vocabularies meet here, NO name is ever interpreted by string munging
 (``in_progress`` and ``in-flight`` differ by exactly the kind of character a
 ``.replace()`` gets away with until it doesn't): the file-adapter's explicit

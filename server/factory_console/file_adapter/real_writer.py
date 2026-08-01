@@ -56,8 +56,12 @@ class RealFileWriter:
     satisfies the ``@runtime_checkable``
     :class:`~factory_console.file_adapter.writer_protocol.FileWriter` Protocol
     structurally, so ``isinstance(RealFileWriter(), FileWriter)`` holds without
-    inheritance. Preview methods are pure (no gate, no write); apply methods pass
-    the todo-only mutability gate before routing every write through
+    inheritance. Preview methods are pure (no gate, no write); each apply method
+    passes ITS OWN gate — :func:`~factory_console.file_adapter.write_gate.ensure_mutable`
+    for :meth:`edit_ticket`, the wider
+    :func:`~factory_console.file_adapter.write_gate.ensure_deletable` for
+    :meth:`delete_ticket`, and none at all for :meth:`create_ticket` — before routing
+    every write through
     :func:`~factory_console.file_adapter.atomic_write.apply_changes`.
     """
 

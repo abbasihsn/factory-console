@@ -231,13 +231,47 @@ def _marker_state(run_state_dir: Path, ticket_id: str) -> RunState | None:
     needs only ``+x`` on the state subdirectory, so this still answers on a directory
     :func:`_directory_lists_any_ticket` could not enumerate.
 
+    An unreadable state subdirectory does NOT abort the walk. ``Path.exists()`` needs
+    ``+x`` on the state subdirectory and RAISES ``EACCES`` without it, and ``merged``
+    is probed first — so aborting on the first error meant that a single non-searchable
+    ``merged/`` (mode ``0600``, or created by the factory under a different uid) made
+    EVERY id raise before ``ready``/``in-flight``/``todo`` were ever probed. Both
+    callers map that to the MUTABLE ``unknown``, so one restricted directory silently
+    disabled the write gate for the whole project — including tickets whose markers sit
+    in perfectly readable state directories, the exact outcome
+    :func:`run_state_resolver`'s "it must stay per ticket" comment claims to avoid.
+    Each state is therefore probed independently and the first READABLE hit wins.
+
+    Propagates ``OSError`` — the caller decides what an unreadable directory means —
+    but only when the walk found nothing AND at least one state could not be read,
+    i.e. only when "no marker" would otherwise be reported as fact rather than as "I
+    could not tell". The original exception is re-raised, not a synthetic one, so the
+    callers' existing ``except OSError`` handling is unchanged.
+
+    RESIDUAL, unchanged by this and deliberate: when the walk finds nothing and a
+    HIGHER-precedence directory was unreadable, the answer is still the mutable
+    ``unknown``, which can mask a hidden ``merged`` marker. That is the documented
+    fail-open policy for an untrustworthy source (see :func:`probe_ticket_state`), and
+    it is what this function already did for every id; narrowing it is a gate-policy
+    decision, not a bug fix. What changed is only that a marker the console CAN read
+    is no longer discarded because a different directory could not be.
+
     Callers MUST have validated ``ticket_id`` as a single path-safe segment first;
-    this joins it onto a filesystem path. Propagates ``OSError`` — the caller decides
-    what an unreadable directory means.
+    this joins it onto a filesystem path.
     """
+    first_error: OSError | None = None
     for state in _MARKER_PRECEDENCE:
-        if (run_state_dir / state / ticket_id).exists():
-            return RunState(state)
+        try:
+            if (run_state_dir / state / ticket_id).exists():
+                return RunState(state)
+        except OSError as exc:
+            # Keep probing the lower-precedence states: a marker this console can
+            # actually read still answers the question, and a read-only state
+            # (``ready``/``in-flight``) is a strictly safer answer than ``unknown``.
+            if first_error is None:
+                first_error = exc
+    if first_error is not None:
+        raise first_error
     return None
 
 
@@ -596,24 +630,76 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
     # breaking this function's "settled once, logged once" guarantee exactly when an
     # operator needs one clear signal. So the degradation is reported once per resolver.
     reported_unreadable = False
+    reported_vanished = False
 
     def resolve_directory(ticket_id: str) -> RunState:
-        nonlocal reported_unreadable
+        nonlocal reported_unreadable, reported_vanished
         _validate_ticket_id_as_segment(ticket_id)
         try:
             marker = _marker_state(source.path, ticket_id)
+            if marker is not None:
+                return marker
+            # Re-confirm the source is STILL a directory before answering ``absent``.
+            # ``lists_someone`` was settled once, at resolver construction; the answer
+            # it licenses ("the source lists others, so it definitively does not list
+            # you") stops being true the moment the source goes away. A projection
+            # holds one resolver for a whole list/deps/graph request, so a factory that
+            # rewrites run-state mid-request (rm+recreate, or an atomic rename swap)
+            # leaves every remaining id with no marker — and answering ``absent`` there
+            # would turn a transient disappearance into a project-wide read-only
+            # lockout, the very outcome ``probe_ticket_state``'s own ``is_dir()``
+            # re-check exists to prevent. Paid only on the no-marker path, so a ticket
+            # the directory names never stats for it.
+            #
+            # This closes the DIRECTORY-level divergence only. Vacuity itself is still
+            # settled once, by design — re-deriving it per ticket is the O(tickets x
+            # states) re-scan this whole function exists to avoid — so a marker set that
+            # CHANGES under a live resolver is not observed, and the divergence runs in
+            # BOTH directions: markers deleted after construction make this form answer
+            # ``absent`` where the re-scanning :func:`probe_ticket_state` answers
+            # ``unknown``, and markers ADDED to a directory that was vacuous at
+            # construction make this form answer the mutable ``unknown`` where the probe
+            # answers ``absent``. So read the "the two forms cannot answer differently"
+            # guarantee above as scoped to a source that is not mutating underneath the
+            # request.
+            #
+            # That residual cannot reach the WRITE GATE, which is what makes it
+            # acceptable rather than something to pay for: ``ensure_mutable``/
+            # ``ensure_deletable`` resolve through
+            # :func:`probe_ticket_state_from_source`, which builds a FRESH resolver for
+            # every call, so ``lists_someone`` is never stale at gate time. The only
+            # long-lived resolver is ``RealFileAdapter._projection_for``'s, and it feeds
+            # the read-only list/deps/graph badges — where a stale badge for the length
+            # of one request is cosmetic, and the next request re-reads.
+            still_a_directory = source.path.is_dir()
         except OSError:
             if not reported_unreadable:
                 reported_unreadable = True
+                # Deliberately does not name WHICH node failed: this ``except`` covers
+                # both ``_marker_state`` (a state subdirectory) and the ``is_dir()``
+                # re-check (the run-state directory itself), and attributing an EACCES
+                # on the latter to "a state subdirectory" would send an operator to
+                # chmod the wrong path.
                 _LOGGER.warning(
-                    "run-state: a state subdirectory of %s could not be read; every "
-                    "ticket with no readable marker (first: %r) resolves unknown",
+                    "run-state: %s could not be read (the directory itself or one of "
+                    "its state subdirectories); every ticket with no readable marker "
+                    "(first: %r) resolves unknown",
                     source.path,
                     ticket_id,
                 )
             return RunState.unknown
-        if marker is not None:
-            return marker
+        if not still_a_directory:
+            # Logged once per resolver, like every other degradation settled here: a
+            # 200-ticket projection must not emit 200 identical lines.
+            if not reported_vanished:
+                reported_vanished = True
+                _LOGGER.warning(
+                    "run-state: %s is no longer a directory; every ticket with no "
+                    "marker (first: %r) resolves unknown",
+                    source.path,
+                    ticket_id,
+                )
+            return RunState.unknown
         # No marker: ``absent`` only when the source is known to list SOMEONE. When
         # vacuity is unknowable (``lists_any_ticket is None``) this is the mutable
         # ``unknown``, matching ``probe_ticket_state``.

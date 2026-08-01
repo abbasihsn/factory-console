@@ -9,6 +9,7 @@ filesystem-mutating call.
 """
 
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -20,11 +21,13 @@ from _read_only_guard import (
 from factory_console.domain import RunState
 from factory_console.domain.run_state_source import RunStateSource
 from factory_console.file_adapter import run_state as run_state_module
+from factory_console.file_adapter import write_gate
 from factory_console.file_adapter.run_state import (
     PathTraversal,
     find_run_state_dir,
     is_run_state_marker,
     probe_ticket_state,
+    probe_ticket_state_from_source,
     run_state_resolver,
 )
 
@@ -238,6 +241,107 @@ def test_unenumerable_state_dirs_do_not_read_as_vacuous(
     # A degradation that widens the write gate has to leave a trace — unlike the
     # ordinary vacuous case, which is deliberately silent.
     assert [r for r in caplog.records if "could not be enumerated" in r.getMessage()]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
+def test_a_non_searchable_state_dir_does_not_hide_a_readable_marker(tmp_path: Path) -> None:
+    # The OTHER gate-bypass shape, and the one mode-0711 above cannot reach. A state
+    # subdirectory that is readable but NOT searchable (mode 0600) makes `exists()`
+    # raise EACCES rather than `iterdir()` — and `merged` is probed FIRST, so aborting
+    # the precedence walk on the first error made every id raise before `ready`/
+    # `in-flight`/`todo` were ever tried. Both callers map that to the MUTABLE
+    # `unknown`, so ONE restricted directory silently disabled the write gate for the
+    # whole project, including tickets whose markers sit in perfectly readable state
+    # directories. Asserted as the resolved state AND as the gate consequence.
+    run_state_dir = tmp_path / "run-state"
+    for state in ("merged", "ready", "in-flight", "todo"):
+        (run_state_dir / state).mkdir(parents=True)
+    # A ticket a lane owns, in a directory that stays fully readable throughout.
+    _place_marker(run_state_dir, "ready", "CAD-118", as_dir=False)
+    _place_marker(run_state_dir, "merged", "CAD-1", as_dir=False)
+    (run_state_dir / "merged").chmod(0o600)
+    try:
+        resolve = run_state_resolver(RunStateSource(kind="directory", path=run_state_dir))
+        batch_state = resolve("CAD-118")
+        probed = probe_ticket_state(run_state_dir, "CAD-118")
+    finally:
+        (run_state_dir / "merged").chmod(0o755)
+
+    assert batch_state is RunState.ready
+    # The single-ticket prober must agree with the batch form, as everywhere else.
+    assert probed is RunState.ready
+    # The point of the fix: a lane-owned ticket stays refused for BOTH writes. Before,
+    # this resolved `unknown` and was editable and deletable.
+    assert batch_state not in write_gate.MUTABLE_STATES
+    assert batch_state not in write_gate.DELETABLE_STATES
+
+
+def test_the_resolver_answers_unknown_not_absent_when_the_source_vanishes(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # `lists_someone` is settled ONCE at resolver construction, but the answer it
+    # licenses ("the source lists others, so it definitively does not list you") stops
+    # being true when the source goes away. One resolver serves a whole list/deps/graph
+    # request, so a factory rewriting run-state mid-request (rm+recreate, or an atomic
+    # rename swap) leaves every remaining id with no marker — and answering `absent`
+    # there would turn a transient disappearance into a project-wide read-only lockout.
+    # `probe_ticket_state` already re-checked `is_dir()`; the batch form must too, or
+    # the two forms answer differently for one filesystem.
+    run_state_dir = tmp_path / "run-state"
+    (run_state_dir / "todo").mkdir(parents=True)
+    _place_marker(run_state_dir, "todo", "CAD-100", as_dir=False)
+    source = RunStateSource(kind="directory", path=run_state_dir)
+
+    resolve = run_state_resolver(source)
+    # While the source is there it is authoritative, and an id it omits IS `absent`.
+    assert resolve("CAD-118") is RunState.absent
+
+    shutil.rmtree(run_state_dir)
+    with caplog.at_level("WARNING", logger=run_state_module._LOGGER.name):
+        after = [resolve(f"CAD-{n}") for n in range(20)]
+
+    assert after == [RunState.unknown] * 20
+    # Settled once, logged once: a 200-ticket projection must not emit 200 lines.
+    # Counted BEFORE the single-ticket probe below, which emits its own equivalent
+    # warning and would otherwise be miscounted as a second resolver line.
+    resolver_warnings = [r for r in caplog.records if "no longer a directory" in r.getMessage()]
+    assert len(resolver_warnings) == 1
+
+    # And the single-ticket prober agrees, which is the guarantee that was broken.
+    assert probe_ticket_state(run_state_dir, "CAD-118") is RunState.unknown
+
+
+def test_a_stale_resolver_cannot_widen_the_write_gate(tmp_path: Path) -> None:
+    # Vacuity is settled ONCE per resolver — re-deriving it per ticket is the
+    # O(tickets x states) re-scan the batch form exists to avoid — so a marker set that
+    # changes under a LIVE resolver is not observed. The residual runs in both
+    # directions, and this pins the one that matters: markers added to a directory that
+    # was VACUOUS at construction leave the stale resolver answering the MUTABLE
+    # `unknown` while the source has since become authoritative.
+    #
+    # That is tolerable only because it cannot reach the gate. `ensure_mutable` /
+    # `ensure_deletable` resolve through `probe_ticket_state_from_source`, which builds
+    # a FRESH resolver every call, so `lists_someone` is never stale at gate time. The
+    # only long-lived resolver is the read-only list/deps/graph projection's, where a
+    # stale badge lasts one request. This test is the guard on that reasoning: if
+    # someone ever caches a resolver across requests, or routes the gate through one,
+    # the second assertion breaks.
+    run_state_dir = tmp_path / "run-state"
+    for state in ("merged", "ready", "in-flight", "todo"):
+        (run_state_dir / state).mkdir(parents=True)
+    source = RunStateSource(kind="directory", path=run_state_dir)
+
+    stale = run_state_resolver(source)  # built while the directory lists nobody
+    assert stale("CAD-118") is RunState.unknown
+
+    _place_marker(run_state_dir, "merged", "CAD-100", as_dir=False)
+
+    # The stale resolver keeps its construction-time answer — the accepted residual.
+    assert stale("CAD-118") is RunState.unknown
+    # But every gate-facing entry point re-resolves, so the refusal is not missed.
+    assert probe_ticket_state_from_source(source, "CAD-118") is RunState.absent
+    assert probe_ticket_state(run_state_dir, "CAD-118") is RunState.absent
+    assert probe_ticket_state_from_source(source, "CAD-118") not in write_gate.MUTABLE_STATES
 
 
 # --------------------------------------------------------------------------- #

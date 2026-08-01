@@ -12,9 +12,13 @@ three-way split). Every other state — ``in-flight``/``ready``/``merged`` from 
 ``needs_human`` from the factory's ``run-state.json``, and ``absent`` (a run-state
 source resolved and does not list the ticket at all) — is read-only, matching
 how ``/factory-reconcile-plan`` treats them (see ``ARCHITECTURE.md`` "Factory
-run-state directory (read-only)"). :func:`ensure_mutable` is the one gate every
-mutating write passes before touching disk, and :class:`TicketNotMutable` is the
+run-state directory (read-only)"). :func:`_ensure_state_allowed` is the one
+resolution-and-refusal site every gated write passes before touching disk —
+:func:`ensure_mutable` and :func:`ensure_deletable` are its two named entry
+points, differing ONLY in their allowlist — and :class:`TicketNotMutable` is the
 ONE canonical error for the non-todo condition across the whole write path.
+(``create_ticket`` passes no gate at all; see :data:`DELETABLE_STATES` for why
+that is what forces delete's allowlist to be the wider one.)
 
 DELETE is the single documented exception, and it is an exception of ALLOWLIST, not
 of mechanism: :func:`ensure_deletable` runs the same resolution and raises the same
