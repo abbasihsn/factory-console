@@ -70,7 +70,7 @@ flowchart LR
 
 No database. Source of truth is the target project's files, modeled as read-through domain entities that live in memory only during a single request.
 
-- **Project** — `{ rootPath, ticketsManifestPath, ticketsDir, roadmapPath|None, runStateDir|None, discoveredAt }`. Constructed once per request.
+- **Project** — `{ rootPath, ticketsManifestPath, ticketsDir, roadmapPath|None, runStateDir|None, runStateSource|None, runStateRefused, discoveredAt }`. Constructed once per request, serialized as-is by `GET /api/v1/project`. `runStateSource` is `{ kind: "json"|"directory", path }` — which run-state artifact resolved; `runStateRefused` is `true` when one is present but resolves outside the root, so reads degrade while the write gate fails closed.
 - **Ticket** — `{ id, title, status, track|None, milestone|None, dependsOn: [str], provides: [str], files: [str], filePath, bodyMarkdown, bodyHtml, raw: dict }`. Joins a manifest entry with its `.md` at `docs/planning/tickets/<id>.md`.
 - **TicketSummary** — list projection: `{ id, title, status, track, milestone, runState, depCount, dependentCount }`.
 - **RunState** — enum `{ todo, in_flight, ready, merged, unknown }`, derived by probing the factory run-state directory.

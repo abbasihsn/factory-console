@@ -17,7 +17,10 @@ writes to the run-state directory (it does no filesystem I/O of its own at all).
 It reads through ``project.runStateSource``, not ``project.runStateDir``: a
 JSON-sourced project has no run-state directory, and gating on the directory
 there would see ``unknown`` for every ticket and wave through edits to tickets
-the factory has already merged.
+the factory has already merged. For the same reason it also reads
+``project.runStateRefused``: an artifact this console refuses to read leaves the
+source ``None``, and treating that as "no run-state" would wave those edits
+through by a different route.
 """
 
 from __future__ import annotations
@@ -28,8 +31,11 @@ from factory_console.file_adapter.run_state import probe_ticket_state_from_sourc
 
 # The ONLY editable predicate: a ticket is mutable exactly when its resolved
 # run-state is ``todo`` or ``unknown`` (no run-state source on disk). Every
-# other state is read-only. Single source of truth for the write-authorization
-# decision — see ARCHITECTURE.md "Factory run-state directory (read-only)".
+# other state is read-only. ``unknown`` is permissive, so it must mean "this
+# project has no run-state" and never "its run-state could not be read" — the
+# ``runStateRefused`` branch in :func:`ensure_mutable` keeps those apart. Single
+# source of truth for the write-authorization decision — see ARCHITECTURE.md
+# "Factory run-state directory (read-only)".
 MUTABLE_STATES = (RunState.todo, RunState.unknown)
 
 
@@ -62,9 +68,18 @@ def ensure_mutable(project: Project, ticket_id: str) -> RunState:
     ``unknown`` ticket is mutable and its state is returned; any other state is
     read-only.
 
+    A project whose run-state artifact was REFUSED (``project.runStateRefused``
+    — one is present but resolves outside the project root) is gated CLOSED
+    before the prober is consulted. Such a project reports ``runStateSource is
+    None``, and the prober answers ``unknown`` for every ticket, which
+    :data:`MUTABLE_STATES` otherwise treats as editable: without this branch a
+    ``.factory`` symlinked out of the tree would make every ticket editable and
+    deletable, including ones a lane owns. "Its states could not be read" is not
+    "it has no states", and only the former may not authorize a write.
+
     Raises:
-        TicketNotMutable: if the resolved state is not in :data:`MUTABLE_STATES`
-            — HTTP 409.
+        TicketNotMutable: if the project's run-state source was refused, or if
+            the resolved state is not in :data:`MUTABLE_STATES` — HTTP 409.
         PathTraversal: if ``ticket_id`` is not a single path-safe segment AND the
             project's source is a run-state DIRECTORY. It propagates UNCHANGED
             from the prober, which validates the id only on the path it actually
@@ -77,6 +92,8 @@ def ensure_mutable(project: Project, ticket_id: str) -> RunState:
             point of use (as ``ticket_md``/``run_state`` do), never rely on this
             gate for path safety.
     """
+    if project.runStateRefused:
+        raise TicketNotMutable(ticket_id, RunState.unknown)
     run_state = probe_ticket_state_from_source(project.runStateSource, ticket_id)
     if run_state not in MUTABLE_STATES:
         raise TicketNotMutable(ticket_id, run_state)

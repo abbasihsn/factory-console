@@ -20,11 +20,17 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel
 from starlette.routing import Mount
 
-from factory_console.api.deps import get_file_adapter, get_file_watcher, get_file_writer
+from factory_console.api.deps import (
+    get_file_adapter,
+    get_file_watcher,
+    get_file_writer,
+    get_run_artifact_reader,
+)
 from factory_console.app import _SpaStaticFiles, create_app
 from factory_console.domain import TICKET_ID_PATTERN, Project
 from factory_console.file_adapter import FakeFileAdapter
 from factory_console.file_adapter.discovery import ProjectNotFound
+from factory_console.file_adapter.fake_runs import FakeRunArtifactReader
 from factory_console.file_adapter.fake_writer import FakeFileWriter
 
 
@@ -213,6 +219,30 @@ def test_get_file_writer_raises_when_unbound() -> None:
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
     with pytest.raises(RuntimeError, match="file_writer"):
         get_file_writer(request)  # type: ignore[arg-type]
+
+
+def test_get_run_artifact_reader_returns_the_reader_bound_by_create_app() -> None:
+    # The runs seam is wired exactly like the writer's: create_app stashes the
+    # reader on app.state and the DI provider reads back that same instance, so a
+    # runs handler never imports a concrete reader.
+    reader = FakeRunArtifactReader()
+    app = create_app(
+        _make_fake(),
+        version="0.0.0",
+        project_root=Path("/tmp/fake-root"),
+        run_artifact_reader=reader,
+    )
+    request = SimpleNamespace(app=app)
+    assert get_run_artifact_reader(request) is reader  # type: ignore[arg-type]
+
+
+def test_get_run_artifact_reader_raises_when_unbound() -> None:
+    # Same guard as the adapter and writer seams, pinned here because it is the
+    # whole reason this provider raises instead of returning None: an unbound
+    # reader is a wiring bug, not a degraded mode the runs endpoints can serve.
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
+    with pytest.raises(RuntimeError, match="run_artifact_reader"):
+        get_run_artifact_reader(request)  # type: ignore[arg-type]
 
 
 def _spa_client(tmp_path: Path) -> TestClient:

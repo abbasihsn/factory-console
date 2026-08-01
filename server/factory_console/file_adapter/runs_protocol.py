@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from factory_console.domain import Project
-from factory_console.domain.run_record import LastStop, RunResultSummary
+from factory_console.domain.run_record import LastStop, RunResultSummary, RunSourceName
 
 
 @runtime_checkable
@@ -56,12 +56,16 @@ class RunArtifactReader(Protocol):
     is checked.
     """
 
-    def source_paths(self, project: Project) -> Mapping[str, Path | None]:
+    def source_paths(self, project: Project) -> Mapping[RunSourceName, Path | None]:
         """Return each run artifact's absolute path, or ``None`` where it is absent.
 
-        Keyed by :data:`~factory_console.domain.run_record.RUN_SOURCE_NAMES`. A
-        path is returned only when the implementation would actually READ that
-        artifact, so "found" in a response cannot disagree with what was read.
+        Keyed by :data:`~factory_console.domain.run_record.RunSourceName` — the
+        closed key type, so an implementation that omits or misspells one of the
+        four is a typing error here rather than a ``KeyError`` in the handler that
+        indexes them. Every key is always present; ``None`` is how absence is
+        reported. A path is returned only when the implementation would actually
+        READ that artifact, so "found" in a response cannot disagree with what was
+        read.
         """
         ...
 

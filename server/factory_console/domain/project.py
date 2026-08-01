@@ -32,6 +32,13 @@ class Project(BaseModel):
     JSON-sourced project has ``runStateDir is None``. Read run-state through
     ``runStateSource``; ``runStateDir`` answers only "which directory, if any, is
     off-limits to the writer".
+
+    ``runStateRefused`` says WHY ``runStateSource`` is ``None``: ``False`` (the
+    default) means the project has no run-state artifact at all, ``True`` means
+    one is present but resolves outside the project root, so this console will
+    not read it. Reads may ignore the distinction — they degrade the same way
+    either way — but the write gate must not: see
+    :class:`~factory_console.file_adapter.run_state.RunStateResolution`.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -42,6 +49,7 @@ class Project(BaseModel):
     roadmapPath: Path | None = None
     runStateDir: Path | None = None
     runStateSource: RunStateSource | None = None
+    runStateRefused: bool = False
     discoveredAt: datetime
 
     @model_validator(mode="before")

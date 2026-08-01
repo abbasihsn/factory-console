@@ -28,6 +28,7 @@ any ``except TicketNotFound``.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -40,10 +41,14 @@ from factory_console.domain.run_record import (
     PerTicketRunSourceName,
     RunRecord,
     RunResultSummary,
+    RunSourceName,
+    drop_unsafe_pr_url,
 )
 from factory_console.file_adapter.protocol import FileAdapter
 from factory_console.file_adapter.runs_protocol import RunArtifactReader
 from factory_console.services.ticket_service import TicketNotFound
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class RunService:
@@ -56,10 +61,10 @@ class RunService:
         self._adapter = adapter
         self._runs = runs
 
-    def source_paths(self, project: Project) -> Mapping[str, Path | None]:
+    def source_paths(self, project: Project) -> Mapping[RunSourceName, Path | None]:
         """Return each run artifact's absolute path, or ``None`` where it is absent.
 
-        Keyed by :data:`~factory_console.domain.run_record.RUN_SOURCE_NAMES`. The
+        Keyed by :data:`~factory_console.domain.run_record.RunSourceName`. The
         caller renders these project-RELATIVE; the absolute paths never leave the
         server. "Found" means the artifact this console would actually READ — the
         reader reports a source it would refuse (one resolving outside the project
@@ -165,19 +170,48 @@ class RunService:
         itemised. ``lastStop`` is never named here — it is a project-level fact,
         reported once by the list endpoint's ``sources``.
 
-        ``runState`` is named for a SECOND reason besides an unknown state: only
-        the JSON form of the run-state artifact carries PR urls, so on a project
-        using the legacy marker-directory form ``prUrl`` is null for every ticket
-        no matter what the factory did. Left unnamed, that null would read as "the
-        factory opened no PR" — a fact — when it actually means "this run-state
-        form cannot tell you". Naming the source keeps every null attributable,
-        which is the whole contract of
+        ``runState`` is named for THREE reasons, not one, because the record's
+        contract is about whether the SOURCE answered — not about whether the
+        state happened to resolve:
+
+        1. The source produced nothing for this ticket at all. An ``unknown``
+           state alone is not that test: :func:`read_json_run_state` harvests a
+           ``pr_url`` from an entry whose ``status`` this console does not
+           recognise, precisely so a renamed factory status still surfaces its PR
+           link. Such a ticket resolves ``unknown`` while the source plainly DID
+           answer, so naming it here would render "run-state unavailable" beside a
+           live link read out of that same file.
+        2. Only the JSON form carries PR urls, so on the legacy marker-directory
+           form ``prUrl`` is null for every ticket no matter what the factory did.
+           Left unnamed, that null would read as "the factory opened no PR" — a
+           fact — when it means "this run-state form cannot tell you".
+        3. The source answered with a url the scheme allowlist REFUSED (see
+           :func:`~factory_console.domain.run_record.drop_unsafe_pr_url`). "We
+           will not show you this link" must not be reported as "there is no
+           link", so the refusal is both logged and attributed here rather than
+           vanishing into a bare null.
+
+        All three keep every null attributable, which is the whole contract of
         :class:`~factory_console.domain.run_record.RunRecord`.
         """
         result = results.get(ticket_id)
         has_receipt = ticket_id in receipts
+        raw_pr_url = pr_urls.get(ticket_id)
+        pr_url = drop_unsafe_pr_url(raw_pr_url)
+        pr_url_refused = raw_pr_url is not None and pr_url is None
+        if pr_url_refused:
+            # The one case a reader most needs in the log: a security control
+            # firing on a file another process wrote. ``%r`` on both values —
+            # they are untrusted text out of ``run-state.json``.
+            _LOGGER.warning(
+                "run-state: dropping ticket %r's pr_url %r; its scheme is not one this "
+                "console will link to",
+                ticket_id,
+                raw_pr_url,
+            )
+        source_answered = run_state is not RunState.unknown or raw_pr_url is not None
         unavailable: list[PerTicketRunSourceName] = []
-        if run_state is RunState.unknown or not self._carries_pr_urls(project):
+        if not source_answered or pr_url_refused or not self._carries_pr_urls(project):
             unavailable.append(SOURCE_RUN_STATE)
         if result is None:
             unavailable.append(SOURCE_RESULTS)
@@ -186,7 +220,7 @@ class RunService:
         return RunRecord(
             ticketId=ticket_id,
             runState=run_state,
-            prUrl=pr_urls.get(ticket_id),
+            prUrl=pr_url,
             result=result,
             hasReceipt=has_receipt,
             unavailable=unavailable,

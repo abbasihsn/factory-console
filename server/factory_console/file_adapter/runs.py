@@ -94,19 +94,48 @@ def _probe(
     return candidate
 
 
-def find_results_dir(project_root: Path) -> Path | None:
-    """Return ``<project_root>/.factory/results`` if it is an in-root directory, else ``None``."""
-    return _probe(project_root / RESULTS_RELATIVE, project_root, "results", want_dir=True)
+def find_results_dir(project_root: Path, *, resolved_root: Path | None = None) -> Path | None:
+    """Return ``<project_root>/.factory/results`` if it is an in-root directory, else ``None``.
+
+    ``resolved_root`` is :func:`_probe`'s optimisation-only pre-resolved root: a
+    caller that already resolved the root passes it so this probe does not walk
+    and stat the whole component chain again for the same invariant answer.
+    """
+    return _probe(
+        project_root / RESULTS_RELATIVE,
+        project_root,
+        "results",
+        want_dir=True,
+        resolved_root=resolved_root,
+    )
 
 
-def find_receipts_dir(project_root: Path) -> Path | None:
-    """Return ``<project_root>/.factory/receipts`` if it is an in-root directory, else ``None``."""
-    return _probe(project_root / RECEIPTS_RELATIVE, project_root, "receipts", want_dir=True)
+def find_receipts_dir(project_root: Path, *, resolved_root: Path | None = None) -> Path | None:
+    """Return ``<project_root>/.factory/receipts`` if it is an in-root directory, else ``None``.
+
+    Takes the same optimisation-only ``resolved_root`` as :func:`find_results_dir`.
+    """
+    return _probe(
+        project_root / RECEIPTS_RELATIVE,
+        project_root,
+        "receipts",
+        want_dir=True,
+        resolved_root=resolved_root,
+    )
 
 
-def find_last_stop_file(project_root: Path) -> Path | None:
-    """Return ``<project_root>/.factory/last-stop.json`` if it is an in-root file, else ``None``."""
-    return _probe(project_root / LAST_STOP_RELATIVE, project_root, "last-stop", want_dir=False)
+def find_last_stop_file(project_root: Path, *, resolved_root: Path | None = None) -> Path | None:
+    """Return ``<project_root>/.factory/last-stop.json`` if it is an in-root file, else ``None``.
+
+    Takes the same optimisation-only ``resolved_root`` as :func:`find_results_dir`.
+    """
+    return _probe(
+        project_root / LAST_STOP_RELATIVE,
+        project_root,
+        "last-stop",
+        want_dir=False,
+        resolved_root=resolved_root,
+    )
 
 
 def _load_json_object(path: Path, artifact: str) -> dict[str, Any] | None:
@@ -205,6 +234,18 @@ def read_result_in(
             "lane result: %s carries none of the modelled fields; treating it as absent", path
         )
         return None
+    raw_pr_url = document.get("pr_url")
+    if isinstance(raw_pr_url, str) and raw_pr_url and summary.prUrl is None:
+        # ``RunResultSummary`` refused the url's scheme. Logged for the same
+        # reason ``_log_unsafe_id`` is: a security control that fires silently is
+        # indistinguishable from an ordinary "this lane opened no PR", which
+        # leaves an operator nothing to investigate. ``%r`` — untrusted file text.
+        _LOGGER.warning(
+            "lane result: %s carries a pr_url %r whose scheme is not one this console will "
+            "link to; dropping it",
+            path,
+            raw_pr_url,
+        )
     return summary
 
 
@@ -294,7 +335,9 @@ def read_last_stop(project_root: Path) -> LastStop | None:
         return LastStop()
 
 
-def find_run_state_path(source: RunStateSource | None, project_root: Path) -> Path | None:
+def find_run_state_path(
+    source: RunStateSource | None, project_root: Path, *, resolved_root: Path | None = None
+) -> Path | None:
     """Return the run-state source's path if it is in-root, else ``None``.
 
     Run-state is the fourth artifact this module surfaces, and it goes through the
@@ -314,10 +357,18 @@ def find_run_state_path(source: RunStateSource | None, project_root: Path) -> Pa
     ``found: false`` beside ticket states read out of it. The check is kept here
     anyway because this function accepts a caller-supplied source and must not
     depend on its provenance.
+
+    Takes the same optimisation-only ``resolved_root`` as :func:`find_results_dir`.
     """
     if source is None:
         return None
-    return _probe(source.path, project_root, "run-state", want_dir=source.kind == "directory")
+    return _probe(
+        source.path,
+        project_root,
+        "run-state",
+        want_dir=source.kind == "directory",
+        resolved_root=resolved_root,
+    )
 
 
 def read_pr_urls(source: RunStateSource | None, project_root: Path) -> dict[str, str]:

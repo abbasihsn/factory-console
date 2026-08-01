@@ -37,7 +37,7 @@ result when one becomes reachable.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Final, Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -45,13 +45,23 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from factory_console.domain.run_state import RunState
 from factory_console.domain.ticket import TicketId
 
-SOURCE_RUN_STATE = "runState"
-SOURCE_RESULTS = "results"
-SOURCE_RECEIPTS = "receipts"
-SOURCE_LAST_STOP = "lastStop"
+# ``Final`` so each constant keeps its LITERAL type rather than widening to
+# ``str``: that is what lets them be used where :data:`RunSourceName` or the
+# narrower :data:`PerTicketRunSourceName` is required, and what makes a mapping
+# built from them satisfy ``Mapping[RunSourceName, ...]``.
+SOURCE_RUN_STATE: Final = "runState"
+SOURCE_RESULTS: Final = "results"
+SOURCE_RECEIPTS: Final = "receipts"
+SOURCE_LAST_STOP: Final = "lastStop"
 
 RunSourceName = Literal["runState", "results", "receipts", "lastStop"]
-"""The four run-artifact names, as a closed type — the keys of the ``sources`` object."""
+"""The four run-artifact names, as a closed type — the keys of the ``sources`` object.
+
+Used as the KEY type of every ``source_paths`` mapping, not merely documented as
+such: the list endpoint indexes that mapping by the four constants directly, so a
+missing or misspelled key is a 500 rather than a ``found: false``. Typing the key
+closes that gap at the seam instead of leaving it to runtime.
+"""
 
 PerTicketRunSourceName = Literal["runState", "results", "receipts"]
 """The subset of :data:`RunSourceName` that can appear in :attr:`RunRecord.unavailable`.
@@ -90,8 +100,16 @@ specifically, and a PR lives at an http(s) address.
 """
 
 
-def _drop_unsafe_pr_url(value: str | None) -> str | None:
+def drop_unsafe_pr_url(value: str | None) -> str | None:
     """Return ``value`` if it is a safe link, else ``None``.
+
+    PUBLIC because the drop must be ATTRIBUTABLE, not merely applied: the
+    validators below are the last line of defence, but a caller that only sees
+    the validated value cannot tell a refused url from an absent one.
+    :meth:`~factory_console.services.run_service.RunService._compose` calls this
+    itself, against the raw value, so it can log the refusal and name
+    ``runState`` in :attr:`RunRecord.unavailable` — otherwise a hostile url
+    would leave the record claiming "the factory opened no PR".
 
     ``pr_url`` is arbitrary text out of a file ANOTHER process writes, and its
     whole purpose is to be rendered as a link — so it is validated here, at the
@@ -123,7 +141,28 @@ def _drop_unsafe_pr_url(value: str | None) -> str | None:
     return value
 
 
-class RunResultSummary(BaseModel):
+class _PrUrlValidated(BaseModel):
+    """Mixin for the models carrying a ``prUrl``, holding the ONE scheme check.
+
+    Both :class:`RunResultSummary` and :class:`RunRecord` surface a ``prUrl``
+    read out of a factory-written file, and both must apply the same allowlist.
+    Declared once here rather than copied into each: two copies of a security
+    check are two places to fix when the rule changes, and a third model would
+    make it three. ``check_fields=False`` because the field itself belongs to
+    the subclasses — this mixin declares no fields of its own and carries no
+    ``model_config``, so each subclass keeps its own (``extra="ignore"`` for the
+    factory-owned lane result, ``extra="forbid"`` for the record this console
+    itself shapes).
+    """
+
+    @field_validator("prUrl", check_fields=False)
+    @classmethod
+    def _validate_pr_url(cls, value: str | None) -> str | None:
+        """Drop a ``prUrl`` whose scheme is not in :data:`PR_URL_SCHEMES`."""
+        return drop_unsafe_pr_url(value)
+
+
+class RunResultSummary(_PrUrlValidated):
     """The named subset of a lane result (``.factory/results/<id>.json``).
 
     Provenance — WHY these fields and not others:
@@ -169,12 +208,6 @@ class RunResultSummary(BaseModel):
     verdict: str | None = None
     reviewIterations: int | None = Field(default=None, validation_alias="review_iterations")
 
-    @field_validator("prUrl")
-    @classmethod
-    def _validate_pr_url(cls, value: str | None) -> str | None:
-        """Drop a ``prUrl`` whose scheme is not in :data:`PR_URL_SCHEMES`."""
-        return _drop_unsafe_pr_url(value)
-
 
 class LastStop(BaseModel):
     """Why the last factory run stopped (``.factory/last-stop.json``), minimally.
@@ -200,7 +233,7 @@ class LastStop(BaseModel):
     reason: str | None = None
 
 
-class RunRecord(BaseModel):
+class RunRecord(_PrUrlValidated):
     """What the factory did for one manifest ticket, across all its artifacts.
 
     ``hasReceipt`` is presence only: ``.factory/receipts/<id>.json`` either exists
@@ -223,9 +256,3 @@ class RunRecord(BaseModel):
     result: RunResultSummary | None = None
     hasReceipt: bool = False
     unavailable: list[PerTicketRunSourceName] = Field(default_factory=list)
-
-    @field_validator("prUrl")
-    @classmethod
-    def _validate_pr_url(cls, value: str | None) -> str | None:
-        """Drop a ``prUrl`` whose scheme is not in :data:`PR_URL_SCHEMES`."""
-        return _drop_unsafe_pr_url(value)

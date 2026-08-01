@@ -29,6 +29,7 @@ import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
+from typing import NamedTuple
 
 from factory_console.domain import RunState
 from factory_console.domain.run_state_source import (
@@ -89,6 +90,54 @@ RUN_STATE_RELATIVE_LOCATIONS: tuple[Path, ...] = tuple(
 )
 
 
+class RunStateResolution(NamedTuple):
+    """The outcome of probing a project for its run-state artifact.
+
+    ``source`` is the resolved artifact, or ``None``. ``refused`` distinguishes
+    the TWO ways ``source`` can be ``None``, which are NOT the same fact and must
+    not be collapsed into one value:
+
+    - ``refused=False`` — the project HAS no run-state artifact. Every ticket is
+      genuinely ``unknown``, and the write gate treats ``unknown`` as editable.
+    - ``refused=True`` — an artifact IS present but resolves outside the project
+      root, so this console will not read it. The tickets' real states are
+      unreadable, NOT absent.
+
+    Reads degrade identically either way (no states, no PR urls, ``found:
+    false``). The write path must not: authorizing an edit on ``unknown`` when
+    the states merely could not be read would let a
+    ``.factory -> ~/somewhere-else`` project edit tickets a factory lane owns.
+    :func:`~factory_console.file_adapter.write_gate.ensure_mutable` reads
+    ``refused`` and fails CLOSED.
+    """
+
+    source: RunStateSource | None
+    refused: bool
+
+
+def resolve_run_state_source(project_root: Path) -> RunStateResolution:
+    """Return the project's run-state source AND whether one was refused.
+
+    The resolution :func:`find_run_state_source` performs, with the reason an
+    absent source is absent preserved — see :class:`RunStateResolution`. Callers
+    that only read run-state want :func:`find_run_state_source`; callers that
+    AUTHORIZE on it want this.
+    """
+    for kind, relative in RUN_STATE_SOURCE_LOCATIONS:
+        candidate = project_root / relative
+        present = candidate.is_file() if kind == "json" else candidate.is_dir()
+        if not present:
+            continue
+        if not is_contained(candidate, project_root):
+            _LOGGER.warning(
+                "run-state: %s resolves outside the project root; treating it as absent",
+                candidate,
+            )
+            return RunStateResolution(source=None, refused=True)
+        return RunStateResolution(source=RunStateSource(kind=kind, path=candidate), refused=False)
+    return RunStateResolution(source=None, refused=False)
+
+
 def find_run_state_source(project_root: Path) -> RunStateSource | None:
     """Return the project's resolved run-state source, or ``None`` if it has none.
 
@@ -125,20 +174,14 @@ def find_run_state_source(project_root: Path) -> RunStateSource | None:
     A source that is skipped for containment does NOT fall through to a
     lower-precedence location: a project whose highest-precedence run-state
     escapes the root has an unreadable run-state, not a different one.
+
+    This return collapses "absent" and "refused" into one ``None``, which is
+    right for a READ (both degrade identically) and wrong for an
+    AUTHORIZATION, where refusing to read must not read as permission. Callers
+    that gate writes use :func:`resolve_run_state_source` and act on its
+    ``refused`` flag instead.
     """
-    for kind, relative in RUN_STATE_SOURCE_LOCATIONS:
-        candidate = project_root / relative
-        present = candidate.is_file() if kind == "json" else candidate.is_dir()
-        if not present:
-            continue
-        if not is_contained(candidate, project_root):
-            _LOGGER.warning(
-                "run-state: %s resolves outside the project root; treating it as absent",
-                candidate,
-            )
-            return None
-        return RunStateSource(kind=kind, path=candidate)
-    return None
+    return resolve_run_state_source(project_root).source
 
 
 def find_run_state_dir(project_root: Path) -> Path | None:

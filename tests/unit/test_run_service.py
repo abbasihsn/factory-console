@@ -230,6 +230,55 @@ def test_a_project_with_no_run_state_artifact_names_run_state() -> None:
     assert "runState" in record.unavailable
 
 
+@pytest.mark.parametrize("bad_url", ["javascript:alert(1)", "https://exa[mple.test/pull/1"])
+def test_a_refused_pr_url_names_run_state_so_the_null_stays_attributable(
+    bad_url: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Dropping the url is right; dropping it SILENTLY is not. With the state known
+    # and the JSON form able to carry urls, an unnamed source would make the record
+    # read "the factory opened no PR" — a fact — when it means "this console
+    # refused the link". The refusal is named AND logged, so a security control
+    # firing is distinguishable from an ordinary absence.
+    reader = FakeRunArtifactReader(pr_urls={"T-100": bad_url})
+    service, project = _service(reader, run_states={"T-100": RunState.merged})
+
+    with caplog.at_level("WARNING"):
+        record = service.list_records(project)[0]
+
+    assert record.prUrl is None
+    assert "runState" in record.unavailable
+    assert any("pr_url" in message for message in caplog.messages), (
+        "a refused pr_url must leave the operator a trace to investigate"
+    )
+
+
+def test_an_unrecognised_status_that_still_carried_a_pr_url_does_not_name_run_state() -> None:
+    # ``read_json_run_state`` harvests a ``pr_url`` from an entry whose ``status``
+    # this console does not recognise, precisely so a renamed factory status still
+    # surfaces its PR link. Such a ticket resolves ``unknown`` while the source
+    # plainly DID answer — naming it would render "run-state unavailable" beside a
+    # live link read out of that same file.
+    reader = FakeRunArtifactReader(pr_urls={"T-100": "https://example.test/pull/7"})
+    service, project = _service(reader, run_states={"T-100": RunState.unknown})
+
+    record = service.list_records(project)[0]
+
+    assert record.runState is RunState.unknown
+    assert record.prUrl == "https://example.test/pull/7"
+    assert "runState" not in record.unavailable
+
+
+def test_an_unknown_state_with_no_pr_url_still_names_run_state() -> None:
+    # The other side of the same rule: with nothing at all from the source, the
+    # ``unknown`` state is a silence and must stay attributable.
+    service, project = _service(run_states={"T-100": RunState.unknown})
+
+    record = service.list_records(project)[0]
+
+    assert record.prUrl is None
+    assert "runState" in record.unavailable
+
+
 # --------------------------------------------------------------------------- #
 # get_record — membership is the MANIFEST's answer
 # --------------------------------------------------------------------------- #

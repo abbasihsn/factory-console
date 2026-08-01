@@ -26,6 +26,7 @@ from factory_console.domain.run_record import (
     SOURCE_RUN_STATE,
     LastStop,
     RunResultSummary,
+    RunSourceName,
 )
 from factory_console.file_adapter import runs
 from factory_console.file_adapter.path_safety import PathTraversal
@@ -39,7 +40,7 @@ class RealRunArtifactReader:
     Stateless and cheap to construct; ``create_app`` binds one for the process.
     """
 
-    def source_paths(self, project: Project) -> Mapping[str, Path | None]:
+    def source_paths(self, project: Project) -> Mapping[RunSourceName, Path | None]:
         """Return each run artifact's absolute path, or ``None`` where it is absent.
 
         ``runState`` goes through the same containment probe as the other three
@@ -49,13 +50,21 @@ class RealRunArtifactReader:
         source that resolves outside the project root reports absent here instead
         of reporting a lexical, still-in-root-looking path for a file the reader
         would refuse to read.
+
+        All four probes compare against ONE resolution of the project root, for
+        the same reason :meth:`read_results` batches: the root is invariant across
+        them, and re-deriving it per probe walks and stats its whole component
+        chain four times for one answer.
         """
         root = project.rootPath
+        resolved_root = self._resolve_root(root)
         return {
-            SOURCE_RUN_STATE: runs.find_run_state_path(project.runStateSource, root),
-            SOURCE_RESULTS: runs.find_results_dir(root),
-            SOURCE_RECEIPTS: runs.find_receipts_dir(root),
-            SOURCE_LAST_STOP: runs.find_last_stop_file(root),
+            SOURCE_RUN_STATE: runs.find_run_state_path(
+                project.runStateSource, root, resolved_root=resolved_root
+            ),
+            SOURCE_RESULTS: runs.find_results_dir(root, resolved_root=resolved_root),
+            SOURCE_RECEIPTS: runs.find_receipts_dir(root, resolved_root=resolved_root),
+            SOURCE_LAST_STOP: runs.find_last_stop_file(root, resolved_root=resolved_root),
         }
 
     def read_last_stop(self, project: Project) -> LastStop | None:
@@ -79,7 +88,7 @@ class RealRunArtifactReader:
         """
         root = project.rootPath
         resolved_root = self._resolve_root(root)
-        results_dir = runs.find_results_dir(root)
+        results_dir = runs.find_results_dir(root, resolved_root=resolved_root)
         found: dict[str, RunResultSummary] = {}
         for ticket_id in ticket_ids:
             try:
@@ -101,7 +110,7 @@ class RealRunArtifactReader:
         """
         root = project.rootPath
         resolved_root = self._resolve_root(root)
-        receipts_dir = runs.find_receipts_dir(root)
+        receipts_dir = runs.find_receipts_dir(root, resolved_root=resolved_root)
         present: set[str] = set()
         for ticket_id in ticket_ids:
             try:

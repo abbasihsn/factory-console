@@ -28,6 +28,7 @@ from factory_console.domain.run_record import (
     SOURCE_RUN_STATE,
     LastStop,
     RunResultSummary,
+    RunSourceName,
 )
 
 
@@ -37,13 +38,13 @@ class FakeRunArtifactReader:
     def __init__(
         self,
         *,
-        sources: Mapping[str, Path | None] | None = None,
+        sources: Mapping[RunSourceName, Path | None] | None = None,
         last_stop: LastStop | None = None,
         pr_urls: Mapping[str, str] | None = None,
         results: Mapping[str, RunResultSummary] | None = None,
         receipts: Iterable[str] = (),
     ) -> None:
-        self._sources: Mapping[str, Path | None] = (
+        self._sources: Mapping[RunSourceName, Path | None] = (
             sources
             if sources is not None
             else {
@@ -58,7 +59,7 @@ class FakeRunArtifactReader:
         self._results: Mapping[str, RunResultSummary] = results or {}
         self._receipts = frozenset(receipts)
 
-    def source_paths(self, project: Project) -> Mapping[str, Path | None]:
+    def source_paths(self, project: Project) -> Mapping[RunSourceName, Path | None]:
         """Return the configured source paths, ignoring ``project``."""
         return self._sources
 

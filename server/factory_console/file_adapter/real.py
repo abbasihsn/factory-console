@@ -51,8 +51,8 @@ from factory_console.file_adapter.path_safety import PathTraversal
 from factory_console.file_adapter.projection import TicketProjection
 from factory_console.file_adapter.roadmap_parse import parse_milestones
 from factory_console.file_adapter.run_state import (
-    find_run_state_source,
     probe_ticket_state_from_source,
+    resolve_run_state_source,
     run_state_resolver,
 )
 from factory_console.file_adapter.search import rank_tickets, to_search_hits
@@ -113,16 +113,19 @@ class RealFileAdapter:
         which propagates. ``roadmapPath`` is the first of ``ROADMAP.md`` at the
         root or under ``docs/`` that is a file, else ``None``; ``runStateSource``
         is resolved ONCE via
-        :func:`~factory_console.file_adapter.run_state.find_run_state_source`
+        :func:`~factory_console.file_adapter.run_state.resolve_run_state_source`
         (the factory's ``.factory/run-state.json`` first, then the legacy marker
         directories) and ``runStateDir`` is derived from it — the same path when
         that source is a directory, ``None`` when it is the JSON file, keeping
         ``runStateDir``'s "the marker directory, if any" meaning exact rather
-        than probing the filesystem a second time; ``discoveredAt`` is stamped
-        timezone-aware in UTC.
+        than probing the filesystem a second time. That same one resolution also
+        answers ``runStateRefused`` — whether a run-state artifact IS present but
+        resolves outside the root — so the write gate can tell "no run-state" from
+        "run-state this console won't read" without a second probe.
+        ``discoveredAt`` is stamped timezone-aware in UTC.
         """
         resolved = find_project_root(root)
-        source = find_run_state_source(resolved)
+        source, refused = resolve_run_state_source(resolved)
         return Project(
             rootPath=resolved,
             ticketsManifestPath=resolved / "docs" / "planning" / "tickets.json",
@@ -130,6 +133,7 @@ class RealFileAdapter:
             roadmapPath=self._find_roadmap(resolved),
             runStateDir=source.path if source is not None and source.kind == "directory" else None,
             runStateSource=source,
+            runStateRefused=refused,
             discoveredAt=datetime.now(UTC),
         )
 

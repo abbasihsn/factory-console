@@ -55,7 +55,10 @@ _JSON_IDS = {
 
 
 def _make_project(
-    *, run_state_dir: Path | None, run_state_source: RunStateSource | None = None
+    *,
+    run_state_dir: Path | None,
+    run_state_source: RunStateSource | None = None,
+    run_state_refused: bool = False,
 ) -> Project:
     """Build a Project rooted at the fixture with the given run-state source."""
     return Project(
@@ -65,6 +68,7 @@ def _make_project(
         roadmapPath=_FIXTURE_ROOT / "ROADMAP.md",
         runStateDir=run_state_dir,
         runStateSource=run_state_source,
+        runStateRefused=run_state_refused,
         discoveredAt=datetime(2026, 7, 25, 12, 0, 0),
     )
 
@@ -206,6 +210,39 @@ def test_ensure_mutable_no_run_state_dir_does_not_raise_path_traversal(bad_id: s
         "with runStateDir=None the prober resolves unknown before the id is checked, "
         "so the gate must return unknown, not raise PathTraversal"
     )
+
+
+# --------------------------------------------------------------------------- #
+# ensure_mutable — a REFUSED run-state source fails CLOSED, not open
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("ticket_id", [*_TODO_IDS, "CAD-999", "CAD-131"])
+def test_ensure_mutable_refuses_every_ticket_when_the_run_state_source_was_refused(
+    ticket_id: str,
+) -> None:
+    # A run-state artifact that resolves OUTSIDE the project root leaves
+    # runStateSource=None, and the prober answers the mutable RunState.unknown for
+    # every ticket. "Its states could not be read" must not authorize a write the
+    # way "it has no states" does, so the gate refuses on runStateRefused before it
+    # ever consults the prober — otherwise a `.factory -> elsewhere` symlink would
+    # make every ticket editable, including ones a lane owns.
+    project = _make_project(run_state_dir=None, run_state_refused=True)
+    with pytest.raises(TicketNotMutable) as excinfo:
+        ensure_mutable(project, ticket_id)
+    assert excinfo.value.status == 409
+    assert excinfo.value.code == "ticket_not_mutable"
+
+
+def test_ensure_mutable_refused_source_beats_an_otherwise_mutable_todo_state() -> None:
+    # The same fixture id is mutable when the directory source resolves normally,
+    # so the refusal — not the ticket's state — is what closes the gate.
+    ticket_id = _TODO_IDS[0]
+    assert ensure_mutable(_make_project(run_state_dir=_FIXTURE_RUN_STATE_DIR), ticket_id) == (
+        RunState.todo
+    )
+    with pytest.raises(TicketNotMutable):
+        ensure_mutable(_make_project(run_state_dir=None, run_state_refused=True), ticket_id)
 
 
 # --------------------------------------------------------------------------- #
