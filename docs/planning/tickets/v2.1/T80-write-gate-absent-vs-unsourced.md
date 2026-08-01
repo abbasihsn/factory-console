@@ -44,3 +44,67 @@ This is the eighth time in this program an empty result has had to be made disti
 ## Verification
 
 Pytest `test_write_gate.py` additions, each stated as the behaviour and not the wording — **an assertion that matches an error message's text while claiming to test a refusal is the recurring defect in this program; assert the raised type and the resulting state, and check the message separately if at all.** Cases: source present + ticket listed `merged` → refused; source present + ticket absent → refused, state is `absent`; **source absent entirely → still mutable** (this is the regression guard for the deliberate permission, and it is the one a fix aimed only at "stop letting merged tickets through" would break); ticket listed `todo` → mutable. A test at the API level that a PUT to a merged ticket in a project with a real `run-state.json` returns the gate's error status — pre-T78 that request succeeded, so this is the end-to-end proof. Vitest: `isEditable('absent') === false`; `RunStateBadge` renders `absent`. `make lint`, `pytest`, `pnpm check`, `pnpm test` green.
+
+---
+
+## Amendment, 2026-08-01 — two cases the rule above did not consider
+
+T80's deep review (2 rounds) left **two high findings open by design**, both marked as needing a
+product decision rather than an auto-fix. The decision was taken on 2026-08-01 and is recorded here,
+in this ticket, because **both gaps are in this ticket's own code and must be closed before it
+merges**. They were briefly drafted as a follow-up ticket (T87); that was a planning error — a fix
+ticket cannot depend on the merge it is required to unblock.
+
+**The rule above is unchanged.** A source that lists *other* tickets but not this one still refuses
+the write, for the reasons already given, including the accepted consequence for hand-added tickets.
+
+### Gap 1 — a source that lists NOTHING makes the whole project read-only
+
+`probe_ticket_state` ends `return RunState.absent` for any readable run-state directory with no
+marker. An **empty but valid** run-state directory therefore resolves `absent` for *every* ticket,
+and every write raises `TicketNotMutable` (409). Measured on this branch:
+
+```
+empty-but-valid run-state dir, probe T01 -> RunState.absent
+                               probe T99 -> RunState.absent
+                               probe ANY -> RunState.absent
+```
+
+**This collides with this ticket's own stated invariant**, quoted from §Context above: *"Keeping
+`unknown → mutable` is deliberate and must survive this ticket: it is what lets the console work on a
+plan the factory has never touched."*
+
+The rule reasoned about *"a source exists, this ticket is not in it"*, which presumes the source lists
+**something**. When it lists nothing, no authority is being exercised. **A source that names nobody
+says nothing about anybody.**
+
+**Fix:** a *vacuous* resolved source — a run-state directory containing no marker for any ticket, or a
+`tickets` object that parsed and is empty — resolves `unknown`, not `absent`. A source with at least
+one entry, queried for an id it lacks, still resolves `absent`.
+
+### Gap 2 — the console cannot un-create its own ticket
+
+`create_ticket` applies no gate; `edit_ticket` and `delete_ticket` gate first. So a newly created id
+resolves `absent` immediately and **both edit and delete return 409**. A mistyped new ticket is
+unrecoverable through the UI that created it.
+
+This differs from the hand-added case accepted above in the way that matters: **the console itself
+created it.** `create` is ungated precisely so a fresh ticket can be added, and the gate then refuses
+to undo what it just permitted.
+
+**Fix:** permit `delete` on `absent` via a separate `ensure_deletable`, **not** by widening
+`MUTABLE_STATES`. Deleting a ticket the run-state does not track cannot orphan a run-state entry.
+Edit stays refused, so the rule above holds.
+
+### Verification for the amendment
+
+Added to §Verification, same discipline — assert behaviour and resulting state, never wording:
+
+- empty run-state **directory**, probe any id → `unknown`, `ensure_mutable` **permits** — gap 1's guard;
+- directory with a marker for `T01` only, probe `T02` → `absent`, **refuses** — **the original rule,
+  asserted as still true; this is the test that fails if the amendment over-corrects**;
+- `run-state.json` with `tickets: {}` → `unknown`, permits;
+- `run-state.json` with one entry, probe a different id → `absent`, refuses;
+- create-then-**delete** in a project with a populated source → **succeeds**;
+- create-then-**edit** the same ticket → still **refused**, proving the edit gate did not widen;
+- `isEditable('absent') === false` unchanged.

@@ -1122,7 +1122,7 @@
       "depends_on": [
         "T78"
       ],
-      "provides": "RunState.absent; ensure_mutable refuses a ticket a present run-state does not list, while a project with no run-state source stays fully editable.",
+      "provides": "RunState.absent; ensure_mutable refuses a ticket a present run-state does not list, while a project with no run-state source stays fully editable. AMENDED 2026-08-01: a vacuous run-state source resolves unknown rather than absent, and delete is permitted on absent via ensure_deletable — the two high findings from T80's own review, folded in because they must be fixed before this ticket merges.",
       "path": "docs/planning/tickets/v2.1/T80-write-gate-absent-vs-unsourced.md",
       "status": "todo"
     },
@@ -1134,9 +1134,14 @@
       "depends_on": [
         "T78"
       ],
-      "provides": "Per-ticket run records from run-state + results + receipts + last-stop, with a sources block and a per-record unavailable list so a null field is attributable.",
+      "provides": "SUPERSEDED 2026-08-01 by T88+T89+T90 after four lane runs absorbed 33 review fixes without converging; a 2400-turn ceiling hit the 90-minute wall clock first, so turns were never the binding constraint. Work preserved on rescue/T81-regressed-c11052f.",
       "path": "docs/planning/tickets/v2.1/T81-runs-endpoint.md",
-      "status": "todo"
+      "status": "superseded",
+      "superseded_by": [
+        "T88",
+        "T89",
+        "T90"
+      ]
     },
     {
       "id": "T82",
@@ -1156,7 +1161,7 @@
       "track": "frontend",
       "milestone": "v2.1",
       "depends_on": [
-        "T81"
+        "T90"
       ],
       "provides": "Route listing every ticket with run-state, PR link and lane outcome; SourcesBanner rendering the no-run-data case explicitly instead of an empty table.",
       "path": "docs/planning/tickets/v2.1/T83-runs-view.md",
@@ -1198,6 +1203,42 @@
       ],
       "provides": "architecture.md corrected on the run-state source and state vocabulary; usage.md gains runs, spend and the changed editability rule; README reflects the new views.",
       "path": "docs/planning/tickets/v2.1/T86-v2.1-docs.md",
+      "status": "todo"
+    },
+    {
+      "id": "T88",
+      "title": "Read the factory's lane artifacts beside run-state",
+      "track": "backend",
+      "milestone": "v2.1",
+      "depends_on": [
+        "T78"
+      ],
+      "provides": "file_adapter/runs.py reads lane results, receipts and last-stop artifacts as typed records, tolerant of every absent or malformed file, writing nothing.",
+      "path": "docs/planning/tickets/v2.1/T88-runs-reader.md",
+      "status": "todo"
+    },
+    {
+      "id": "T89",
+      "title": "The run record: one typed record per manifest ticket",
+      "track": "backend",
+      "milestone": "v2.1",
+      "depends_on": [
+        "T88"
+      ],
+      "provides": "domain/run_record.py and services/run_service.py compose one run record per manifest ticket, with every absent source named rather than silently blank.",
+      "path": "docs/planning/tickets/v2.1/T89-run-record-domain.md",
+      "status": "todo"
+    },
+    {
+      "id": "T90",
+      "title": "GET /api/v1/runs",
+      "track": "backend",
+      "milestone": "v2.1",
+      "depends_on": [
+        "T89"
+      ],
+      "provides": "GET /api/v1/runs returns one run record per manifest ticket, read-only.",
+      "path": "docs/planning/tickets/v2.1/T90-runs-endpoint.md",
       "status": "todo"
     }
   ]
