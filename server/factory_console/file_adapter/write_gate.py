@@ -16,6 +16,13 @@ run-state directory (read-only)"). :func:`ensure_mutable` is the one gate every
 mutating write passes before touching disk, and :class:`TicketNotMutable` is the
 ONE canonical error for the non-todo condition across the whole write path.
 
+DELETE is the single documented exception, and it is an exception of ALLOWLIST, not
+of mechanism: :func:`ensure_deletable` runs the same resolution and raises the same
+error, over :data:`DELETABLE_STATES` — :data:`MUTABLE_STATES` plus ``absent``. See
+that constant for why (T80's amendment: an ungated ``create`` must not mint a ticket
+the console cannot delete). ``absent`` stays out of :data:`MUTABLE_STATES`, so edit
+is unaffected.
+
 This module REUSES the read-only, source-aware prober
 (:func:`~factory_console.file_adapter.run_state.probe_ticket_state_from_source`)
 to resolve the state — it never re-implements run-state detection and never
@@ -42,12 +49,25 @@ from factory_console.file_adapter.run_state import probe_ticket_state_from_sourc
 # run-state directory (read-only)".
 MUTABLE_STATES = (RunState.todo, RunState.unknown)
 
+# The DELETE-path allowlist: everything editable, PLUS ``absent``. Deliberately a
+# separate tuple rather than a widened :data:`MUTABLE_STATES` — editing a ticket a
+# resolved run-state source does not list stays refused (T80's rule), while deleting
+# it is permitted, because ``create_ticket`` is ungated and a ticket the console
+# just minted resolves ``absent`` the moment the project has a populated source the
+# factory has not re-seeded. Refusing the delete too would leave a mistyped new
+# ticket unrecoverable through the very UI that created it. Deleting a ticket the
+# run-state does not track cannot orphan a run-state entry, so nothing the factory
+# owns is at risk (T80 amendment, gap 2).
+DELETABLE_STATES = (*MUTABLE_STATES, RunState.absent)
+
 
 class TicketNotMutable(FactoryConsoleError):
     """A ticket cannot be edited because its factory run-state is not mutable.
 
     Raised by :func:`ensure_mutable` when a ticket's resolved :class:`RunState`
-    is outside :data:`MUTABLE_STATES` (any state but ``todo``/``unknown``). This
+    is outside :data:`MUTABLE_STATES` (any state but ``todo``/``unknown``), and by
+    :func:`ensure_deletable` when it is outside :data:`DELETABLE_STATES` (the same
+    set plus ``absent``). This
     is the single canonical write-path error for the non-todo condition; mapped to
     HTTP 409 (the edit conflicts with the ticket's current lifecycle state).
     ``details`` echoes the (user-supplied) ``ticketId`` and the resolved
@@ -111,8 +131,44 @@ def ensure_mutable(project: Project, ticket_id: str) -> RunState:
             point of use (as ``ticket_md``/``run_state`` do), never rely on this
             gate for path safety.
     """
+    return _ensure_state_allowed(project, ticket_id, MUTABLE_STATES)
+
+
+def ensure_deletable(project: Project, ticket_id: str) -> RunState:
+    """Return ``ticket_id``'s :class:`RunState` iff the ticket may be DELETED.
+
+    Identical to :func:`ensure_mutable` — same resolution, same
+    :class:`TicketNotMutable` (409) — except that it authorizes against
+    :data:`DELETABLE_STATES`, which additionally allows :attr:`RunState.absent`.
+    Delete is the one write the console must still offer for a ticket a resolved
+    run-state source does not list, because ``create_ticket`` is ungated: a ticket
+    the console just created resolves ``absent`` in any project whose source the
+    factory has not re-seeded, and without this gate the console could create a
+    ticket it could never remove. Edit remains refused for ``absent`` via
+    :func:`ensure_mutable`; the two allowlists are separate precisely so widening
+    delete cannot widen edit.
+
+    Raises:
+        TicketNotMutable: if the resolved state is not in :data:`DELETABLE_STATES`
+            — HTTP 409.
+        PathTraversal: exactly as :func:`ensure_mutable` (see its note); this gate
+            is no more a path-safety guarantee than that one.
+    """
+    return _ensure_state_allowed(project, ticket_id, DELETABLE_STATES)
+
+
+def _ensure_state_allowed(
+    project: Project, ticket_id: str, allowed: tuple[RunState, ...]
+) -> RunState:
+    """Resolve ``ticket_id``'s state and return it iff it is in ``allowed``.
+
+    The shared body of :func:`ensure_mutable` and :func:`ensure_deletable`: ONE
+    resolution path and ONE error construction, so the edit and delete gates can
+    differ only in their allowlist and never drift in how they resolve or how they
+    refuse.
+    """
     run_state = probe_ticket_state_from_source(project.runStateSource, ticket_id)
-    if run_state not in MUTABLE_STATES:
+    if run_state not in allowed:
         source_path = project.runStateSource.path if project.runStateSource else None
         raise TicketNotMutable(ticket_id, run_state, source_path=source_path)
     return run_state

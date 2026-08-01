@@ -19,8 +19,11 @@ the four single-purpose write modules rather than parsing manifests, rendering
   side-effect-free :class:`~factory_console.domain.write.DiffPreview` the UI and
   dry-run show.
 * :func:`~factory_console.file_adapter.write_gate.ensure_mutable` is the todo-only
-  authorization gate (409 ``TicketNotMutable`` for ``in-flight``/``ready``/
-  ``merged``).
+  authorization gate for an EDIT (409 ``TicketNotMutable`` for ``in-flight``/
+  ``ready``/``merged``, and for ``absent``);
+  :func:`~factory_console.file_adapter.write_gate.ensure_deletable` is its
+  delete-path sibling, identical but for also permitting ``absent`` — see
+  :meth:`RealFileWriter.delete_ticket`.
 * :func:`~factory_console.file_adapter.atomic_write.apply_changes` is the ONE
   sanctioned write site — this class never opens, writes, or unlinks a file
   itself, and that layer independently refuses any run-state path.
@@ -92,13 +95,16 @@ class RealFileWriter:
         mutable ``unknown``, but in a project WITH a resolved source it is
         :attr:`~factory_console.domain.run_state.RunState.absent` — the source was
         consulted and does not list an id the factory has never seeded. Creating is
-        therefore always allowed, while a follow-up :meth:`edit_ticket` /
-        :meth:`delete_ticket` on that same fresh id is refused 409 until the factory
-        seeds it. That is the ticket's accepted consequence of refusing ``absent``
-        (T80 step 6, "a ticket in ``tickets.json`` but not in the run-state ... is now
-        refused"), pinned by ``test_create_then_edit_is_refused_while_the_source_does_not_list_it``;
-        it is called out here because this docstring previously claimed the mutable
-        ``unknown`` for every project. Raises
+        therefore always allowed, while a follow-up :meth:`edit_ticket` on that same
+        fresh id is refused 409 until the factory seeds it. That is the ticket's
+        accepted consequence of refusing ``absent`` (T80 step 6, "a ticket in
+        ``tickets.json`` but not in the run-state ... is now refused"), pinned by
+        ``test_create_then_edit_is_refused_while_the_source_does_not_list_it``.
+        :meth:`delete_ticket` is the deliberate exception — it gates on
+        :func:`~factory_console.file_adapter.write_gate.ensure_deletable`, which
+        permits ``absent``, so what create mints can always be un-created (T80's
+        amendment, gap 2). The split is called out here because this docstring once
+        claimed the mutable ``unknown`` for every project. Raises
         :class:`~factory_console.file_adapter.path_safety.PathTraversal` for an
         unsafe id and
         :class:`~factory_console.file_adapter.write_render.TicketAlreadyExists`
@@ -142,8 +148,16 @@ class RealFileWriter:
         after the delete it is gone, and :class:`WriteResult` requires ``ticket``
         set iff ``applied`` — mirroring how :class:`FakeFileWriter` snapshots the
         entry before removal.
+
+        The gate is :func:`~factory_console.file_adapter.write_gate.ensure_deletable`,
+        NOT ``ensure_mutable``: delete additionally permits
+        :attr:`~factory_console.domain.run_state.RunState.absent`, so a ticket
+        :meth:`create_ticket` just minted into a project with a populated run-state
+        source can be removed again (T80's amendment, gap 2). Every other read-only
+        state is refused here exactly as it is for an edit, and an edit of that same
+        ``absent`` ticket stays refused.
         """
-        write_gate.ensure_mutable(project, ticket_id)
+        write_gate.ensure_deletable(project, ticket_id)
         planned = write_render.render_delete(project, ticket_id)  # validates id + existence
         preview = write_diff.preview(ticket_id, planned)
         # Re-read the deleted ticket's FINAL state before the write erases its .md,

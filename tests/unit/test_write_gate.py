@@ -13,6 +13,13 @@ directory and the factory-shaped ``tests/fixtures/run_state/run-state.json``. A
 ``PathTraversal`` for an unsafe id must propagate unchanged on the directory
 source, and a final guard asserts the gate performs NO filesystem mutation on
 the fixture's run-state tree.
+
+T80's amendment adds two more axes, both pinned here: a VACUOUS source — a
+run-state directory holding no marker at all, or a ``tickets: {}`` JSON — lists
+nobody and so resolves the mutable ``unknown`` for every id (with the
+one-entry-only cases asserted alongside as the guard against over-correcting),
+and :func:`ensure_deletable` permits ``absent`` where :func:`ensure_mutable`
+refuses it, so an ungated ``create`` cannot mint an undeletable ticket.
 """
 
 from __future__ import annotations
@@ -25,8 +32,10 @@ import pytest
 from factory_console.domain import Project, RunState, RunStateSource
 from factory_console.file_adapter.path_safety import PathTraversal
 from factory_console.file_adapter.write_gate import (
+    DELETABLE_STATES,
     MUTABLE_STATES,
     TicketNotMutable,
+    ensure_deletable,
     ensure_mutable,
 )
 
@@ -192,6 +201,128 @@ def test_ensure_mutable_still_allows_edits_with_no_run_state_source_at_all() -> 
     # leave every ticket mutable via RunState.unknown, never absent.
     project = _make_project(run_state_dir=None)
     assert ensure_mutable(project, "CAD-999-anything") == RunState.unknown
+
+
+# --------------------------------------------------------------------------- #
+# ensure_mutable — a VACUOUS source (T80 amendment, gap 1) lists nobody -> unknown
+# --------------------------------------------------------------------------- #
+
+
+def _project_with_run_state_dir(run_state_dir: Path) -> Project:
+    """A Project whose run-state is the given (tmp) marker directory."""
+    return Project(
+        rootPath=run_state_dir.parent,
+        ticketsManifestPath=run_state_dir.parent / "docs" / "planning" / "tickets.json",
+        ticketsDir=run_state_dir.parent / "docs" / "planning" / "tickets",
+        runStateDir=run_state_dir,
+        discoveredAt=datetime(2026, 8, 1, 12, 0, 0),
+    )
+
+
+def _project_with_run_state_json(path: Path, payload: str) -> Project:
+    """A Project whose run-state is a ``run-state.json`` written with ``payload``."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload, encoding="utf-8")
+    return Project(
+        rootPath=path.parent.parent,
+        ticketsManifestPath=path.parent.parent / "docs" / "planning" / "tickets.json",
+        ticketsDir=path.parent.parent / "docs" / "planning" / "tickets",
+        runStateSource=RunStateSource(kind="json", path=path),
+        discoveredAt=datetime(2026, 8, 1, 12, 0, 0),
+    )
+
+
+def test_ensure_mutable_permits_every_ticket_when_the_directory_lists_nobody(
+    tmp_path: Path,
+) -> None:
+    # An empty-but-valid run-state directory exercises no authority over anybody, so
+    # it must resolve the mutable `unknown` — not `absent` for every ticket, which
+    # would refuse every write in the project (T80's own "unknown -> mutable must
+    # survive" invariant).
+    run_state_dir = tmp_path / "project" / ".factory" / "run-state"
+    run_state_dir.mkdir(parents=True)
+    project = _project_with_run_state_dir(run_state_dir)
+
+    for ticket_id in ("CAD-131", "CAD-999", "T01"):
+        assert ensure_mutable(project, ticket_id) == RunState.unknown
+
+
+def test_ensure_mutable_still_refuses_an_id_a_populated_directory_omits(tmp_path: Path) -> None:
+    # The regression guard for the amendment: ONE marker is enough for the directory
+    # to speak, and it does not name T02 — still refused, exactly as before.
+    run_state_dir = tmp_path / "project" / ".factory" / "run-state"
+    (run_state_dir / "todo").mkdir(parents=True)
+    (run_state_dir / "todo" / "T01").write_text("", encoding="utf-8")
+    project = _project_with_run_state_dir(run_state_dir)
+
+    assert ensure_mutable(project, "T01") == RunState.todo
+    with pytest.raises(TicketNotMutable) as exc_info:
+        ensure_mutable(project, "T02")
+    assert exc_info.value.details == {"ticketId": "T02", "runState": RunState.absent.value}
+
+
+def test_ensure_mutable_permits_every_ticket_when_the_json_lists_nobody(tmp_path: Path) -> None:
+    # The JSON form of the same rule: ``tickets: {}`` parses fine and names nobody.
+    project = _project_with_run_state_json(
+        tmp_path / "project" / ".factory" / "run-state.json",
+        '{"version": 1, "tickets": {}}',
+    )
+
+    for ticket_id in ("T01", "CAD-999"):
+        assert ensure_mutable(project, ticket_id) == RunState.unknown
+
+
+def test_ensure_mutable_still_refuses_an_id_a_populated_json_omits(tmp_path: Path) -> None:
+    project = _project_with_run_state_json(
+        tmp_path / "project" / ".factory" / "run-state.json",
+        '{"version": 1, "tickets": {"T01": {"status": "todo", "pr_url": null}}}',
+    )
+
+    assert ensure_mutable(project, "T01") == RunState.todo
+    with pytest.raises(TicketNotMutable) as exc_info:
+        ensure_mutable(project, "T02")
+    assert exc_info.value.details == {"ticketId": "T02", "runState": RunState.absent.value}
+
+
+# --------------------------------------------------------------------------- #
+# ensure_deletable — everything ensure_mutable allows, PLUS absent (gap 2)
+# --------------------------------------------------------------------------- #
+
+
+def test_ensure_deletable_permits_a_ticket_absent_from_the_source() -> None:
+    # The whole point of the second gate: `absent` is deletable though not editable,
+    # so a ticket the (ungated) create path minted can always be removed again.
+    project = _make_project(run_state_dir=_FIXTURE_RUN_STATE_DIR)
+    assert ensure_deletable(project, _ABSENT_DIRECTORY_ID) == RunState.absent
+    assert ensure_deletable(_make_json_project(), _ABSENT_JSON_ID) == RunState.absent
+
+
+def test_ensure_deletable_still_refuses_every_other_read_only_state() -> None:
+    # Widening delete for `absent` must not have widened it for a lane-owned state.
+    project = _make_project(run_state_dir=_FIXTURE_RUN_STATE_DIR)
+    for ticket_id, state in _NON_MUTABLE_IDS.items():
+        with pytest.raises(TicketNotMutable) as exc_info:
+            ensure_deletable(project, ticket_id)
+        assert exc_info.value.details == {"ticketId": ticket_id, "runState": state.value}
+
+
+def test_absent_is_deletable_but_not_mutable_at_the_allowlist_level() -> None:
+    # The structural half of the same fact, so a future edit to either tuple has to
+    # be deliberate: `absent` is in DELETABLE_STATES and NOT in MUTABLE_STATES.
+    assert RunState.absent not in MUTABLE_STATES
+    assert RunState.absent in DELETABLE_STATES
+    assert all(state in DELETABLE_STATES for state in MUTABLE_STATES)
+
+
+@pytest.mark.parametrize("state", list(RunState), ids=[s.value for s in RunState])
+def test_ensure_deletable_raises_iff_state_is_not_deletable(state: RunState) -> None:
+    project, ticket_id = _project_and_id_for(state)
+
+    if state not in DELETABLE_STATES:
+        with pytest.raises(TicketNotMutable):
+            ensure_deletable(project, ticket_id)
+    else:
+        assert ensure_deletable(project, ticket_id) == state
 
 
 # --------------------------------------------------------------------------- #

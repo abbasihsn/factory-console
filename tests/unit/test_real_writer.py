@@ -175,9 +175,10 @@ def test_create_then_edit_is_refused_while_the_source_does_not_list_it(tmp_path:
     # create has no gate, but the id it mints is in the manifest and in no run-state
     # source, so it immediately resolves RunState.absent — and `absent` is refused.
     # In a project WITH a run-state source the console can therefore create a ticket
-    # it can neither edit nor delete until the factory seeds it. This is the same
-    # case the ticket accepts for a hand-added ticket (T80 step 6); the console's own
-    # create path reaches it too. If this is ever softened (e.g. only refusing
+    # it cannot EDIT until the factory seeds it (it can still delete it — see the
+    # test below). This is the same case the ticket accepts for a hand-added ticket
+    # (T80 step 6); the console's own create path reaches it too. If this is ever
+    # softened (e.g. only refusing
     # `absent` for ids the manifest does not know), THIS is the test to change.
     writer, project = _load(tmp_path)
     assert project.runStateSource is not None  # the fixture ships a marker directory
@@ -189,9 +190,28 @@ def test_create_then_edit_is_refused_while_the_source_does_not_list_it(tmp_path:
         writer.edit_ticket(project, "CAD-210", _edit())
     assert edit_exc.value.details == {"ticketId": "CAD-210", "runState": RunState.absent.value}
 
-    with pytest.raises(TicketNotMutable) as delete_exc:
-        writer.delete_ticket(project, "CAD-210")
-    assert delete_exc.value.details == {"ticketId": "CAD-210", "runState": RunState.absent.value}
+
+def test_create_then_delete_succeeds_while_the_source_does_not_list_it(tmp_path: Path) -> None:
+    # T80's amendment, gap 2: the console must be able to un-create what it created.
+    # `create` is ungated, so in a project with a populated run-state source the fresh
+    # id resolves `absent` immediately; delete gates on `ensure_deletable`, which
+    # permits `absent`, so a mistyped new ticket is recoverable through the same UI.
+    # (Its sibling above proves the EDIT gate did not widen with it.)
+    writer, project = _load(tmp_path)
+    assert project.runStateSource is not None  # the fixture ships a marker directory
+
+    writer.create_ticket(project, _draft(id="CAD-210", milestone="v2"))
+    result = writer.delete_ticket(project, "CAD-210")
+
+    assert result.applied is True
+    assert result.ticket is not None
+    assert result.ticket.id == "CAD-210"
+    # Every trace of the mistyped ticket is gone again: .md, manifest entry, roadmap
+    # line. (The manifest's BYTES are not compared — a create+delete round trip
+    # re-serializes it, which is orthogonal to this ticket.)
+    assert not (project.ticketsDir / "CAD-210.md").exists()
+    assert "CAD-210" not in {s.id for s in RealFileAdapter().list_tickets(project)}
+    assert "CAD-210" not in project.roadmapPath.read_text()
 
 
 def test_create_then_edit_is_allowed_with_no_run_state_source(tmp_path: Path) -> None:
@@ -321,14 +341,19 @@ def test_delete_todo_ticket_removes_files_and_returns_snapshot(tmp_path: Path) -
     assert "CAD-131" not in project.roadmapPath.read_text()
 
 
-def test_delete_id_absent_from_manifest_and_run_state_raises_ticket_not_mutable(
+def test_delete_id_absent_from_manifest_and_run_state_raises_unknown_ticket(
     tmp_path: Path,
 ) -> None:
-    # See test_edit_id_absent_from_manifest_and_run_state_raises_ticket_not_mutable.
+    # The DELETE counterpart of
+    # test_edit_id_absent_from_manifest_and_run_state_raises_ticket_not_mutable, and it
+    # answers differently since T80's amendment: delete gates on `ensure_deletable`,
+    # which permits `absent`, so the gate no longer masks the manifest's honest 404
+    # for an id nothing has ever heard of. Edit still 409s there — that asymmetry is
+    # the amendment, not an accident.
     writer, project = _load(tmp_path)
-    with pytest.raises(TicketNotMutable) as exc_info:
+    with pytest.raises(UnknownTicket) as exc_info:
         writer.delete_ticket(project, "CAD-999")
-    assert exc_info.value.status == 409
+    assert exc_info.value.status == 404
 
 
 def test_delete_unknown_id_raises_unknown_ticket_with_no_run_state_source(tmp_path: Path) -> None:

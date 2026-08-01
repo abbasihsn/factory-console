@@ -23,8 +23,10 @@ wiring plus one audit line (:func:`_log_write`): the service owns the create-col
 guard and the existence check (both on the dry-run path too), and the todo-only
 mutability gate lives one layer further down, inside the writer's
 ``edit_ticket``/``delete_ticket``
-(:func:`~factory_console.file_adapter.write_gate.ensure_mutable`) — so it guards an
-apply, and a dry-run previews a non-mutable ticket rather than refusing it.
+(:func:`~factory_console.file_adapter.write_gate.ensure_mutable` and its
+delete-path sibling :func:`~factory_console.file_adapter.write_gate.ensure_deletable`,
+which also permits ``absent``) — so it guards an apply, and a dry-run previews a
+non-mutable ticket rather than refusing it.
 
 They also do no error handling of their own; every failure mode already has a
 registered handler that renders the REST v1 envelope:

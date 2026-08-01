@@ -477,6 +477,32 @@ async def test_edit_on_a_ticket_the_json_source_does_not_list_is_absent_409(
     assert _snapshot(root) == before
 
 
+async def test_a_created_ticket_can_be_deleted_but_not_edited_end_to_end(
+    tmp_path: Path,
+) -> None:
+    # T80's amendment through the real app: `create` is ungated, so the id it mints
+    # resolves `absent` against the fixture's populated run-state source. Editing it
+    # is refused (the rule holds) while DELETING it succeeds (gap 2) — otherwise a
+    # mistyped new ticket would be unrecoverable through the UI that created it.
+    app, root = _real_app(tmp_path)
+    async with _client(app) as client:
+        created = await client.post("/api/v1/tickets", json=_draft_body(), headers=AUTH)
+        assert created.status_code == 201
+
+        edited = await client.put(f"/api/v1/tickets/{NEW_ID}", json=_edit_body(), headers=AUTH)
+        assert edited.status_code == 409
+        error = edited.json()["error"]
+        assert error["code"] == "ticket_not_mutable"
+        assert error["details"] == {"ticketId": NEW_ID, "runState": "absent"}
+
+        deleted = await client.delete(f"/api/v1/tickets/{NEW_ID}", headers=AUTH)
+        assert deleted.status_code == 200
+
+        gone = await client.get(f"/api/v1/tickets/{NEW_ID}")
+    assert gone.status_code == 404
+    assert not (root / "docs" / "planning" / "tickets" / f"{NEW_ID}.md").exists()
+
+
 @pytest.mark.parametrize("ticket_id", NON_TODO_IDS)
 async def test_dry_run_still_previews_a_non_todo_ticket_and_writes_nothing(
     ticket_id: str, tmp_path: Path
