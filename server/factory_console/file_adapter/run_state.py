@@ -533,7 +533,11 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
         # ``is_dir()`` alone is not enough: it stats the directory ENTRY from the
         # parent, which still succeeds for a directory the console has no search
         # permission on. Stat one path INSIDE it — the same shape the marker loop
-        # probes — so an EACCES surfaces here, once, instead of once per ticket.
+        # probes — so an EACCES on the run-state directory ITSELF surfaces here, once,
+        # instead of once per ticket. This settles only the whole-directory question:
+        # a directory that is readable while one of its state subdirectories is not
+        # cannot be decided here (see ``reported_unreadable`` below for why that case
+        # must stay per ticket, and how its warning is still emitted only once).
         directory_readable = source.path.is_dir()
         if directory_readable:
             # Called for the OSError, not the answer — bind it so this does not read
@@ -554,9 +558,19 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
     # checks for direct single-ticket callers; both reach the per-id answer through
     # ``_marker_state``, so the two forms cannot answer differently.
     lists_any_ticket = _directory_lists_any_ticket(source.path)
-    if lists_any_ticket is False:
-        # Definitively lists nobody: it claims nothing about anybody.
-        return lambda _ticket_id: RunState.unknown
+    # NOTE: a ``False`` (vacuous) answer deliberately does NOT short-circuit to a
+    # constant ``unknown`` closure. Vacuity is a statement about what the ENUMERATION
+    # found, and enumeration and the marker probe do not recognise the same names:
+    # ``_is_ticket_marker_name`` skips every dot-leading entry (so ``.gitkeep`` cannot
+    # make a directory authoritative), while ``_validate_ticket_id_as_segment`` admits
+    # a dot-leading ticket id. A directory whose only marker is ``merged/.spike`` there-
+    # fore enumerates as vacuous while ``_marker_state`` can still name it ``merged``.
+    # Short-circuiting would answer the mutable ``unknown`` for that id and hand the
+    # write gate an edit on a ticket a lane owns — and it would freeze vacuity for the
+    # resolver's whole life, so a marker written mid-request went unseen. Falling
+    # through costs one ``exists()`` per state on a directory that is empty by
+    # definition, and keeps this form answering through the same ``_marker_state`` as
+    # ``probe_ticket_state``, which is what makes the two provably agree.
     if lists_any_ticket is None:
         # "I could not tell" — NOT "it lists nobody". Answering a constant ``unknown``
         # here would put every ticket in the mutable set and silently disable the write
@@ -571,15 +585,32 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
         )
 
     lists_someone = lists_any_ticket is True
+    # The readability canary above stats only ``_MARKER_PRECEDENCE[0]``, so it catches
+    # an unreadable run-state dir but NOT one whose individual state subdirectories
+    # differ (``merged`` readable, ``ready`` mode-0000). That case can only surface per
+    # ticket, inside ``_marker_state`` — and it must stay per ticket, because widening
+    # the canary to every state would answer a constant mutable ``unknown`` for the
+    # whole project the moment one subdirectory is restricted, silently disabling the
+    # gate for the tickets whose markers ARE readable. What must not be per ticket is
+    # the WARNING: a 200-ticket projection would otherwise emit 200 identical lines,
+    # breaking this function's "settled once, logged once" guarantee exactly when an
+    # operator needs one clear signal. So the degradation is reported once per resolver.
+    reported_unreadable = False
 
     def resolve_directory(ticket_id: str) -> RunState:
+        nonlocal reported_unreadable
         _validate_ticket_id_as_segment(ticket_id)
         try:
             marker = _marker_state(source.path, ticket_id)
         except OSError:
-            _LOGGER.warning(
-                "run-state: %s could not be read; %s resolves unknown", source.path, ticket_id
-            )
+            if not reported_unreadable:
+                reported_unreadable = True
+                _LOGGER.warning(
+                    "run-state: a state subdirectory of %s could not be read; every "
+                    "ticket with no readable marker (first: %r) resolves unknown",
+                    source.path,
+                    ticket_id,
+                )
             return RunState.unknown
         if marker is not None:
             return marker
