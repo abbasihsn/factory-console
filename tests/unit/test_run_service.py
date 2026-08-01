@@ -206,6 +206,22 @@ def test_a_hostile_pr_url_from_run_state_is_dropped_from_the_record() -> None:
     assert record.runState is RunState.merged, "the rest of the record must survive"
 
 
+def test_an_unparseable_pr_url_is_dropped_rather_than_failing_the_request() -> None:
+    # ``urlsplit`` RAISES on an unbalanced ``[`` in the authority. Unguarded, the
+    # clearest case of a bad url there is — one that cannot even be parsed —
+    # would escape as a ValidationError and 500 BOTH runs endpoints for the whole
+    # project until the factory rewrote the file. It is dropped by the same rule
+    # that drops a ``javascript:`` url: a value that cannot be parsed cannot be
+    # shown to carry an allowed scheme.
+    reader = FakeRunArtifactReader(pr_urls={"T-100": "https://exa[mple.test/pull/1"})
+    service, project = _service(reader, run_states={"T-100": RunState.merged})
+
+    record = service.list_records(project)[0]
+
+    assert record.prUrl is None
+    assert record.runState is RunState.merged, "the rest of the record must survive"
+
+
 def test_a_project_with_no_run_state_artifact_names_run_state() -> None:
     service, project = _service(project=_project(source_kind=None))
 

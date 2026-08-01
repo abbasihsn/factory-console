@@ -126,7 +126,17 @@ def test_a_result_naming_one_modelled_field_still_answers(tmp_path: Path) -> Non
 
 @pytest.mark.parametrize(
     "hostile_url",
-    ["javascript:alert(1)", "JavaScript:alert(1)", "data:text/html,<script>x</script>", "/pull/1"],
+    [
+        "javascript:alert(1)",
+        "JavaScript:alert(1)",
+        "data:text/html,<script>x</script>",
+        "/pull/1",
+        # ``urlsplit`` RAISES ValueError("Invalid IPv6 URL") on an unbalanced
+        # ``[`` in the authority. Unparseable is the clearest kind of bad url,
+        # so it must DROP like the rest rather than propagate out of validation.
+        "https://exa[mple.test/pull/1",
+        "https://[::1/pull/1",
+    ],
 )
 def test_a_pr_url_with_a_non_http_scheme_is_dropped(hostile_url: str, tmp_path: Path) -> None:
     # ``pr_url`` is arbitrary text out of a file another process writes, and its

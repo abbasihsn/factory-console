@@ -72,14 +72,20 @@ class RealRunArtifactReader:
         """Return the lane result for each id that has a readable one.
 
         ``.factory/results`` is resolved ONCE here and reused across every id —
-        the whole reason the port is batched.
+        the whole reason the port is batched. The project root is resolved once
+        here for the same reason: every id's containment check compares against
+        it, and re-deriving an invariant root per ticket walks and stats its whole
+        component chain N times for one answer.
         """
         root = project.rootPath
+        resolved_root = self._resolve_root(root)
         results_dir = runs.find_results_dir(root)
         found: dict[str, RunResultSummary] = {}
         for ticket_id in ticket_ids:
             try:
-                summary = runs.read_result_in(results_dir, root, ticket_id)
+                summary = runs.read_result_in(
+                    results_dir, root, ticket_id, resolved_root=resolved_root
+                )
             except PathTraversal:
                 self._log_unsafe_id(ticket_id, "lane result")
                 continue
@@ -88,17 +94,39 @@ class RealRunArtifactReader:
         return found
 
     def receipts_present(self, project: Project, ticket_ids: Sequence[str]) -> frozenset[str]:
-        """Return the subset of ``ticket_ids`` that have a review receipt."""
+        """Return the subset of ``ticket_ids`` that have a review receipt.
+
+        Resolves ``.factory/receipts`` and the project root once, for the same
+        reason as :meth:`read_results`.
+        """
         root = project.rootPath
+        resolved_root = self._resolve_root(root)
         receipts_dir = runs.find_receipts_dir(root)
         present: set[str] = set()
         for ticket_id in ticket_ids:
             try:
-                if runs.has_receipt_in(receipts_dir, root, ticket_id):
+                if runs.has_receipt_in(receipts_dir, root, ticket_id, resolved_root=resolved_root):
                     present.add(ticket_id)
             except PathTraversal:
                 self._log_unsafe_id(ticket_id, "receipt")
         return frozenset(present)
+
+    @staticmethod
+    def _resolve_root(root: Path) -> Path | None:
+        """Pre-resolve the project root for the batched containment checks.
+
+        ``None`` on failure, NOT a fallback root: ``resolve()`` raises ``OSError``
+        (an unreadable component) or ``RuntimeError`` (a symlink loop) exactly
+        where containment cannot be proven, and
+        :func:`~factory_console.file_adapter.path_safety.is_contained` already
+        turns both into "not contained". Passing ``None`` makes it re-resolve and
+        reach that same refusal per ticket, so the optimisation degrades to the
+        unoptimised path rather than substituting a root that could widen it.
+        """
+        try:
+            return root.resolve()
+        except (OSError, RuntimeError):
+            return None
 
     @staticmethod
     def _log_unsafe_id(ticket_id: str, artifact: str) -> None:

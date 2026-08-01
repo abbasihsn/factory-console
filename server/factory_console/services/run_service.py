@@ -196,8 +196,16 @@ class RunService:
     def _carries_pr_urls(project: Project) -> bool:
         """True if the project's run-state form can supply PR urls at all.
 
-        Only the factory's JSON file does; the legacy marker directory records a
-        state per ticket and nothing else.
+        Defers to :attr:`~factory_console.domain.run_state_source.RunStateSource.carriesPrUrls`
+        rather than restating ``kind == "json"``, so this and
+        :func:`~factory_console.file_adapter.runs.read_pr_urls` cannot drift into
+        disagreeing about whether a null ``prUrl`` is attributable.
+
+        A source that resolves OUTSIDE the project root is already ``None`` here:
+        :func:`~factory_console.file_adapter.run_state.find_run_state_source`
+        refuses it at resolution, so it supplies no states and no urls and this
+        correctly names ``runState`` unavailable — rather than reporting a source
+        the reader would refuse as one that answered.
         """
         source = project.runStateSource
-        return source is not None and source.kind == "json"
+        return source is not None and source.carriesPrUrls

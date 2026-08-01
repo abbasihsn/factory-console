@@ -40,6 +40,23 @@ class RunStateSource(BaseModel):
     kind: RunStateSourceKind
     path: Path
 
+    @property
+    def carriesPrUrls(self) -> bool:
+        """True if this artifact form can supply PR urls at all.
+
+        Only the factory's JSON file does; the legacy marker directory records a
+        state per ticket and nothing else. Owned HERE, on the source, because it
+        is a fact about the source's own ``kind`` — and because two call sites
+        must never disagree about it:
+        :func:`~factory_console.file_adapter.runs.read_pr_urls` uses it to decide
+        whether to return any urls, and
+        :meth:`~factory_console.services.run_service.RunService._compose` uses it
+        to decide whether ``runState`` is named in ``RunRecord.unavailable``. If
+        those two ever drifted, a ``prUrl`` would go null with no source named —
+        the unattributable null the record exists to prevent.
+        """
+        return self.kind == "json"
+
 
 class JsonRunState(BaseModel):
     """The tickets of one parsed ``.factory/run-state.json``.

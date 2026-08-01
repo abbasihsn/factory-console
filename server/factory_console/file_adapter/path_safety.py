@@ -106,7 +106,7 @@ def require_safe_ticket_id_segment(ticket_id: str) -> str:
     return ticket_id
 
 
-def is_contained(candidate: Path, project_root: Path) -> bool:
+def is_contained(candidate: Path, project_root: Path, *, resolved_root: Path | None = None) -> bool:
     """True if ``candidate`` really resolves inside ``project_root``.
 
     The single owner of the CONTAINMENT rule, the companion to
@@ -122,8 +122,20 @@ def is_contained(candidate: Path, project_root: Path) -> bool:
     raising when containment cannot be PROVEN: ``resolve(strict=False)`` raises
     ``RuntimeError("Symlink loop from ...")`` for a cyclic link, which is not an
     ``OSError``, and a caller that cannot prove containment must not read.
+
+    ``resolved_root`` lets a caller checking MANY candidates against the same root
+    resolve that root once instead of once per candidate. Resolving a root walks
+    and stats every one of its components, and the root is invariant across a
+    request, so the per-candidate form costs O(N x depth) syscalls to recompute
+    one answer — see
+    :meth:`~factory_console.file_adapter.real_runs.RealRunArtifactReader.read_results`,
+    which checks one candidate per manifest ticket. It is an OPTIMISATION ONLY:
+    the value passed must be ``project_root.resolve()``, and the containment rule
+    applied is identical either way, so a caller that omits it is merely slower,
+    never less safe.
     """
     try:
-        return candidate.resolve(strict=False).is_relative_to(project_root.resolve())
+        root = project_root.resolve() if resolved_root is None else resolved_root
+        return candidate.resolve(strict=False).is_relative_to(root)
     except (OSError, RuntimeError):
         return False

@@ -42,6 +42,7 @@ from factory_console.domain.run_state_source import (
 # same object ``path_safety`` defines — one unsafe-id exception, not one per module.
 from factory_console.file_adapter.path_safety import PathTraversal as PathTraversal
 from factory_console.file_adapter.path_safety import (
+    is_contained,
     require_safe_ticket_id_segment,
 )
 
@@ -103,12 +104,40 @@ def find_run_state_source(project_root: Path) -> RunStateSource | None:
     JSON form, :meth:`Path.is_dir` for the directory form), so a stray file where
     a directory belongs — or a directory named ``run-state.json`` — is skipped
     rather than resolved into a source that cannot be read.
+
+    CONTAINMENT is checked too, and it must be checked HERE rather than at each
+    read: ``is_file()``/``is_dir()`` follow symlinks, so a
+    ``.factory/run-state.json`` symlinked outside the project root satisfies the
+    node-type check, and every consumer of the returned source then reads it —
+    :meth:`~factory_console.file_adapter.real.RealFileAdapter.list_tickets`,
+    ``read_run_state``, and
+    :func:`~factory_console.file_adapter.runs.read_pr_urls` alike. Checking it at
+    ONE of those reads (as :func:`~factory_console.file_adapter.runs.find_run_state_path`
+    does for the runs endpoint's ``sources`` report and its PR urls) makes the
+    consumers DISAGREE: the endpoint would report ``runState`` as not found while
+    serving ticket states parsed out of that same refused file, turning the
+    console into a read oracle over out-of-root JSON. Resolving an escaping
+    source to ``None`` degrades every consumer identically — no states, no PR
+    urls, ``found: false``, and ``runState`` named in ``RunRecord.unavailable``
+    — which is the honest answer for an artifact this console may not read. It is
+    logged so the degradation is attributable rather than silent.
+
+    A source that is skipped for containment does NOT fall through to a
+    lower-precedence location: a project whose highest-precedence run-state
+    escapes the root has an unreadable run-state, not a different one.
     """
     for kind, relative in RUN_STATE_SOURCE_LOCATIONS:
         candidate = project_root / relative
         present = candidate.is_file() if kind == "json" else candidate.is_dir()
-        if present:
-            return RunStateSource(kind=kind, path=candidate)
+        if not present:
+            continue
+        if not is_contained(candidate, project_root):
+            _LOGGER.warning(
+                "run-state: %s resolves outside the project root; treating it as absent",
+                candidate,
+            )
+            return None
+        return RunStateSource(kind=kind, path=candidate)
     return None
 
 

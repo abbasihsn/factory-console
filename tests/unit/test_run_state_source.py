@@ -126,6 +126,68 @@ def test_no_source_resolves_to_none(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# find_run_state_source — containment, checked at RESOLUTION
+# --------------------------------------------------------------------------- #
+
+
+def test_a_json_source_resolving_outside_the_root_is_refused(tmp_path: Path) -> None:
+    # ``is_file()`` follows symlinks, so without a containment check here the
+    # source resolves and EVERY consumer reads it — list_tickets and
+    # read_run_state included, not just the runs endpoint that probes containment
+    # at its own read. The console would then report the source as not found
+    # while serving ticket states parsed out of it.
+    root = tmp_path / "project"
+    (root / ".factory").mkdir(parents=True)
+    outside = tmp_path / "outside-run-state.json"
+    outside.write_text(json.dumps({"tickets": {"T01": {"status": "merged"}}}), encoding="utf-8")
+    (root / ".factory" / "run-state.json").symlink_to(outside)
+
+    assert find_run_state_source(root) is None, (
+        "a run-state.json resolving outside the project root must not resolve to a "
+        "source at all, so no consumer can read it"
+    )
+
+
+def test_a_directory_source_resolving_outside_the_root_is_refused(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    (root / ".factory").mkdir(parents=True)
+    outside = tmp_path / "outside-run-state"
+    (outside / "merged").mkdir(parents=True)
+    (root / ".factory" / "run-state").symlink_to(outside, target_is_directory=True)
+
+    assert find_run_state_source(root) is None, (
+        "the marker-directory form gets the same containment rule as the JSON form"
+    )
+
+
+def test_an_escaping_source_does_not_fall_through_to_a_lower_location(tmp_path: Path) -> None:
+    # A project whose highest-precedence run-state escapes the root has an
+    # UNREADABLE run-state, not a different one — silently answering from the
+    # fallback would report states the factory did not write there.
+    root = tmp_path / "project"
+    (root / ".factory").mkdir(parents=True)
+    outside = tmp_path / "outside-run-state.json"
+    outside.write_text(json.dumps({"tickets": {}}), encoding="utf-8")
+    (root / ".factory" / "run-state.json").symlink_to(outside)
+    (root / "docs" / "planning" / ".run-state").mkdir(parents=True)
+
+    assert find_run_state_source(root) is None
+
+
+def test_an_in_root_symlink_still_resolves(tmp_path: Path) -> None:
+    # Containment is about where a path RESOLVES, not whether it is a symlink:
+    # an in-root link is a legitimate layout and must not be refused.
+    root = tmp_path / "project"
+    (root / ".factory").mkdir(parents=True)
+    real = root / "actual-run-state.json"
+    real.write_text(json.dumps({"tickets": {}}), encoding="utf-8")
+    link = root / ".factory" / "run-state.json"
+    link.symlink_to(real)
+
+    assert find_run_state_source(root) == RunStateSource(kind="json", path=link)
+
+
+# --------------------------------------------------------------------------- #
 # find_run_state_source — each location demands the right NODE TYPE
 # --------------------------------------------------------------------------- #
 

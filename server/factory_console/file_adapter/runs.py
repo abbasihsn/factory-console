@@ -62,12 +62,22 @@ LAST_STOP_RELATIVE = Path(".factory") / "last-stop.json"
 """Project-relative location of the "why the last run stopped" file."""
 
 
-def _probe(candidate: Path, project_root: Path, artifact: str, *, want_dir: bool) -> Path | None:
+def _probe(
+    candidate: Path,
+    project_root: Path,
+    artifact: str,
+    *,
+    want_dir: bool,
+    resolved_root: Path | None = None,
+) -> Path | None:
     """Return ``candidate`` if it is an in-root directory/file, else ``None``.
 
     Containment is :func:`~factory_console.file_adapter.path_safety.is_contained`'s
     rule, not a copy of it: this function adds the node-type check, the "absent"
-    degradation and the log around that one shared primitive.
+    degradation and the log around that one shared primitive. ``resolved_root`` is
+    that primitive's optimisation-only pre-resolved root, passed straight through
+    — the batched readers supply it so a per-ticket probe does not re-resolve an
+    invariant root once per ticket.
 
     Out-of-root resolution is reported as ABSENT rather than raised: this module
     never raises for an artifact problem (only for an unsafe ticket id), and
@@ -76,7 +86,7 @@ def _probe(candidate: Path, project_root: Path, artifact: str, *, want_dir: bool
     """
     if not (candidate.is_dir() if want_dir else candidate.is_file()):
         return None
-    if not is_contained(candidate, project_root):
+    if not is_contained(candidate, project_root, resolved_root=resolved_root):
         _LOGGER.warning(
             "%s: %s resolves outside the project root; treating it as absent", artifact, candidate
         )
@@ -130,7 +140,11 @@ def _load_json_object(path: Path, artifact: str) -> dict[str, Any] | None:
 
 
 def read_result_in(
-    results_dir: Path | None, project_root: Path, ticket_id: str
+    results_dir: Path | None,
+    project_root: Path,
+    ticket_id: str,
+    *,
+    resolved_root: Path | None = None,
 ) -> RunResultSummary | None:
     """Return the lane result for ``ticket_id`` from an ALREADY-RESOLVED results dir.
 
@@ -141,6 +155,11 @@ def read_result_in(
     ``None`` for ``results_dir`` means the directory itself was absent or
     out-of-root, which is just another "no answer".
 
+    ``resolved_root`` is the same optimisation one level down: the containment
+    check still resolves the CANDIDATE per ticket (it must — that is the whole
+    check), but the ROOT it is compared against is invariant, so a batched caller
+    passes it pre-resolved rather than making every ticket re-walk it.
+
     Raises:
         PathTraversal: if ``ticket_id`` is not a single path-safe segment, raised
             BEFORE the results path is joined or probed.
@@ -148,7 +167,13 @@ def read_result_in(
     require_safe_ticket_id_segment(ticket_id)
     if results_dir is None:
         return None
-    path = _probe(results_dir / f"{ticket_id}.json", project_root, "lane result", want_dir=False)
+    path = _probe(
+        results_dir / f"{ticket_id}.json",
+        project_root,
+        "lane result",
+        want_dir=False,
+        resolved_root=resolved_root,
+    )
     if path is None:
         return None
     document = _load_json_object(path, "lane result")
@@ -203,11 +228,18 @@ def read_result(project_root: Path, ticket_id: str) -> RunResultSummary | None:
     return read_result_in(find_results_dir(project_root), project_root, ticket_id)
 
 
-def has_receipt_in(receipts_dir: Path | None, project_root: Path, ticket_id: str) -> bool:
+def has_receipt_in(
+    receipts_dir: Path | None,
+    project_root: Path,
+    ticket_id: str,
+    *,
+    resolved_root: Path | None = None,
+) -> bool:
     """True if ``<receipts_dir>/<ticket_id>.json`` exists, for an ALREADY-RESOLVED dir.
 
     The directory-taking half of :func:`has_receipt`, split out for the same
-    per-request-not-per-ticket reason as :func:`read_result_in`.
+    per-request-not-per-ticket reason as :func:`read_result_in`, and taking the
+    same optimisation-only pre-resolved ``resolved_root``.
 
     Raises:
         PathTraversal: if ``ticket_id`` is not a single path-safe segment, raised
@@ -217,7 +249,10 @@ def has_receipt_in(receipts_dir: Path | None, project_root: Path, ticket_id: str
     if receipts_dir is None:
         return False
     receipt = receipts_dir / f"{ticket_id}.json"
-    return _probe(receipt, project_root, "receipt", want_dir=False) is not None
+    return (
+        _probe(receipt, project_root, "receipt", want_dir=False, resolved_root=resolved_root)
+        is not None
+    )
 
 
 def has_receipt(project_root: Path, ticket_id: str) -> bool:
@@ -262,14 +297,23 @@ def read_last_stop(project_root: Path) -> LastStop | None:
 def find_run_state_path(source: RunStateSource | None, project_root: Path) -> Path | None:
     """Return the run-state source's path if it is in-root, else ``None``.
 
-    :func:`~factory_console.file_adapter.run_state.find_run_state_source` resolves
-    WHICH artifact a project has, but checks only ``is_file()``/``is_dir()`` —
-    both of which follow symlinks — so it cannot bound where that artifact lives.
     Run-state is the fourth artifact this module surfaces, and it goes through the
     same :func:`_probe` as the other three so the module's stated invariant holds
     for ALL of them: a symlinked ``.factory/run-state.json`` pointing outside the
     project root is neither read nor reported as found, rather than being read
     while the endpoint renders its LEXICAL, still-in-root-looking path.
+
+    DEFENSE-IN-DEPTH, not the primary guard.
+    :func:`~factory_console.file_adapter.run_state.find_run_state_source` now
+    applies the same containment rule when it RESOLVES the source, so an escaping
+    artifact never reaches a ``Project`` and this function is normally handed
+    ``None``. That is deliberately where the primary check lives: containment
+    enforced only here would bound what this module reads while ``list_tickets``
+    and ``read_run_state`` — which take the source straight off the ``Project`` —
+    went on parsing the same out-of-root file, so the endpoint would report
+    ``found: false`` beside ticket states read out of it. The check is kept here
+    anyway because this function accepts a caller-supplied source and must not
+    depend on its provenance.
     """
     if source is None:
         return None
@@ -294,8 +338,14 @@ def read_pr_urls(source: RunStateSource | None, project_root: Path) -> dict[str,
 
     Only the JSON form carries PR urls; a marker-directory source, no source at
     all, or a source that resolves out-of-root has none, so the answer is empty.
+    That form test is
+    :attr:`~factory_console.domain.run_state_source.RunStateSource.carriesPrUrls`,
+    the same one
+    :meth:`~factory_console.services.run_service.RunService._carries_pr_urls`
+    reads, so this cannot return no urls while the service reports the source as
+    one that answered.
     """
-    if source is None or source.kind != "json":
+    if source is None or not source.carriesPrUrls:
         return {}
     path = find_run_state_path(source, project_root)
     if path is None:

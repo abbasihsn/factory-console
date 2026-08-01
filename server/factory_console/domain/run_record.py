@@ -102,11 +102,23 @@ def _drop_unsafe_pr_url(value: str | None) -> str | None:
     ``.factory/``" into script execution in the page that holds the write token.
 
     Dropped rather than rejected: a bad url must not fail the whole runs request,
-    and a ``None`` here is already a meaningful, reportable answer ("no PR").
+    and a ``None`` here is already a meaningful, reportable answer ("no PR"). That
+    is why the parse itself is guarded: ``urlsplit`` RAISES ``ValueError("Invalid
+    IPv6 URL")`` on an unbalanced ``[`` in the authority (``https://exa[mple/1``),
+    so an unguarded call would turn "this url is unparseable" — the clearest case
+    of a bad url there is — into a ``ValidationError`` that escapes
+    :meth:`~factory_console.services.run_service.RunService._compose` and 500s
+    both runs endpoints for the whole project until the artifact changes. A value
+    that cannot be parsed cannot be shown to carry an allowed scheme, so it is
+    dropped by the same rule as a ``javascript:`` one.
     """
     if value is None:
         return None
-    if urlsplit(value).scheme.lower() not in PR_URL_SCHEMES:
+    try:
+        scheme = urlsplit(value).scheme
+    except ValueError:
+        return None
+    if scheme.lower() not in PR_URL_SCHEMES:
         return None
     return value
 
