@@ -12,6 +12,7 @@ module runs identically under ``pytest`` from any cwd — matching
 ``tests/unit/test_fixtures_shape.py``.
 """
 
+import json
 import shutil
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from factory_console.domain import (
     Project,
     Roadmap,
     RunState,
+    RunStateSource,
     Ticket,
     TicketSummary,
 )
@@ -31,6 +33,7 @@ from factory_console.file_adapter import FileAdapter
 from factory_console.file_adapter.manifest import MalformedManifest
 from factory_console.file_adapter.path_safety import PathTraversal
 from factory_console.file_adapter.real import RealFileAdapter, RoadmapUnreadable
+from factory_console.file_adapter.run_state import run_state_resolver
 
 PROJECTS_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "projects"
 WITH_RUN_STATE = PROJECTS_DIR / "with_run_state"
@@ -102,6 +105,55 @@ def test_list_tickets_resolves_run_state_per_ticket() -> None:
         "CAD-140": RunState.todo,
         # Present run-state dir, no marker for CAD-152 -> todo (not unknown).
         "CAD-152": RunState.todo,
+    }
+
+
+def test_a_json_sourced_project_reads_run_state_from_the_factory_file(tmp_path: Path) -> None:
+    # The whole point of the source: when a project carries the file the factory
+    # actually writes, EVERY view reads it — and it beats the legacy marker
+    # directory that the fixture also ships. Reading runStateDir here (which is
+    # None for a JSON source) would report unknown for tickets the factory merged.
+    project_root = tmp_path / "project"
+    shutil.copytree(WITH_RUN_STATE, project_root)
+    (project_root / ".factory" / "run-state.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "tickets": {
+                    # CAD-100 is ``merged`` in BOTH forms; the rest disagree with
+                    # the markers on disk, so the assertions below can only pass
+                    # if the JSON won.
+                    "CAD-100": {"status": "merged", "pr_url": "https://example.test/pr/1"},
+                    "CAD-118": {"status": "flagged", "pr_url": None},
+                    "CAD-125": {"status": "in_progress", "pr_url": None},
+                    "CAD-131": {"status": "needs_human", "pr_url": None},
+                    "CAD-140": {"status": "todo", "pr_url": None},
+                },
+                "parts_landed": {"mvp": ["part-1"]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    adapter = RealFileAdapter()
+    project = adapter.load_project(project_root)
+
+    assert project.runStateSource == RunStateSource(
+        kind="json", path=project_root / ".factory" / "run-state.json"
+    )
+    assert project.runStateDir is None, (
+        "runStateDir keeps its meaning — a path only when the resolved source IS a directory"
+    )
+    assert adapter.read_run_state(project, "CAD-118") is RunState.flagged
+    run_states = {summary.id: summary.runState for summary in adapter.list_tickets(project)}
+    assert run_states == {
+        "CAD-100": RunState.merged,
+        "CAD-118": RunState.flagged,
+        "CAD-125": RunState.in_progress,
+        "CAD-131": RunState.needs_human,
+        "CAD-140": RunState.todo,
+        # Absent from the JSON: no entry, no answer — unknown (NOT the directory
+        # form's present-dir-but-unmarked ``todo`` default).
+        "CAD-152": RunState.unknown,
     }
 
 
@@ -249,9 +301,10 @@ def test_safe_run_state_degrades_dot_ids_to_unknown(tmp_path: Path) -> None:
     # request. A valid id still resolves normally (present dir, no marker -> todo).
     run_state_dir = tmp_path / "run-state"
     (run_state_dir / "todo").mkdir(parents=True)
-    assert RealFileAdapter._safe_run_state(run_state_dir, "CAD-1") is RunState.todo
+    resolve = run_state_resolver(RunStateSource(kind="directory", path=run_state_dir))
+    assert RealFileAdapter._safe_run_state(resolve, "CAD-1") is RunState.todo
     for bad_id in (".", ".."):
-        assert RealFileAdapter._safe_run_state(run_state_dir, bad_id) is RunState.unknown
+        assert RealFileAdapter._safe_run_state(resolve, bad_id) is RunState.unknown
 
 
 # --------------------------------------------------------------------------- #

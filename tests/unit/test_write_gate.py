@@ -2,11 +2,14 @@
 
 Pins the core v2 safety invariant: :func:`ensure_mutable` RETURNS a ticket's
 :class:`RunState` only when it is editable (``todo``/``unknown``) and raises the
-canonical :class:`TicketNotMutable` (HTTP 409) for the read-only states
-(``in-flight``/``ready``/``merged``). Exercised against the committed
-``tests/fixtures/projects/with_run_state`` fixture (read-only): a ``PathTraversal``
-for an unsafe id must propagate unchanged, and a final guard asserts the gate
-performs NO filesystem mutation on the fixture's run-state tree.
+canonical :class:`TicketNotMutable` (HTTP 409) for every read-only state — the
+directory form's ``in-flight``/``ready``/``merged`` AND the factory JSON's
+``in_progress``/``in_part``/``in_submilestone``/``flagged``/``failed``/
+``needs_human``. Exercised against BOTH committed fixtures (read-only): the
+``tests/fixtures/projects/with_run_state`` marker directory and the factory-shaped
+``tests/fixtures/run_state/run-state.json``. A ``PathTraversal`` for an unsafe id
+must propagate unchanged on the directory source, and a final guard asserts the
+gate performs NO filesystem mutation on the fixture's run-state tree.
 """
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from factory_console.domain import Project, RunState
+from factory_console.domain import Project, RunState, RunStateSource
 from factory_console.file_adapter.path_safety import PathTraversal
 from factory_console.file_adapter.write_gate import (
     MUTABLE_STATES,
@@ -38,16 +41,39 @@ _NON_MUTABLE_IDS = {
     "CAD-100": RunState.merged,
 }
 
+# The factory-shaped JSON fixture and its ground truth for the six states only it
+# can name — the states an operator most needs the gate to refuse.
+_JSON_FIXTURE = Path(__file__).parents[1] / "fixtures" / "run_state" / "run-state.json"
+_JSON_IDS = {
+    RunState.in_progress: "T56",
+    RunState.in_part: "T57",
+    RunState.in_submilestone: "T58",
+    RunState.flagged: "T74",
+    RunState.failed: "T75",
+    RunState.needs_human: "T76",
+}
 
-def _make_project(*, run_state_dir: Path | None) -> Project:
-    """Build a Project rooted at the fixture with the given run-state directory."""
+
+def _make_project(
+    *, run_state_dir: Path | None, run_state_source: RunStateSource | None = None
+) -> Project:
+    """Build a Project rooted at the fixture with the given run-state source."""
     return Project(
         rootPath=_FIXTURE_ROOT,
         ticketsManifestPath=_FIXTURE_ROOT / "docs" / "planning" / "tickets.json",
         ticketsDir=_FIXTURE_ROOT / "docs" / "planning" / "tickets",
         roadmapPath=_FIXTURE_ROOT / "ROADMAP.md",
         runStateDir=run_state_dir,
+        runStateSource=run_state_source,
         discoveredAt=datetime(2026, 7, 25, 12, 0, 0),
+    )
+
+
+def _make_json_project() -> Project:
+    """A Project whose run-state comes from the factory-shaped JSON fixture."""
+    return _make_project(
+        run_state_dir=None,
+        run_state_source=RunStateSource(kind="json", path=_JSON_FIXTURE),
     )
 
 
@@ -106,8 +132,22 @@ def test_ensure_mutable_raises_for_read_only_states(
     assert expected_state.value in exc.message
 
 
+def test_ensure_mutable_refuses_a_ticket_the_factory_json_marked_merged() -> None:
+    # The regression this whole change exists for: a JSON-sourced project has NO
+    # run-state directory, so a gate reading runStateDir would see unknown —
+    # mutable — and wave through an edit to a ticket the factory already merged.
+    with pytest.raises(TicketNotMutable) as exc_info:
+        ensure_mutable(_make_json_project(), "T01")
+
+    assert exc_info.value.details == {"ticketId": "T01", "runState": "merged"}
+
+
+def test_ensure_mutable_allows_a_ticket_the_factory_json_marked_todo() -> None:
+    assert ensure_mutable(_make_json_project(), "T77") == RunState.todo
+
+
 # --------------------------------------------------------------------------- #
-# Property-style — raises IFF the state is one of in-flight/ready/merged
+# Property-style — raises IFF the state is not todo/unknown
 # --------------------------------------------------------------------------- #
 
 
@@ -118,6 +158,10 @@ def _project_and_id_for(state: RunState) -> tuple[Project, str]:
         return _make_project(run_state_dir=None), "CAD-131"
     if state is RunState.todo:
         return _make_project(run_state_dir=_FIXTURE_RUN_STATE_DIR), "CAD-131"
+    if state in _JSON_IDS:
+        # The six factory-only states are unreachable through the marker
+        # directory — only the JSON source can name them.
+        return _make_json_project(), _JSON_IDS[state]
     id_for_state = {expected: tid for tid, expected in _NON_MUTABLE_IDS.items()}
     return _make_project(run_state_dir=_FIXTURE_RUN_STATE_DIR), id_for_state[state]
 

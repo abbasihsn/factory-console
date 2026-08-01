@@ -18,6 +18,7 @@ from factory_console.domain import (
     Project,
     Roadmap,
     RunState,
+    RunStateSource,
     Ticket,
     TicketId,
     TicketSummary,
@@ -257,6 +258,127 @@ def test_project_optional_paths_default_to_none() -> None:
     )
     assert project.roadmapPath is None
     assert project.runStateDir is None
+    assert project.runStateSource is None
+
+
+# --------------------------------------------------------------------------- #
+# Project.runStateDir <-> runStateSource reconciliation
+# --------------------------------------------------------------------------- #
+#
+# The two fields describe ONE fact, and different call sites read different ones
+# (the write gate reads the source; the writer's forbidden-path guard also
+# consults the directory). A Project that stored a contradiction would let them
+# authorize against two different artifacts, so the model reconciles both
+# directions and refuses what it cannot reconcile.
+
+
+def _project(**overrides: object) -> Project:
+    """Build a Project rooted at ``/proj``, overriding the run-state fields."""
+    return Project(
+        rootPath=Path("/proj"),
+        ticketsManifestPath=Path("/proj/tickets.json"),
+        ticketsDir=Path("/proj/tickets"),
+        discoveredAt=datetime(2026, 7, 20),
+        **overrides,  # type: ignore[arg-type]
+    )
+
+
+def test_run_state_dir_alone_derives_the_directory_source() -> None:
+    project = _project(runStateDir=Path("/proj/.factory/run-state"))
+
+    assert project.runStateSource == RunStateSource(
+        kind="directory", path=Path("/proj/.factory/run-state")
+    )
+
+
+def test_directory_source_alone_fills_in_the_run_state_dir() -> None:
+    """The reverse derivation: adopting the new field must not drop the old one."""
+    project = _project(
+        runStateSource=RunStateSource(kind="directory", path=Path("/proj/.factory/run-state"))
+    )
+
+    assert project.runStateDir == Path("/proj/.factory/run-state")
+
+
+def test_json_source_leaves_the_run_state_dir_none() -> None:
+    """A JSON source has no marker directory — ``runStateDir``'s documented meaning."""
+    project = _project(
+        runStateSource=RunStateSource(kind="json", path=Path("/proj/.factory/run-state.json"))
+    )
+
+    assert project.runStateDir is None
+
+
+def test_json_source_alongside_a_run_state_dir_is_refused() -> None:
+    with pytest.raises(ValidationError):
+        _project(
+            runStateDir=Path("/proj/.factory/run-state"),
+            runStateSource=RunStateSource(kind="json", path=Path("/proj/.factory/run-state.json")),
+        )
+
+
+def test_directory_source_disagreeing_with_the_run_state_dir_is_refused() -> None:
+    with pytest.raises(ValidationError):
+        _project(
+            runStateDir=Path("/proj/.factory/run-state"),
+            runStateSource=RunStateSource(kind="directory", path=Path("/proj/docs/.run-state")),
+        )
+
+
+def test_directory_source_agreeing_with_the_run_state_dir_is_accepted() -> None:
+    shared = Path("/proj/.factory/run-state")
+    project = _project(
+        runStateDir=shared, runStateSource=RunStateSource(kind="directory", path=shared)
+    )
+
+    assert project.runStateDir == shared
+    assert project.runStateSource is not None
+    assert project.runStateSource.path == shared
+
+
+# ``runStateSource`` arrives as a MAPPING on every deserialization path — a
+# ``model_dump()`` round-trip, ``model_validate``, the REST layer. Reconciling
+# only the already-constructed instance form would skip these checks for exactly
+# the over-the-wire path they matter most on, so they are pinned in both shapes.
+
+
+def test_mapping_form_directory_source_also_fills_in_the_run_state_dir() -> None:
+    project = _project(runStateSource={"kind": "directory", "path": "/proj/.factory/run-state"})
+
+    assert project.runStateDir == Path("/proj/.factory/run-state")
+
+
+def test_mapping_form_json_source_alongside_a_run_state_dir_is_refused() -> None:
+    with pytest.raises(ValidationError):
+        _project(
+            runStateDir=Path("/proj/.factory/run-state"),
+            runStateSource={"kind": "json", "path": "/proj/.factory/run-state.json"},
+        )
+
+
+def test_mapping_form_directory_source_disagreeing_is_refused() -> None:
+    with pytest.raises(ValidationError):
+        _project(
+            runStateDir=Path("/proj/.factory/run-state"),
+            runStateSource={"kind": "directory", "path": "/proj/docs/.run-state"},
+        )
+
+
+def test_an_invalid_source_is_left_for_pydantic_to_report_on_its_own_field() -> None:
+    """A junk source must surface as a field error, not a reconciliation crash."""
+    with pytest.raises(ValidationError) as exc_info:
+        _project(runStateSource={"kind": "not-a-kind", "path": "/proj/x"})
+
+    assert "runStateSource" in str(exc_info.value)
+
+
+def test_a_project_survives_a_model_dump_round_trip_with_a_json_source() -> None:
+    """The round trip re-enters the validator in mapping form — it must not be refused."""
+    original = _project(
+        runStateSource=RunStateSource(kind="json", path=Path("/proj/.factory/run-state.json"))
+    )
+
+    assert Project(**original.model_dump()) == original
 
 
 # --------------------------------------------------------------------------- #
@@ -294,15 +416,32 @@ def test_run_state_members_are_exactly_these() -> None:
         "in_flight",
         "ready",
         "merged",
+        "in_progress",
+        "in_part",
+        "in_submilestone",
+        "flagged",
+        "failed",
+        "needs_human",
         "unknown",
     ]
 
 
-def test_run_state_values_mirror_on_disk_dir_names() -> None:
+def test_run_state_values_mirror_the_name_their_source_uses() -> None:
+    # Named by the legacy run-state DIRECTORY form (``in-flight`` hyphenated).
     assert RunState.todo.value == "todo"
     assert RunState.in_flight.value == "in-flight"
     assert RunState.ready.value == "ready"
     assert RunState.merged.value == "merged"
+    # Named by the factory's run-state.json (FAC_STATES, underscored). These are
+    # NOT hyphenated variants of the directory names: the factory has no
+    # ``in-flight`` at all, and ``in_progress`` must never collapse onto it.
+    assert RunState.in_progress.value == "in_progress"
+    assert RunState.in_part.value == "in_part"
+    assert RunState.in_submilestone.value == "in_submilestone"
+    assert RunState.flagged.value == "flagged"
+    assert RunState.failed.value == "failed"
+    assert RunState.needs_human.value == "needs_human"
+    # Named by no source: no run-state source present, or it could not be read.
     assert RunState.unknown.value == "unknown"
 
 

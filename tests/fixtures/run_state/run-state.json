@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "tickets": {
+    "T01": { "status": "merged", "pr_url": "https://github.com/abbasihsn/factory-console/pull/1" },
+    "T02": { "status": "merged", "pr_url": "https://github.com/abbasihsn/factory-console/pull/2" },
+    "T03": { "status": "merged", "pr_url": null },
+    "T40": { "status": "ready", "pr_url": "https://github.com/abbasihsn/factory-console/pull/98" },
+    "T56": { "status": "in_progress", "pr_url": null },
+    "T57": { "status": "in_part", "pr_url": null },
+    "T58": { "status": "in_submilestone", "pr_url": null },
+    "T74": { "status": "flagged", "pr_url": "https://github.com/abbasihsn/factory-console/pull/173" },
+    "T75": { "status": "failed", "pr_url": null },
+    "T76": { "status": "needs_human", "pr_url": null },
+    "T77": { "status": "todo", "pr_url": null },
+    "T78": { "status": "todo", "pr_url": null }
+  },
+  "parts_landed": {
+    "mvp": ["part-1", "part-2"],
+    "v1": ["part-1"],
+    "v2": []
+  }
+}

@@ -28,6 +28,7 @@ counts can never disagree between the two views or drift from the fake.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -49,7 +50,11 @@ from factory_console.file_adapter.markdown_render import render_markdown, render
 from factory_console.file_adapter.path_safety import PathTraversal
 from factory_console.file_adapter.projection import TicketProjection
 from factory_console.file_adapter.roadmap_parse import parse_milestones
-from factory_console.file_adapter.run_state import find_run_state_dir, probe_ticket_state
+from factory_console.file_adapter.run_state import (
+    find_run_state_source,
+    probe_ticket_state_from_source,
+    run_state_resolver,
+)
 from factory_console.file_adapter.search import rank_tickets, to_search_hits
 from factory_console.file_adapter.ticket_md import (
     TicketFileMissing,
@@ -106,18 +111,25 @@ class RealFileAdapter:
         validates the tickets manifest exists and returns the resolved root — or
         raises :class:`~factory_console.file_adapter.discovery.ProjectNotFound`,
         which propagates. ``roadmapPath`` is the first of ``ROADMAP.md`` at the
-        root or under ``docs/`` that is a file, else ``None``; ``runStateDir`` is
-        resolved via
-        :func:`~factory_console.file_adapter.run_state.find_run_state_dir`;
-        ``discoveredAt`` is stamped timezone-aware in UTC.
+        root or under ``docs/`` that is a file, else ``None``; ``runStateSource``
+        is resolved ONCE via
+        :func:`~factory_console.file_adapter.run_state.find_run_state_source`
+        (the factory's ``.factory/run-state.json`` first, then the legacy marker
+        directories) and ``runStateDir`` is derived from it — the same path when
+        that source is a directory, ``None`` when it is the JSON file, keeping
+        ``runStateDir``'s "the marker directory, if any" meaning exact rather
+        than probing the filesystem a second time; ``discoveredAt`` is stamped
+        timezone-aware in UTC.
         """
         resolved = find_project_root(root)
+        source = find_run_state_source(resolved)
         return Project(
             rootPath=resolved,
             ticketsManifestPath=resolved / "docs" / "planning" / "tickets.json",
             ticketsDir=resolved / "docs" / "planning" / "tickets",
             roadmapPath=self._find_roadmap(resolved),
-            runStateDir=find_run_state_dir(resolved),
+            runStateDir=source.path if source is not None and source.kind == "directory" else None,
+            runStateSource=source,
             discoveredAt=datetime.now(UTC),
         )
 
@@ -166,14 +178,22 @@ class RealFileAdapter:
         return projection.neighborhood(ticket)
 
     def read_run_state(self, project: Project, ticket_id: str) -> RunState:
-        """Resolve ``ticket_id``'s :class:`RunState` by probing the run-state directory.
+        """Resolve ``ticket_id``'s :class:`RunState` from the project's run-state source.
 
         Delegates to
-        :func:`~factory_console.file_adapter.run_state.probe_ticket_state`; a
+        :func:`~factory_console.file_adapter.run_state.probe_ticket_state_from_source`,
+        which dispatches on ``project.runStateSource`` — the factory's
+        ``run-state.json`` or a legacy marker directory. Reading through the
+        SOURCE rather than ``project.runStateDir`` is the point: a JSON-sourced
+        project has no run-state directory, so probing the directory would report
+        ``unknown`` for every ticket the factory has actually merged. A
         :class:`~factory_console.file_adapter.path_safety.PathTraversal` for an
-        unsafe id propagates per that contract.
+        unsafe id propagates per that contract, but ONLY when the resolved source
+        is a DIRECTORY — that is the only form that turns the id into a path
+        segment. A JSON source joins no path, so it looks an unsafe id up as an
+        ordinary (absent) key and answers ``unknown``.
         """
-        return probe_ticket_state(project.runStateDir, ticket_id)
+        return probe_ticket_state_from_source(project.runStateSource, ticket_id)
 
     def get_roadmap(self, project: Project) -> Roadmap | None:
         """Return the project :class:`Roadmap`, or ``None`` when it has no roadmap.
@@ -296,21 +316,25 @@ class RealFileAdapter:
         return None
 
     @staticmethod
-    def _safe_run_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
+    def _safe_run_state(resolve: Callable[[str], RunState], ticket_id: str) -> RunState:
         """Resolve run-state for the LIST/DEPS projection, degrading a path-unsafe id.
 
-        ``list_tickets`` / ``get_deps`` probe run-state for EVERY ticket, so a single
+        ``list_tickets`` / ``get_deps`` resolve run-state for EVERY ticket, so a single
         malformed id — a bare ``.`` or ``..``, which ``TICKET_ID_PATTERN`` admits as a
-        character class yet is a single-segment traversal — letting
-        :func:`~factory_console.file_adapter.run_state.probe_ticket_state` raise
+        character class yet is a single-segment traversal — letting the directory
+        prober raise
         :class:`~factory_console.file_adapter.path_safety.PathTraversal` would fail the
         WHOLE request with a 400 that names no bad input. Map it to
         :attr:`RunState.unknown` instead: that ticket shows an ``unknown`` badge rather
         than crashing its neighbours' listing. The hard traversal guard still protects
         the single-ticket :meth:`read_run_state` filesystem read.
+
+        ``resolve`` is the per-request resolver from
+        :func:`~factory_console.file_adapter.run_state.run_state_resolver`, so a
+        JSON source is parsed once per request rather than once per ticket.
         """
         try:
-            return probe_ticket_state(run_state_dir, ticket_id)
+            return resolve(ticket_id)
         except PathTraversal:
             return RunState.unknown
 
@@ -318,8 +342,10 @@ class RealFileAdapter:
     def _project_manifest(project: Project) -> TicketProjection:
         """Materialize the manifest stubs and wrap them in a per-request projection.
 
-        Run-state is resolved lazily by probing the project's run-state directory,
-        the one behavioral difference from the fake adapter's seeded-map lookup. A
+        Run-state is resolved through the project's run-state SOURCE — a JSON
+        source is read and parsed once, when the projection is built; a directory
+        source is probed per ticket — which is the one behavioral difference from
+        the fake adapter's seeded-map lookup. A
         :class:`~factory_console.file_adapter.manifest.MalformedManifest` from the
         manifest read propagates to the caller.
         """
@@ -335,10 +361,13 @@ class RealFileAdapter:
         the views can never drift between them. ``search_tickets`` passes the
         stubs it already read (one manifest read per request); ``_project_manifest``
         materializes them itself.
+
+        The resolver is built ONCE per projection from ``project.runStateSource``,
+        so a JSON run-state file is read and parsed once per request instead of
+        once per ticket.
         """
+        resolve = run_state_resolver(project.runStateSource)
         return TicketProjection(
             stubs,
-            run_state_for=lambda ticket_id: RealFileAdapter._safe_run_state(
-                project.runStateDir, ticket_id
-            ),
+            run_state_for=lambda ticket_id: RealFileAdapter._safe_run_state(resolve, ticket_id),
         )

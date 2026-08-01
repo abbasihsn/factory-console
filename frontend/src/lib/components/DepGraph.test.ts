@@ -1,5 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/svelte';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Cytoscape needs a real canvas/renderer, so it's stubbed: the constructor and its
 // `use` static are spies, and the returned core exposes just the methods DepGraph
@@ -26,7 +26,7 @@ vi.mock('cytoscape-dagre', () => ({ default: vi.fn() }));
 vi.mock('dagre', () => ({ default: {} }));
 vi.mock('$app/navigation', () => ({ goto: vi.fn() }));
 
-import type { TicketGraph } from '$lib/api';
+import type { RunState, TicketGraph } from '$lib/api';
 import DepGraph from '$lib/components/DepGraph.svelte';
 
 const graph: TicketGraph = {
@@ -65,5 +65,68 @@ describe('DepGraph accessible node-hook', () => {
 
 		await waitFor(() => expect(cytoscapeFactory).toHaveBeenCalledTimes(1));
 		expect(cytoscapeFactory.use).toHaveBeenCalledTimes(1);
+	});
+});
+
+// Cytoscape paints to an opaque canvas, so `RUN_STATE_HEX` never reaches the DOM
+// and the badge suite's className assertions cannot cover it. The node fill IS a
+// cytoscape style CALLBACK though, so pull it out of the config the mocked
+// constructor received and invoke it per state. `Record<RunState, string>` only
+// forces every key to EXIST at compile time — a state painted the WRONG hue
+// still compiles, and on this view that means an operator scanning /graph for
+// stuck or failed tickets reads the colour as "fine".
+describe('DepGraph run-state palette', () => {
+	type StyleRule = { selector: string; style: Record<string, unknown> };
+	type NodeFill = (ele: { data: (key: string) => string }) => string;
+
+	// Mounted ONCE for the whole block: the callback closes over `RUN_STATE_HEX`,
+	// so it stays valid after auto-cleanup unmounts the component — and rendering
+	// per assertion would leave a pile of in-flight async `onMount`s racing that
+	// cleanup.
+	let fill: NodeFill;
+
+	beforeAll(async () => {
+		render(DepGraph, { props: { graph } });
+		await waitFor(() => expect(cytoscapeFactory).toHaveBeenCalled());
+		// The hoisted spy is declared zero-arg, so its `calls` tuples are typed
+		// empty; re-view them as the config cytoscape is actually handed.
+		const calls = cytoscapeFactory.mock.calls as unknown as [{ style?: StyleRule[] }][];
+		const nodeRule = calls[0]?.[0]?.style?.find((rule) => rule.selector === 'node');
+		const background = nodeRule?.style['background-color'];
+		// Assert the shape rather than casting through it: if DepGraph ever stops
+		// passing a node `background-color` CALLBACK, that is itself the
+		// regression this block exists to catch, and it should fail here saying so
+		// — not later as an opaque "fill is not a function".
+		expect(typeof background).toBe('function');
+		fill = background as NodeFill;
+	});
+
+	const fillFor = (runState: RunState): string => fill({ data: () => runState });
+
+	// Pinned exactly, mirroring RunStateBadge's palette intent as concrete solid
+	// fills — these are the six states the factory's run-state.json names, none of
+	// which the graph could paint at all before this source was read.
+	it.each([
+		['in_progress', '#f59e0b'],
+		['in_part', '#fbbf24'],
+		['in_submilestone', '#fbbf24'],
+		['flagged', '#ef4444'],
+		['failed', '#b91c1c'],
+		['needs_human', '#dc2626']
+	] as const)('paints %s %s', (runState, hex) => {
+		expect(fillFor(runState)).toBe(hex);
+	});
+
+	// The semantic guarantee behind those hexes: "a lane stopped and something is
+	// wrong" must not be paintable as "a lane is working". Asserting the families
+	// are disjoint catches a swap that still type-checks.
+	it('paints every failure-ish state a red distinct from every in-progress amber', () => {
+		const failure = (['flagged', 'failed', 'needs_human'] as const).map(fillFor);
+		const working = (['in-flight', 'in_progress', 'in_part', 'in_submilestone'] as const).map(
+			fillFor
+		);
+
+		for (const hex of [...failure, ...working]) expect(hex).toMatch(/^#[0-9a-f]{6}$/);
+		expect(failure.filter((hex) => working.includes(hex))).toEqual([]);
 	});
 });
