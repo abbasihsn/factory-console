@@ -1240,6 +1240,20 @@
       "provides": "GET /api/v1/runs returns one run record per manifest ticket, read-only.",
       "path": "docs/planning/tickets/v2.1/T90-runs-endpoint.md",
       "status": "todo"
+    },
+    {
+      "id": "T91",
+      "title": "Watch the JSON run-state source, so live updates are not silently dead",
+      "track": "backend",
+      "milestone": "v2.1",
+      "depends_on": [
+        "T78"
+      ],
+      "provides": "RealFileWatcher observes the resolved run-state source whatever its kind, so a run-state change on a JSON-sourced project fires an SSE event instead of nothing. Audit-fix ticket from DL-061 finding F1 (blocking, end-to-end-behaviour, T40+T78).",
+      "path": "docs/planning/tickets/v2.1/T91-watch-the-json-run-state-source.md",
+      "status": "todo",
+      "audit_finding": "F1",
+      "audit_date": "2026-08-01"
     }
   ]
 }
