@@ -308,6 +308,10 @@ def test_safe_run_state_degrades_dot_ids_to_unknown(tmp_path: Path) -> None:
     # per T80: the directory resolved and does not list this id).
     run_state_dir = tmp_path / "run-state"
     (run_state_dir / "todo").mkdir(parents=True)
+    # A marker for SOME other ticket, so the directory is not vacuous — a directory
+    # that lists nobody resolves unknown for every id (T80's amendment) and would
+    # make the `absent` half of this assertion vacuously unreachable.
+    (run_state_dir / "todo" / "CAD-2").write_text("", encoding="utf-8")
     resolve = run_state_resolver(RunStateSource(kind="directory", path=run_state_dir))
     assert RealFileAdapter._safe_run_state(resolve, "CAD-1") is RunState.absent
     for bad_id in (".", ".."):

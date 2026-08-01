@@ -62,13 +62,64 @@ def test_no_run_state_dir_resolves_to_unknown() -> None:
     )
 
 
-def test_present_dir_without_marker_resolves_to_absent(tmp_path: Path) -> None:
+def test_present_dir_listing_another_ticket_resolves_to_absent(tmp_path: Path) -> None:
+    # The ORIGINAL T80 rule, unchanged by the vacuous amendment: the directory lists
+    # CAD-100, so it IS exercising authority, and it does not list CAD-118.
     run_state_dir = tmp_path / "run-state"
     run_state_dir.mkdir()
+    _place_marker(run_state_dir, "merged", "CAD-100", as_dir=False)
     assert probe_ticket_state(run_state_dir, "CAD-118") == RunState.absent, (
-        "a present run-state dir with no marker for the id must resolve RunState.absent "
-        "(the directory resolved and does not list this ticket)"
+        "a run-state dir that lists another ticket but no marker for this id must "
+        "resolve RunState.absent (the directory resolved and does not list this ticket)"
     )
+
+
+def test_a_vacuous_dir_resolves_to_unknown_for_every_id(tmp_path: Path) -> None:
+    # T80's amendment, gap 1: a source that names NOBODY says nothing about anybody.
+    # An empty-but-valid run-state dir must not answer `absent` for every ticket —
+    # that would refuse every write in the project (a read-only lockout) on a plan
+    # the factory has simply never run on.
+    run_state_dir = tmp_path / "run-state"
+    run_state_dir.mkdir()
+    for ticket_id in ("CAD-118", "CAD-999", "T01"):
+        assert probe_ticket_state(run_state_dir, ticket_id) is RunState.unknown
+
+    # Same when the state subdirectories exist but hold no marker — the shape the
+    # factory leaves behind before it has seeded anything.
+    for state in ("merged", "ready", "in-flight", "todo"):
+        (run_state_dir / state).mkdir()
+    assert probe_ticket_state(run_state_dir, "CAD-118") is RunState.unknown
+
+
+def test_one_marker_anywhere_makes_the_dir_non_vacuous(tmp_path: Path) -> None:
+    # The boundary between the two tests above, walked one state at a time: a single
+    # marker under ANY state subdir is enough for the directory to start answering
+    # `absent` for the ids it does not name.
+    for state in ("merged", "ready", "in-flight", "todo"):
+        run_state_dir = tmp_path / state / "run-state"
+        run_state_dir.mkdir(parents=True)
+        assert probe_ticket_state(run_state_dir, "CAD-118") is RunState.unknown
+        _place_marker(run_state_dir, state, "CAD-100", as_dir=False)
+        assert probe_ticket_state(run_state_dir, "CAD-118") is RunState.absent
+
+
+def test_the_resolver_agrees_with_the_probe_on_a_vacuous_directory(tmp_path: Path) -> None:
+    # The batch path settles "does this source list anybody?" ONCE, so it must reach
+    # the same answer as the single-ticket prober above — otherwise a list projection
+    # and a write gate would disagree about the same directory.
+    run_state_dir = tmp_path / "run-state"
+    (run_state_dir / "todo").mkdir(parents=True)
+    source = RunStateSource(kind="directory", path=run_state_dir)
+
+    resolve = run_state_resolver(source)
+    assert [resolve(f"CAD-{n}") for n in range(5)] == [RunState.unknown] * 5
+
+    # One marker later the directory lists somebody, and a fresh resolver refuses the
+    # ids it does not name — the amendment must not have removed the `absent` answer.
+    _place_marker(run_state_dir, "todo", "CAD-100", as_dir=False)
+    resolve_again = run_state_resolver(source)
+    assert resolve_again("CAD-100") is RunState.todo
+    assert resolve_again("CAD-118") is RunState.absent
 
 
 def test_a_vanished_dir_resolves_to_unknown_not_absent(tmp_path: Path) -> None:

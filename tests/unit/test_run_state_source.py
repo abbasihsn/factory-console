@@ -328,6 +328,34 @@ def test_an_entry_without_a_usable_status_is_skipped_but_its_siblings_survive(
     assert probe_ticket_state_from_source(source, "T99-no-entry-at-all") is RunState.absent
 
 
+def test_an_empty_tickets_object_yields_unknown_for_every_ticket(tmp_path: Path) -> None:
+    # T80's amendment, gap 1, on the JSON form: ``tickets: {}`` parsed fine — the file
+    # is READABLE, it simply names nobody — and a source that names nobody says nothing
+    # about anybody. Answering `absent` here would 409 every write in the project.
+    path = _place_json(tmp_path, json.dumps({"version": 1, "tickets": {}}))
+
+    parsed = read_json_run_state(path)
+    assert parsed.readable is True, "an empty tickets object is a VALID file, not a broken one"
+    assert parsed.known_ticket_ids == frozenset()
+
+    source = RunStateSource(kind="json", path=path)
+    for ticket_id in ("T01", "T99", "CAD-118"):
+        assert probe_ticket_state_from_source(source, ticket_id) is RunState.unknown
+
+
+def test_a_single_entry_still_makes_other_ids_absent(tmp_path: Path) -> None:
+    # The regression guard for the amendment: one entry is enough for the source to
+    # exercise authority, so an id it does not list is `absent` (refused), exactly as
+    # before. This is the test that fails if the vacuous rule over-corrects.
+    path = _place_json(
+        tmp_path, json.dumps({"version": 1, "tickets": {"T01": {"status": "merged"}}})
+    )
+    source = RunStateSource(kind="json", path=path)
+
+    assert probe_ticket_state_from_source(source, "T01") is RunState.merged
+    assert probe_ticket_state_from_source(source, "T02") is RunState.absent
+
+
 def test_an_unreadable_json_source_yields_unknown(tmp_path: Path) -> None:
     missing = tmp_path / ".factory" / "run-state.json"
     assert read_json_run_state(missing) == JsonRunState(readable=False), (

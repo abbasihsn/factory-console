@@ -193,8 +193,11 @@ class RealFileAdapter:
         segment. A JSON source joins no path, so it looks an unsafe id up as an
         ordinary key and answers it like any other id the file does not name:
         ``absent`` when the file parsed, ``unknown`` only when it could not be
-        trusted (T80). Callers must not read a returned ``absent`` as mutable — it
-        is refused by :func:`~factory_console.file_adapter.write_gate.ensure_mutable`.
+        trusted (T80) or the file lists no ticket at all. Callers must not read a
+        returned ``absent`` as editable — it is refused by
+        :func:`~factory_console.file_adapter.write_gate.ensure_mutable` (though
+        :func:`~factory_console.file_adapter.write_gate.ensure_deletable` permits it,
+        so an ``absent`` ticket can still be deleted).
         """
         return probe_ticket_state_from_source(project.runStateSource, ticket_id)
 

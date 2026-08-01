@@ -140,6 +140,36 @@ def is_run_state_marker(rel_path: str) -> bool:
     return False
 
 
+def _directory_lists_any_ticket(run_state_dir: Path) -> bool:
+    """True if ``run_state_dir`` holds at least ONE marker, for any id, in any state.
+
+    The directory form's answer to "does this source list anybody at all?" — the
+    question that separates :attr:`RunState.absent` ("the source lists others and
+    not you") from :attr:`RunState.unknown` ("the source names nobody, so it makes
+    no claim about you"). A run-state directory that exists but contains no marker
+    under any of :data:`_MARKER_PRECEDENCE` is VACUOUS, and a source that names
+    nobody says nothing about anybody: every ticket must stay mutable, exactly as
+    if there were no source at all. Without this, a freshly created (empty) run-state
+    directory would resolve ``absent`` for every ticket and lock the whole project
+    read-only — the same project-wide lockout the unreadable/vanished guards exist
+    to prevent.
+
+    Only the FIRST entry of each state subdirectory is read (``next`` over
+    ``iterdir``), never the whole listing, so this stays O(number of states) on a
+    run-state directory holding thousands of markers. A state subdirectory that is
+    missing or cannot be enumerated is skipped rather than raising: it contributes
+    no evidence that the source lists anybody, and "I could not tell" must resolve
+    to the mutable ``unknown``, never to a refusal.
+    """
+    for state in _MARKER_PRECEDENCE:
+        try:
+            if next((run_state_dir / state).iterdir(), None) is not None:
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
     """Resolve ``ticket_id``'s :class:`RunState` by probing ``run_state_dir``.
 
@@ -153,8 +183,15 @@ def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
       ``in-flight`` > ``todo``; the first state whose ``<state>/<ticket_id>``
       marker exists (as a file OR a directory) wins, mapped to its enum member
       by value.
-    - A present run-state directory with no matching marker -> :attr:`RunState.absent`
-      (the directory resolved, and it does not list this ticket).
+    - A present run-state directory that lists at least one OTHER ticket but has no
+      matching marker for this one -> :attr:`RunState.absent` (the directory resolved,
+      and it does not list this ticket).
+    - A present run-state directory holding NO marker for ANY ticket under ANY state
+      — a VACUOUS source — -> :attr:`RunState.unknown` for every id
+      (:func:`_directory_lists_any_ticket`). The ``absent`` rule reasons about a
+      source exercising authority over the tickets it lists; a source that names
+      nobody exercises none, and answering ``absent`` there would turn an
+      empty-but-valid run-state directory into a project-wide read-only lockout.
     - A ``run_state_dir`` that is no longer a directory when probed (it vanished or
       was atomically replaced between discovery in ``load_project`` and this call),
       or that cannot be read at all (e.g. the factory created it mode-0700 under a
@@ -197,6 +234,10 @@ def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
                 return RunState(state)
 
         readable = run_state_dir.is_dir()
+        # Settled AFTER the marker loop so the common (marker found) path never pays
+        # for it: only an id the directory does not name has to ask whether the
+        # directory names anybody.
+        lists_any_ticket = readable and _directory_lists_any_ticket(run_state_dir)
     except OSError:
         # The directory cannot be stat'ed (EACCES and friends). Same answer as a
         # vanished directory below, for the same reason: an unreadable source is
@@ -213,6 +254,11 @@ def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
             "run-state: %s is no longer a directory; every ticket resolves unknown", run_state_dir
         )
         return RunState.unknown
+    if not lists_any_ticket:
+        # Vacuous source: it lists nobody, so it claims nothing about this id either.
+        # Not logged — an empty run-state directory is an ordinary state for a project
+        # the factory has not run on yet, not a degradation.
+        return RunState.unknown
     return RunState.absent
 
 
@@ -225,7 +271,10 @@ def read_json_run_state(path: Path) -> JsonRunState:
     ``unrecognised`` (de-duplicated, first-seen order): a tenth factory state must
     be visible as a named gap, never silently dropped. Every id that had SOME
     entry in ``tickets`` — mapped or not — is recorded in ``known_ticket_ids``, so
-    a caller can tell that apart from an id with no entry at all.
+    a caller can tell that apart from an id with no entry at all. ``known_ticket_ids``
+    is empty EXACTLY when ``tickets`` was an empty object — a readable file that lists
+    nobody, which :func:`run_state_resolver` reads as vacuous and answers ``unknown``
+    for every id (a source that names nobody says nothing about anybody).
 
     NEVER raises. A run-state file that cannot be trusted is a source-level
     problem, not a request failure — "I could not tell" is the honest answer — so
@@ -305,12 +354,16 @@ def probe_ticket_state_from_source(source: RunStateSource | None, ticket_id: str
     - ``source is None`` -> :attr:`RunState.unknown` — there is no source to ask.
     - ``kind == "json"`` -> the ticket's entry in the parsed file when one maps
       to a known state; :attr:`RunState.unknown` when the file could not be
-      trusted at all OR the id has an entry whose status this console does not
-      recognise; :attr:`RunState.absent` when the file parsed fine and simply
-      has no entry for the id — the source resolved and answered "not listed".
+      trusted at all, when its ``tickets`` object parsed fine and is EMPTY (a
+      vacuous source lists nobody, so it claims nothing about anybody), OR when
+      the id has an entry whose status this console does not recognise;
+      :attr:`RunState.absent` when the file parsed fine, lists at least one
+      ticket, and simply has no entry for THIS id — the source resolved and
+      answered "not listed".
     - ``kind == "directory"`` -> :func:`probe_ticket_state`: :attr:`RunState.absent`
-      when the directory is present but no marker names the id, unchanged
-      otherwise.
+      when the directory lists other tickets but no marker names this id,
+      :attr:`RunState.unknown` when it holds no marker for any id at all (the same
+      vacuous rule), unchanged otherwise.
 
     Resolving one ticket re-reads the source, matching ``ARCHITECTURE.md``
     "every request re-reads"; a caller resolving MANY tickets should take a
@@ -318,9 +371,13 @@ def probe_ticket_state_from_source(source: RunStateSource | None, ticket_id: str
 
     Raises:
         PathTraversal: only on the directory path, where ``ticket_id`` becomes a
-            filesystem path segment. The JSON path joins no path, so it looks an
-            unsafe id up as an ordinary key and answers ``unknown``/``absent`` like
-            any other unrecognised id, never raising.
+            filesystem path segment, and only when that directory is actually
+            probed: :func:`run_state_resolver` settles the SOURCE-level questions
+            (unreadable, vacuous) before any id is validated, so a directory that
+            answers ``unknown`` for every ticket answers it for an unsafe id too,
+            without raising. The JSON path joins no path, so it looks an unsafe id
+            up as an ordinary key and answers ``unknown``/``absent`` like any other
+            unrecognised id, never raising.
     """
     return run_state_resolver(source)(ticket_id)
 
@@ -351,10 +408,17 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
     if source.kind == "json":
         parsed = read_json_run_state(source.path)
 
+        # A ``tickets`` object that parsed fine and is EMPTY is a vacuous source: it
+        # lists nobody, so it makes no claim about anybody. Settled once here (like
+        # ``readable``) rather than re-derived per ticket. ``known_ticket_ids`` is
+        # empty iff ``tickets`` was empty, so this is exactly "the file resolved and
+        # names no ticket at all".
+        vacuous = not parsed.known_ticket_ids
+
         def resolve_json(ticket_id: str) -> RunState:
             if ticket_id in parsed.states:
                 return parsed.states[ticket_id]
-            if not parsed.readable or ticket_id in parsed.known_ticket_ids:
+            if not parsed.readable or vacuous or ticket_id in parsed.known_ticket_ids:
                 return RunState.unknown
             return RunState.absent
 
@@ -376,5 +440,13 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
         _LOGGER.warning(
             "run-state: %s is not a readable directory; every ticket resolves unknown", source.path
         )
+        return lambda _ticket_id: RunState.unknown
+    if not _directory_lists_any_ticket(source.path):
+        # The directory form's vacuous case, settled ONCE for the same reason
+        # ``readable`` is (and the same reason the JSON form settles it once): a
+        # whole-manifest projection must not re-scan the state subdirectories per
+        # ticket to learn the source lists nobody. ``probe_ticket_state`` keeps its
+        # own equivalent check for direct single-ticket callers, so the two forms
+        # cannot answer differently.
         return lambda _ticket_id: RunState.unknown
     return lambda ticket_id: probe_ticket_state(source.path, ticket_id)
