@@ -394,12 +394,18 @@ class _StateDirectories(NamedTuple):
     The residual it deliberately leaves: an id that DOES have a readable known marker
     still resolves that marker, even though an undiscoverable ``in_review/`` might have
     outranked it. That is the same bound :func:`_marker_state` already accepts for an
-    unreadable state subdirectory the walk never reached, and the same one
-    ``test_unenumerable_state_dirs_do_not_read_as_vacuous`` pins: a source that can
-    still answer for the ids it names keeps answering, and only the ids it cannot
-    answer for are refused. Widening it would refuse every ticket in a project the
-    moment its run-state directory lost its read bit while keeping its execute bit —
-    a project-wide lockout bought for a case where the marker probe still works.
+    unreadable state subdirectory the walk never reached — the PRINCIPLE being that a
+    source which can still answer for the ids it names keeps answering, and only the ids
+    it cannot answer for are refused. Two tests pin it, and they are not
+    interchangeable: ``test_unenumerable_state_dirs_do_not_read_as_vacuous`` pins the
+    principle for the four state subdirectories this console CAN name (it restricts
+    those and creates no unrecognised directory at all), while THIS case — an
+    undiscoverable run-state dir that also holds an unrecognised ``in_review/`` — is
+    pinned by ``test_an_undiscoverable_state_set_is_not_read_as_listing_you``, which is
+    the one to read before touching this field. Widening it would refuse every ticket
+    in a project the moment its run-state directory lost its read bit while keeping its
+    execute bit — a project-wide lockout bought for a case where the marker probe still
+    works.
     """
 
     unrecognised: tuple[str, ...]
@@ -795,9 +801,11 @@ def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
       about this ticket in a vocabulary this console does not have, which is the
       RESOLUTION INVARIANT's "read and could not be interpreted", and the unknown
       state's precedence is unknown too, so ``merged/<ticket_id>`` may no longer
-      settle the question on its own. An unrecognised directory that names nobody
-      changes nothing: the refusal is per id, never per source, because a misplaced
-      folder must not turn a whole project read-only.
+      settle the question on its own. An unrecognised directory that OPENS and names
+      nobody changes nothing: THIS refusal is per id, not per source, because a
+      misplaced folder must not turn a whole project read-only. Read "names nobody"
+      strictly — a directory that opened and held no marker for this id; one that will
+      not open is the next bullet, and that one IS per source.
     - A subdirectory outside those four that was DISCOVERED but could not be looked in
       for this id (it lists from the parent, and stat'ing ``<state>/<ticket_id>`` inside
       it raises) -> :attr:`RunState.unreadable` as well, on exactly the same terms as the
