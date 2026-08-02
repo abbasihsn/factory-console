@@ -760,6 +760,85 @@ def test_an_unrecognised_state_marker_is_already_a_marker_path_for_the_watcher(
     assert is_run_state_marker(".factory/run-state/in_review") is False
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
+def test_an_undiscoverable_state_set_is_not_read_as_listing_you(
+    tmp_path: Path,
+) -> None:
+    # T92's rule has to survive the case where the SCAN itself could not run, or it is
+    # closed only for the filesystems that were readable anyway. The run-state dir is
+    # traversable but NOT listable — the shape `_directory_lists_any_ticket`'s docstring
+    # cites as the factory running under a different uid — so `iterdir()` on it raises
+    # EACCES and `_unrecognised_state_names` cannot see `in_review/` at all. Mode 0o111
+    # rather than 0o711, matching `test_unenumerable_state_dirs_do_not_read_as_vacuous`:
+    # the OWNER bits are the ones that bind here, so 0o711 would leave us full rwx and
+    # quietly assert nothing.
+    #
+    # An earlier revision seeded that "could not tell" into a flag the vacuity loop then
+    # discarded on its first hit: `todo/CAD-1` answered "this source lists somebody",
+    # which is exactly what licenses `absent` for CAD-2 — and `absent` is DELETABLE, so
+    # the console would have deleted a ticket the factory holds under `in_review/`, the
+    # very fail-open this ticket exists to close, reopened through the flag rather than
+    # through the walk.
+    run_state_dir = tmp_path / "run-state"
+    _place_marker(run_state_dir, "todo", "CAD-1", as_dir=False)
+    _place_marker(run_state_dir, "in_review", "CAD-2", as_dir=False)
+    source = RunStateSource(kind="directory", path=run_state_dir)
+    run_state_dir.chmod(0o111)
+    try:
+        resolved = run_state_resolver(source)("CAD-2")
+        probed = probe_ticket_state(run_state_dir, "CAD-2")
+        # The residual `_StateDirectories` documents, asserted so it stays bounded: an id
+        # whose KNOWN marker still reads answers that marker rather than being swept into
+        # a project-wide refusal.
+        marked = probe_ticket_state(run_state_dir, "CAD-1")
+    finally:
+        run_state_dir.chmod(0o755)
+
+    for state in (resolved, probed):
+        assert state is RunState.unreadable
+        assert state not in write_gate.MUTABLE_STATES
+        # The concrete loss: `absent` would have permitted the DELETE.
+        assert state not in write_gate.DELETABLE_STATES
+    assert marked is RunState.todo
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
+def test_an_unrecognised_state_that_will_not_open_refuses_only_the_ids_it_could_hide(
+    tmp_path: Path,
+) -> None:
+    # The converse bound, and the one over-refusal would break. `in_review/` is
+    # DISCOVERABLE (the run-state dir lists fine) but not SEARCHABLE, so the per-id probe
+    # raises EACCES for every id. Letting that propagate refused the whole project —
+    # including CAD-1, whose `todo/` marker reads perfectly — which is precisely the
+    # "misplaced folder turns a project read-only" outcome `_unrecognised_state_naming`
+    # says the per-id rule exists to prevent, and it made the module non-monotonic: an
+    # unlistable run-state dir (strictly LESS discoverable, the test above) answered
+    # every id while a listable one holding a single unsearchable subdirectory —
+    # strictly MORE discoverable — locked every id out.
+    run_state_dir = tmp_path / "run-state"
+    _place_marker(run_state_dir, "todo", "CAD-1", as_dir=False)
+    _place_marker(run_state_dir, "in_review", "CAD-2", as_dir=False)
+    source = RunStateSource(kind="directory", path=run_state_dir)
+    (run_state_dir / "in_review").chmod(0o600)
+    try:
+        marked = probe_ticket_state(run_state_dir, "CAD-1")
+        marked_resolved = run_state_resolver(source)("CAD-1")
+        # An id with NO readable marker still refuses: the marker it needs may be the one
+        # sitting behind the directory that would not open, so this must not be `absent`
+        # (deletable) or the mutable `unknown`.
+        unmarked = probe_ticket_state(run_state_dir, "CAD-99")
+        unmarked_resolved = run_state_resolver(source)("CAD-99")
+    finally:
+        (run_state_dir / "in_review").chmod(0o755)
+
+    assert marked is RunState.todo
+    assert marked_resolved is RunState.todo
+    assert marked in write_gate.MUTABLE_STATES
+    for state in (unmarked, unmarked_resolved):
+        assert state is RunState.unreadable
+        assert state not in write_gate.DELETABLE_STATES
+
+
 # --------------------------------------------------------------------------- #
 # probe_ticket_state — a marker as a FILE or a DIR maps to the right enum
 # --------------------------------------------------------------------------- #
