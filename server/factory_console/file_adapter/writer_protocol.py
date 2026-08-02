@@ -27,11 +27,15 @@ ungated ``create_ticket`` could mint a ticket no implementation would ever delet
 conforming ``FileWriter``.
 
 The widening stops there. :attr:`~factory_console.domain.run_state.RunState.unreadable`
-— a run-state source that is THERE and could not be read at all — is in NEITHER
+— a run-state source that is THERE and could not be read at all, or that was read fine
+and says something about THIS ticket the console cannot interpret (an unrecognised
+``status``, T80 amendment 4; a marker under a state subdirectory this console has no
+name for, T92) — is in NEITHER
 allowlist, so BOTH ``edit_ticket`` and ``delete_ticket`` refuse it. That asymmetry
 with ``absent`` is the whole reason the two are distinct states: ``absent`` licenses
 the delete because the source WAS read and provably does not track the ticket, while
-an unreadable source proves nothing (T80 amendment 2). An implementation that lets
+a source that could not be read — or could not be understood — proves nothing
+(T80 amendment 2). An implementation that lets
 ``unreadable`` through either gate is not conforming.
 """
 

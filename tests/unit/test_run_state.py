@@ -839,6 +839,77 @@ def test_an_unrecognised_state_that_will_not_open_refuses_only_the_ids_it_could_
         assert state not in write_gate.DELETABLE_STATES
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
+def test_a_state_directory_that_will_not_open_is_reported_once_per_resolver(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The degradation above has to leave ONE trace, the same discipline every other
+    # settled-once answer in this module obeys: an unrecognised state directory that
+    # would not open widens nothing but it does refuse ids, and an operator needs to
+    # read WHICH problem they have. The message must not borrow the enumeration one's
+    # prose — this run-state dir listed perfectly well, so "could not be enumerated"
+    # would send them to chmod the wrong path — and a 200-ticket projection must emit
+    # one line, not 200, or the write-audit records are drowned exactly when the console
+    # is degraded. Asserted on ONE resolver reused across ids, which is the only shape
+    # that can observe the `reported_unprobeable` latch at all.
+    run_state_dir = tmp_path / "run-state"
+    _place_marker(run_state_dir, "todo", "CAD-1", as_dir=False)
+    _place_marker(run_state_dir, "in_review", "CAD-2", as_dir=False)
+    source = RunStateSource(kind="directory", path=run_state_dir)
+    (run_state_dir / "in_review").chmod(0o600)
+    try:
+        with caplog.at_level("WARNING", logger=run_state_module._LOGGER.name):
+            resolve = run_state_resolver(source)
+            unmarked = [resolve(f"CAD-{n}") for n in range(90, 96)]
+            probed = probe_ticket_state(run_state_dir, "CAD-99")
+    finally:
+        (run_state_dir / "in_review").chmod(0o755)
+
+    assert all(state is RunState.unreadable for state in unmarked)
+    assert probed is RunState.unreadable
+    could_not_look_in = [r for r in caplog.records if "could not look in" in r.getMessage()]
+    # Six refused ids through the resolver, one through the single-ticket prober: the
+    # resolver's latch collapses its six to one, and the prober — which has no resolver
+    # to latch on — accounts for the other.
+    assert len(could_not_look_in) == 2
+    # And it is the OTHER message that must not appear: this directory enumerated fine.
+    assert not [r for r in caplog.records if "could not be enumerated" in r.getMessage()]
+
+
+def test_a_looping_unrecognised_entry_is_not_read_as_no_unknown_states(tmp_path: Path) -> None:
+    # The scan's own "I could not look" leg, reached through the ERRNO TABLE rather than
+    # through a permission bit — the shape the two `merged/`/`todo/` loop tests above pin
+    # for the precedence walk, applied to an UNRECOGNISED entry, where nothing covered it.
+    # `<run-state>/in_review` is a symlink loop, so the run-state dir lists fine while
+    # `_is_directory` on that one entry raises ELOOP (deliberately excluded from
+    # `_ABSENT_ERRNOS`: the entry EXISTS and could not be RESOLVED).
+    #
+    # Skipping such an entry instead of degrading is the fail-open this asserts against:
+    # `undiscoverable` would stay False, the vacuity scan would find `todo/CAD-1`, answer
+    # "this source lists somebody", and hand CAD-99 the `absent` that is in
+    # DELETABLE_STATES — the console deleting a ticket the factory may hold under the
+    # very state directory it could not look at.
+    run_state_dir = tmp_path / "run-state"
+    _place_marker(run_state_dir, "todo", "CAD-1", as_dir=False)
+    try:
+        (run_state_dir / "in_review").symlink_to(run_state_dir / "in_review")
+    except (OSError, NotImplementedError):  # pragma: no cover - platform without symlinks
+        pytest.skip("platform does not support symlinks")
+    source = RunStateSource(kind="directory", path=run_state_dir)
+
+    # The residual this module documents everywhere: an id whose KNOWN marker still reads
+    # answers that marker rather than being swept into a project-wide refusal.
+    assert probe_ticket_state(run_state_dir, "CAD-1") is RunState.todo
+    assert run_state_resolver(source)("CAD-1") is RunState.todo
+    for state in (
+        probe_ticket_state(run_state_dir, "CAD-99"),
+        run_state_resolver(source)("CAD-99"),
+    ):
+        assert state is RunState.unreadable
+        assert state not in write_gate.MUTABLE_STATES
+        assert state not in write_gate.DELETABLE_STATES
+
+
 # --------------------------------------------------------------------------- #
 # probe_ticket_state — a marker as a FILE or a DIR maps to the right enum
 # --------------------------------------------------------------------------- #

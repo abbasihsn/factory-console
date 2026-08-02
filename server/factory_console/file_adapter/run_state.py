@@ -740,6 +740,18 @@ def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
       settle the question on its own. An unrecognised directory that names nobody
       changes nothing: the refusal is per id, never per source, because a misplaced
       folder must not turn a whole project read-only.
+    - A subdirectory outside those four that was DISCOVERED but could not be looked in
+      for this id (it lists from the parent, and stat'ing ``<state>/<ticket_id>`` inside
+      it raises) -> :attr:`RunState.unreadable` as well, but only for an id no marker
+      this console CAN name answered first. That is the ``unprobeable`` leg
+      (:func:`_unrecognised_state_naming`, which catches its own ``OSError`` rather than
+      letting it propagate), and it is deliberately weaker than the bullet above: the
+      marker this id needs may be the one behind the directory that would not open, so
+      an id with nothing else to go on is refused rather than resolved ``absent``
+      (deletable) or the mutable ``unknown`` — while an id whose ``todo/`` marker reads
+      perfectly still resolves it, because one restricted folder must not lock the
+      project out. It gets its OWN warning, since "could not be enumerated" would send
+      an operator to chmod a run-state directory that enumerated fine.
     - A present run-state directory that lists at least one OTHER ticket but has no
       matching marker for this one -> :attr:`RunState.absent` (the directory resolved,
       and it does not list this ticket).
@@ -1215,7 +1227,12 @@ def probe_ticket_state_from_source(source: RunStateSource | None, ticket_id: str
       a precedence it cannot rank either. Vacuity counts markers under EVERY
       subdirectory for the same reason: a source whose markers all live under a name
       this console does not know still LISTS tickets, so the ids it does not name are
-      ``absent``, not the mutable ``unknown``.
+      ``absent``, not the mutable ``unknown``. One weaker leg sits alongside that rule:
+      a subdirectory outside the four that was discovered and could not be LOOKED IN for
+      this id (``unprobeable``) also answers :attr:`RunState.unreadable`, but only for an
+      id no recognised marker answered first, and it OUTRANKS ``lists_someone`` — a
+      directory that could not be checked never established the "lists others and
+      provably not you" claim ``absent`` makes, and ``absent`` licenses a DELETE.
 
     :attr:`RunState.unreadable` is the only one of the three unnamed states that
     BOTH write gates refuse (T80 amendment 2): ``unknown`` and ``absent`` mean the
