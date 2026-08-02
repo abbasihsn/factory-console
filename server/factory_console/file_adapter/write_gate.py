@@ -6,7 +6,9 @@ BROADER than "no source on disk" — it also covers a source that vanished befor
 could be read, one whose content could not be parsed, and a source that lists nobody —
 but which T80 amendment 4 narrowed to exactly that: a source that lists THIS ticket
 under a status outside
-:data:`~factory_console.file_adapter.run_state.FACTORY_STATUS_ALIASES` is no longer
+:data:`~factory_console.file_adapter.run_state.FACTORY_STATUS_ALIASES` — or, in the
+directory form, under a state subdirectory outside
+:data:`~factory_console.file_adapter.run_state._MARKER_PRECEDENCE` (T92) — is no longer
 ``unknown`` but the refusing ``unreadable``, because something WAS said and this console
 could not interpret it (see
 :func:`~factory_console.file_adapter.run_state._resolve_json_state` for the four-way
@@ -116,9 +118,13 @@ class TicketNotMutable(FactoryConsoleError):
 
     ``unclassifiable`` splits ``unreadable``'s message in two, for the same reason the
     state itself is split from ``absent``: a refusal has to name a fix the operator can
-    act on. When it is set, the source was read fine and ONE ENTRY in it could not be
-    interpreted, and it carries the description of what the file said (``status
-    'in_review'``) — T80 amendment 4 requires the refusal to name the unrecognised
+    act on. When it is set, the source was read fine and ONE CLAIM in it could not be
+    interpreted, and it carries the description of what the source said — ``status
+    'in_review'`` for the JSON form, ``state 'in_review'`` for a directory form marker
+    under a state this console has no name for (T92). This branch is SOURCE-AGNOSTIC by
+    construction and was before either form filled it from both: it phrases whatever
+    description the prober hands it, and the prober owns which vocabulary that is
+    — T80 amendment 4 requires the refusal to name the unrecognised
     value, because "the run-state says ``in_review``, which this console does not know"
     sends an operator to upgrade the console while "could not be read" sends them to
     chmod a path that is already readable. It is ``None`` for the other route to
@@ -141,12 +147,14 @@ class TicketNotMutable(FactoryConsoleError):
         if run_state is RunState.unreadable and source_path is not None and unclassifiable:
             # The SECOND route to ``unreadable``, and it must not borrow the first one's
             # prose: the file was read perfectly well, and what could not be interpreted
-            # is one entry in it (T80 amendment 4). Telling this operator the source
+            # is one claim in it — one JSON entry (T80 amendment 4), or one marker under
+            # a state directory this console has no name for (T92). Telling this operator
+            # the source
             # "could not be read" sends them to chmod a path whose permissions are fine,
-            # when the real fix is a console that knows the status the factory is now
-            # writing. ``unclassifiable`` is the description of what the file actually
-            # said — ``status 'in_review'`` — because the amendment requires the refusal
-            # to NAME the value rather than say "not tracked".
+            # when the real fix is a console that knows the state the factory is now
+            # writing. ``unclassifiable`` is the description of what the source actually
+            # said — ``status 'in_review'``, ``state 'in_review'`` — because the amendment
+            # requires the refusal to NAME the value rather than say "not tracked".
             #
             # The PHRASING is owned here, not by the domain: :class:`JsonRunState`
             # records what it read (``an entry with no status``) and passes no judgement
