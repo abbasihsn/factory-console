@@ -276,6 +276,81 @@ def test_a_non_searchable_state_dir_does_not_hide_a_readable_marker(tmp_path: Pa
     assert batch_state not in write_gate.DELETABLE_STATES
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
+def test_an_unmarked_id_in_a_partly_unreadable_dir_resolves_unknown_and_is_reported_once(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The resolver's own per-ticket `except OSError` — the branch neither sibling test
+    # reaches. Mode 0711 (above) fails at `iterdir()` and is settled at construction;
+    # the whole-dir-0000 test fails at the construction canary. This is the MIXED case:
+    # the directory and the canary are fine, `_directory_lists_any_ticket` succeeds and
+    # says the source lists somebody, and only `_marker_state` fails — for an id with
+    # no readable marker anywhere, so it exhausts the precedence walk and re-raises.
+    # Two things must hold, and nothing pinned either: the id degrades to the mutable
+    # `unknown` rather than hardening into the refusing `absent` (a partly unreadable
+    # source is "I could not tell"), and the warning is emitted ONCE per resolver even
+    # across many such ids — a 200-ticket projection must not emit 200 identical lines.
+    run_state_dir = tmp_path / "run-state"
+    for state in ("merged", "ready", "in-flight", "todo"):
+        (run_state_dir / state).mkdir(parents=True)
+    # Readable, so the vacuity scan sees this source list somebody -> `absent` is the
+    # answer the resolver would give if the OSError path did not intercept it.
+    _place_marker(run_state_dir, "merged", "CAD-1", as_dir=False)
+    # 0600: readable (iterdir works, so vacuity resolves True) but NOT searchable, so
+    # `exists()` on a marker inside it raises EACCES.
+    (run_state_dir / "merged").chmod(0o600)
+    try:
+        with caplog.at_level("WARNING", logger=run_state_module._LOGGER.name):
+            resolve = run_state_resolver(RunStateSource(kind="directory", path=run_state_dir))
+            first = resolve("CAD-900")
+            second = resolve("CAD-901")
+    finally:
+        (run_state_dir / "merged").chmod(0o755)
+
+    assert first is RunState.unknown
+    assert second is RunState.unknown
+    # The gate consequence, asserted as behaviour rather than as wording: an id the
+    # console could not resolve stays writable, it does not become a 409.
+    assert first in write_gate.MUTABLE_STATES
+    assert first in write_gate.DELETABLE_STATES
+    unreadable = [r for r in caplog.records if "could not be read (the directory" in r.getMessage()]
+    assert len(unreadable) == 1
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
+def test_a_marker_found_below_an_unreadable_state_dir_is_logged(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The second, quieter residual of probing each state independently. `merged` is
+    # probed FIRST; when it cannot be searched and a STALE lower-precedence marker
+    # still names the id, `_marker_state` answers with the lower state — here the
+    # MUTABLE `todo` for a ticket the factory has already merged. No exception escapes,
+    # so neither caller can see it. It must therefore leave a trace at the only place
+    # that knows a hit was returned over an unread directory, or a merged ticket is
+    # silently editable with nothing in the log to explain why.
+    run_state_dir = tmp_path / "run-state"
+    for state in ("merged", "ready", "in-flight", "todo"):
+        (run_state_dir / state).mkdir(parents=True)
+    _place_marker(run_state_dir, "merged", "CAD-1", as_dir=False)
+    _place_marker(run_state_dir, "todo", "CAD-1", as_dir=False)
+    (run_state_dir / "merged").chmod(0o600)
+    try:
+        with caplog.at_level("WARNING", logger=run_state_module._LOGGER.name):
+            state = probe_ticket_state(run_state_dir, "CAD-1")
+    finally:
+        (run_state_dir / "merged").chmod(0o755)
+
+    # The documented fail-open answer, pinned so a future narrowing is a deliberate
+    # gate-policy change rather than an accident.
+    assert state is RunState.todo
+    downgraded = [r for r in caplog.records if "lower-precedence marker" in r.getMessage()]
+    assert len(downgraded) == 1
+    # The operator needs both halves: WHICH directory could not be read, and WHICH
+    # ticket's answer is therefore suspect.
+    assert "merged" in downgraded[0].getMessage()
+    assert "CAD-1" in downgraded[0].getMessage()
+
+
 def test_the_resolver_answers_unknown_not_absent_when_the_source_vanishes(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

@@ -57,10 +57,18 @@ class FileAdapter(Protocol):
     def read_run_state(self, project: Project, ticket_id: str) -> RunState:
         """Return the :class:`RunState` for ``ticket_id``.
 
-        ``unknown`` when there is no run-state source to ask or it could not be
-        trusted; ``absent`` when a source resolved and does not list the id. The two
-        are NOT interchangeable at the write gate — ``unknown`` is mutable, ``absent``
-        is refused 409 (T80).
+        ``unknown`` when there is no run-state source to ask, when it could not be
+        trusted, or when it resolved and lists NO ticket at all (a VACUOUS source —
+        an empty marker directory, or a ``run-state.json`` whose ``tickets`` object
+        parsed and is empty); ``absent`` only when a source resolved, lists at least
+        one ticket, and does not list THIS id. The vacuous carve-out is not optional
+        for a conforming implementation: a source that names nobody exercises no
+        authority over anybody, and answering ``absent`` there makes every write 409
+        and turns an empty-but-valid run-state into a project-wide read-only lockout
+        (T80 amendment, gap 1). The two states are NOT interchangeable at the write
+        gate — ``unknown`` is mutable, ``absent`` is refused 409 for an edit (though
+        :func:`~factory_console.file_adapter.write_gate.ensure_deletable` permits a
+        delete).
         """
         ...
 

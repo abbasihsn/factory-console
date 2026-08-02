@@ -129,8 +129,16 @@ def is_run_state_marker(rel_path: str) -> bool:
     :func:`probe_ticket_state` reads (``run_state_dir / state / ticket_id``).
     Owning that structural rule here, next to the locations it belongs to, keeps
     the T40 watcher's marker detection from drifting from the prober's marker
-    layout — the same single-source guarantee both already share via
+    LAYOUT — the same single-source guarantee both already share via
     :data:`RUN_STATE_RELATIVE_LOCATIONS`.
+
+    That guarantee is about layout ONLY, and deliberately does not extend to the
+    marker's NAME. :func:`_is_ticket_marker_name` — the separate rule the vacuity
+    scan uses — additionally requires the last segment to look like a ticket id and
+    to not begin with a dot, so ``<location>/todo/.gitkeep`` is a marker HERE (the
+    watcher refreshes on it, which costs only a redundant re-read) and is NOT one
+    there (it must not make an empty run-state directory authoritative). Widening
+    this function to match would be safe; narrowing THAT one would not.
     """
     for location in RUN_STATE_RELATIVE_LOCATIONS:
         prefix = location.as_posix()
@@ -192,13 +200,18 @@ def _directory_lists_any_ticket(run_state_dir: Path) -> bool | None:
     read-only — the same project-wide lockout the unreadable/vanished guards exist
     to prevent.
 
-    Each state subdirectory is scanned only until its first TICKET marker
+    Each state subdirectory is FILTERED only until its first TICKET marker
     (:func:`_is_ticket_marker_name`), so a populated run-state directory holding
-    thousands of markers stops on the first entry. A directory holding only
-    scaffolding is walked in full, because "no marker here" cannot be concluded
+    thousands of markers stops matching names on the first one. That is a bound on
+    the filtering, NOT on the directory read: :meth:`Path.iterdir` materialises the
+    whole listing (``os.listdir``) before the first name is yielded, so the syscall
+    cost is the same either way — read the early ``return`` as "answer as soon as
+    the question is settled", not as an I/O optimisation. A directory holding only
+    scaffolding is filtered in full, because "no marker here" cannot be concluded
     earlier — that is the price of not counting ``.gitkeep`` as a ticket. A state
-    subdirectory that is simply MISSING contributes no evidence either way and does
-    not make the answer ``None``; only one that exists and refuses enumeration does.
+    subdirectory that is simply MISSING — or that is not a directory at all —
+    contributes no evidence either way and does not make the answer ``None``; only
+    one that exists and refuses enumeration does.
     """
     saw_unreadable = False
     for state in _MARKER_PRECEDENCE:
@@ -207,9 +220,14 @@ def _directory_lists_any_ticket(run_state_dir: Path) -> bool | None:
             for entry in state_dir.iterdir():
                 if _is_ticket_marker_name(entry.name):
                     return True
-        except FileNotFoundError:
-            # A state subdirectory the factory has not created yet: ordinary, and
-            # genuinely no evidence that the source lists anybody.
+        except (FileNotFoundError, NotADirectoryError):
+            # A state subdirectory the factory has not created yet (``ENOENT``), or a
+            # stray FILE where a state subdirectory belongs (``ENOTDIR``). Both are
+            # ordinary and both are DEFINITIVE — there are no markers there — so they
+            # are genuinely no evidence that the source lists anybody, and neither may
+            # degrade the answer to ``None``. ``ENOTDIR`` in particular must not be
+            # read as "could not be enumerated": that logs a degradation warning and
+            # sends an operator chasing a permissions problem that does not exist.
             continue
         except OSError:
             # Exists but cannot be enumerated (EACCES and friends). NOT evidence of
@@ -248,21 +266,43 @@ def _marker_state(run_state_dir: Path, ticket_id: str) -> RunState | None:
     could not tell". The original exception is re-raised, not a synthetic one, so the
     callers' existing ``except OSError`` handling is unchanged.
 
-    RESIDUAL, unchanged by this and deliberate: when the walk finds nothing and a
-    HIGHER-precedence directory was unreadable, the answer is still the mutable
-    ``unknown``, which can mask a hidden ``merged`` marker. That is the documented
-    fail-open policy for an untrustworthy source (see :func:`probe_ticket_state`), and
-    it is what this function already did for every id; narrowing it is a gate-policy
-    decision, not a bug fix. What changed is only that a marker the console CAN read
-    is no longer discarded because a different directory could not be.
+    RESIDUAL, deliberate, and in TWO shapes — both fail-open, both logged so neither
+    is silent:
+
+    1. The walk finds nothing and a HIGHER-precedence directory was unreadable: the
+       answer is the mutable ``unknown``, which can mask a hidden ``merged`` marker.
+       That is the documented fail-open policy for an untrustworthy source (see
+       :func:`probe_ticket_state`); narrowing it is a gate-policy decision, not a bug
+       fix. Both callers log it.
+    2. The walk HITS at a lower precedence than an unreadable directory: the answer is
+       that lower state, which may not be the ticket's real one. ``merged`` is probed
+       first, so an unreadable ``merged/`` over a stale ``todo/<id>`` reports the
+       MUTABLE ``todo`` for a ticket the factory has already merged. Neither caller
+       can see this — no exception escapes — so it is logged HERE, at the only place
+       that knows a hit was returned over an unread directory. That warning is
+       deliberately per ticket rather than per resolver (the "settled once, logged
+       once" rule the source-level degradations follow): the fact being reported is
+       about ONE id's answer, not about the source, and it fires only for an id that
+       has both a readable marker and an unreadable higher-precedence directory.
 
     Callers MUST have validated ``ticket_id`` as a single path-safe segment first;
     this joins it onto a filesystem path.
     """
     first_error: OSError | None = None
+    unreadable: list[str] = []
     for state in _MARKER_PRECEDENCE:
         try:
             if (run_state_dir / state / ticket_id).exists():
+                if unreadable:
+                    _LOGGER.warning(
+                        "run-state: %s state director%s %s could not be read; %r resolves "
+                        "%r from a lower-precedence marker, which may not be its real state",
+                        run_state_dir,
+                        "y" if len(unreadable) == 1 else "ies",
+                        ", ".join(unreadable),
+                        ticket_id,
+                        state,
+                    )
                 return RunState(state)
         except OSError as exc:
             # Keep probing the lower-precedence states: a marker this console can
@@ -270,6 +310,7 @@ def _marker_state(run_state_dir: Path, ticket_id: str) -> RunState | None:
             # (``ready``/``in-flight``) is a strictly safer answer than ``unknown``.
             if first_error is None:
                 first_error = exc
+            unreadable.append(state)
     if first_error is not None:
         raise first_error
     return None
@@ -356,11 +397,24 @@ def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
         # directory names anybody.
         lists_any_ticket = _directory_lists_any_ticket(run_state_dir) if readable else False
     except OSError:
-        # The directory cannot be stat'ed (EACCES and friends). Same answer as a
+        # Something under here cannot be read (EACCES and friends). Same answer as a
         # vanished directory below, for the same reason: an unreadable source is
         # "I could not tell", never "the source lists nothing".
+        #
+        # The message deliberately does not name WHICH node failed, and deliberately
+        # does not say "every ticket" — matching the resolver's twin
+        # (:func:`run_state_resolver`), which this must not drift from. This ``except``
+        # covers ``_marker_state`` (a state subdirectory), the ``is_dir()`` re-check
+        # (the run-state directory itself) and ``_directory_lists_any_ticket``, so
+        # attributing an EACCES on the directory to "a state subdirectory" would send
+        # an operator to chmod the wrong path; and ``_marker_state`` answers from any
+        # state subdirectory it CAN read, so a ticket this directory names still
+        # resolves its real state rather than ``unknown``.
         _LOGGER.warning(
-            "run-state: %s could not be read; every ticket resolves unknown", run_state_dir
+            "run-state: %s could not be read (the directory itself or one of its state "
+            "subdirectories); %r resolves unknown",
+            run_state_dir,
+            ticket_id,
         )
         return RunState.unknown
 
@@ -377,8 +431,11 @@ def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
         # this IS a degradation, and it is the one that quietly widens the write gate
         # (no marker + "could not tell" resolves to the mutable ``unknown``), so it
         # must leave a trace an operator can find.
+        # ``%r`` for the id, never ``%s`` — the module-wide convention for a value
+        # that reaches a log record from outside (see ``read_json_run_state``), and
+        # what the resolver's twin warnings already use.
         _LOGGER.warning(
-            "run-state: %s could not be enumerated; %s resolves unknown",
+            "run-state: %s could not be enumerated; %r resolves unknown",
             run_state_dir,
             ticket_id,
         )
@@ -506,12 +563,14 @@ def probe_ticket_state_from_source(source: RunStateSource | None, ticket_id: str
     Raises:
         PathTraversal: only on the directory path, where ``ticket_id`` becomes a
             filesystem path segment, and only when that directory is actually
-            probed: :func:`run_state_resolver` settles the SOURCE-level questions
-            (unreadable, vacuous) before any id is validated, so a directory that
-            answers ``unknown`` for every ticket answers it for an unsafe id too,
-            without raising. The JSON path joins no path, so it looks an unsafe id
-            up as an ordinary key and answers ``unknown``/``absent`` like any other
-            unrecognised id, never raising.
+            probed: :func:`run_state_resolver` settles the UNREADABLE-source question
+            before any id is validated, so a directory the console cannot read at all
+            answers ``unknown`` for an unsafe id too, without raising. A VACUOUS
+            directory does NOT get that treatment — it deliberately falls through to
+            the per-ticket closure (see the NOTE in :func:`run_state_resolver`), which
+            validates the id first and therefore DOES raise. The JSON path joins no
+            path, so it looks an unsafe id up as an ordinary key and answers
+            ``unknown``/``absent`` like any other unrecognised id, never raising.
     """
     return run_state_resolver(source)(ticket_id)
 

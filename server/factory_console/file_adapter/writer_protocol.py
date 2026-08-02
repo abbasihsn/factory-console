@@ -44,9 +44,12 @@ class FileWriter(Protocol):
     :class:`~factory_console.domain.project.Project` for the request first. The
     ``preview_*`` methods are pure — they compute a
     :class:`~factory_console.domain.write.DiffPreview` and mutate nothing — while
-    the apply methods enforce their run-state gate before writing (``MUTABLE_STATES``
-    for edit, the wider ``DELETABLE_STATES`` for delete — see the module docstring)
-    and return a :class:`~factory_console.domain.write.WriteResult`. ``@runtime_checkable``
+    the two GATED apply methods enforce their run-state gate before writing
+    (``MUTABLE_STATES`` for edit, the wider ``DELETABLE_STATES`` for delete — see the
+    module docstring) and return a :class:`~factory_console.domain.write.WriteResult`.
+    :meth:`create_ticket` is the third apply method and is deliberately NOT gated;
+    the whole reason delete's allowlist is the wider one depends on that, so read the
+    sentence above as naming edit and delete exhaustively. ``@runtime_checkable``
     lets tests assert an implementation satisfies the port with ``isinstance`` — a
     structural check on method presence only, not on signatures.
     """
@@ -56,7 +59,16 @@ class FileWriter(Protocol):
         ...
 
     def create_ticket(self, project: Project, draft: TicketDraft) -> WriteResult:
-        """Create ``draft`` and return the applied :class:`WriteResult`."""
+        """Create ``draft`` and return the applied :class:`WriteResult`.
+
+        UNGATED BY DESIGN — no run-state check at all, unlike :meth:`edit_ticket` and
+        :meth:`delete_ticket`. A brand-new id is by definition not listed by any
+        resolved run-state source, so ANY gate here would resolve
+        :attr:`~factory_console.domain.run_state.RunState.absent` and 409 every create
+        in a project whose source is populated. :meth:`delete_ticket`'s wider allowlist
+        exists precisely to undo what this ungatedness permits, so an implementation
+        that gates create is not conforming (T80 amendment, gap 2).
+        """
         ...
 
     def preview_edit(self, project: Project, ticket_id: str, edit: TicketEdit) -> DiffPreview:

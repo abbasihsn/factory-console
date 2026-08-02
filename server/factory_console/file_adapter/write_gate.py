@@ -97,9 +97,16 @@ class TicketNotMutable(FactoryConsoleError):
         self, ticket_id: str, run_state: RunState, *, source_path: Path | None = None
     ) -> None:
         if run_state is RunState.absent and source_path is not None:
+            # "will not EDIT it", not "will not write it". This branch is reachable
+            # only from :func:`ensure_mutable`, because ``absent`` is inside
+            # :data:`DELETABLE_STATES` — so by construction a delete of this same
+            # ticket SUCCEEDS. The ticket's pre-amendment wording ("write") was
+            # written before delete was widened; keeping it would tell an operator
+            # the console refuses every write on a ticket it will happily delete,
+            # which is the recovery path gap 2 exists to give them.
             message = (
                 f"Ticket {ticket_id} is not known to the run-state at {source_path}, "
-                "so the console will not write it"
+                "so the console will not edit it; it can still be deleted"
             )
         else:
             message = f"Ticket {ticket_id} is not editable in run-state '{run_state.value}'"

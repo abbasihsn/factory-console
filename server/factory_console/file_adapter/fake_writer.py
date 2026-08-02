@@ -394,7 +394,17 @@ class FakeFileWriter:
         test seeding ``absent`` would see the fake refuse a delete the real writer
         performs, which is the one thing a fake gate must never do. The divergence
         noted on :meth:`_ensure_mutable` is about the UNSEEDED default only; for a
-        seeded state the two writers now agree on both edit and delete.
+        seeded state the two writers now agree on the allow/refuse DECISION for both
+        edit and delete.
+
+        They do NOT agree on the refusal MESSAGE, and cannot: the real gate names the
+        resolved run-state source in its ``absent`` message
+        (:class:`~factory_console.file_adapter.write_gate.TicketNotMutable`), and this
+        fake has no source to name — a seeded state is not read from one. So a seeded
+        ``absent`` refusal here carries the generic prose. Pin the ``absent`` 409 BODY
+        against :class:`~factory_console.file_adapter.real_writer.RealFileWriter`;
+        ``details`` (``ticketId``/``runState``) is identical either way, so a test that
+        switches on the state rather than the prose holds against both.
         """
         self._ensure_state_allowed(ticket_id, write_gate.DELETABLE_STATES)
 

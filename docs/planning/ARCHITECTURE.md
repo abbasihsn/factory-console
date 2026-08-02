@@ -118,6 +118,8 @@ Fallback probe order: `<root>/.factory/run-state/`, then `<root>/docs/planning/.
 
 Absence of the run-state dir → all tickets `RunState.unknown`. Present dir but missing marker → `RunState.todo`. The console **MUST NOT** write anything here in v0 or v2. v2's editing gate uses `RunState == todo` (or `unknown`) as the only editable predicate.
 
+> **⚠ SUPERSEDED BY T80 — do not build against the two sentences above.** They are kept verbatim only so the correction can quote what it replaces. As shipped, resolution is three-way, not two: **no source at all → `unknown` (mutable)**; **a resolved but _vacuous_ source → `unknown` (mutable)** — a marker directory holding no marker for any ticket, or a `run-state.json` whose `tickets` object parsed and is empty; **a _populated_ source that does not list this ticket → `absent`**, which is refused an edit but is still **deletable** (`ensure_deletable`, because `create_ticket` is ungated). An unreadable or vanished source resolves `unknown`, never `absent`. There are therefore **two** predicates, not one: `MUTABLE_STATES` for edit and the wider `DELETABLE_STATES` for delete. The console also reads `.factory/run-state.json` in preference to this directory. See `docs/planning/tickets/v2.1/T80-write-gate-absent-vs-unsourced.md`; **T86** rewrites this whole section.
+
 ### CLI contract
 ```
 factory-console [PATH] [--port N] [--host 127.0.0.1] [--no-browser] [--log-level LEVEL] [--version]

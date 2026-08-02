@@ -8,10 +8,17 @@ have to re-derive from a path shape, so the prober reports it: a
 :class:`RunStateSource` carries the resolved ``kind`` alongside its ``path``, and
 every downstream read dispatches on that ``kind``.
 
-:class:`JsonRunState` is the parsed result of the JSON form — the states it
-named, plus the statuses it named that this console does not recognise. The
-second list exists so a factory that gains a tenth status shows up as an
-explicit gap rather than as a project silently full of ``unknown``.
+:class:`JsonRunState` is the parsed result of the JSON form, and carries FOUR
+things: the states it named; the statuses it named that this console does not
+recognise (so a factory that gains a tenth status shows up as an explicit gap
+rather than as a project silently full of ``unknown``); ``known_ticket_ids``,
+every id the file mentioned at all, which is what separates "listed, but we could
+not classify it" from "not listed" and so decides
+:attr:`~factory_console.domain.run_state.RunState.absent` versus ``unknown``; and
+``readable``, whether the file could be trusted at all. The last two are read
+TOGETHER — an empty ``known_ticket_ids`` means "the file lists nobody" only when
+``readable`` is true — because a file that could not be parsed must never resolve
+``absent`` for every ticket and lock the project read-only (T80).
 """
 
 from __future__ import annotations

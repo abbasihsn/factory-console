@@ -11,11 +11,18 @@ contributed it uses, not one canonical spelling:
   needs_human`` (underscored). There is no ``in-flight`` in the factory at all —
   it exists here only because the directory form names it.
 
-``unknown`` belongs to neither source: it is the "no run-state source present or
-resolvable" answer. ``absent`` is different again: a run-state source WAS
-resolved, but it does not list the ticket being asked about — a ticket added to
+``unknown`` belongs to neither source: it is the "no answer this console can
+trust" catch-all, which is BROADER than "no run-state source on disk". It also
+covers a source that could not be read or parsed, a source that resolved and
+lists NO ticket at all (a VACUOUS source — an empty marker directory, or a
+``run-state.json`` whose ``tickets`` object parsed and is empty; a source that
+names nobody says nothing about anybody), and a ticket the source DOES list under
+a status outside
+:data:`~factory_console.file_adapter.run_state.FACTORY_STATUS_ALIASES`.
+``absent`` is different again: a run-state source WAS resolved, lists at least one
+ticket, and does not list the ticket being asked about — a ticket added to
 ``tickets.json`` by hand after the last factory run, or a mistyped id. The two
-must never collapse into each other: ``unknown`` is "there is no source to ask";
+must never collapse into each other: ``unknown`` is "no answer to trust";
 ``absent`` is "the source answered, and its answer is 'not listed'". Neither is
 NAMED by a source, but they are NOT treated alike by the write gate: ``unknown``
 stays editable, because a project with no run-state source at all must remain
@@ -61,10 +68,13 @@ class RunState(str, Enum):  # noqa: UP042
     flagged = "flagged"
     failed = "failed"
     needs_human = "needs_human"
-    # Named by no source: no run-state source present, or it could not be read.
+    # No answer to trust: no run-state source present, one that could not be read
+    # or parsed, one that resolved but lists no ticket at all, or an entry whose
+    # status this console does not recognise. See the module docstring — this is
+    # deliberately broader than "no source on disk".
     unknown = "unknown"
     # Named by no source either — but for a different reason: a run-state source
-    # WAS resolved and read, and it simply does not list this ticket. Distinct
-    # from ``unknown`` so a caller cannot conflate "nothing to ask" with "asked,
-    # and the answer is 'not listed'".
+    # WAS resolved and read, it lists at least one ticket, and it simply does not
+    # list this one. Distinct from ``unknown`` so a caller cannot conflate "no
+    # answer to trust" with "asked, and the answer is 'not listed'".
     absent = "absent"
