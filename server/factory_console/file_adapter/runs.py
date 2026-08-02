@@ -290,14 +290,16 @@ def _read_json_artifact(path: Path) -> ArtifactRead:
             # states with ``is_file()`` and ``run_state.find_run_state_source`` with
             # ``_is_regular_file``.
             #
-            # This also settles the DIRECTORY case: a directory used to reach
-            # ``unreadable`` only because ``read_bytes`` raised ``IsADirectoryError``,
-            # which meant a directory whose ``st_size`` happened to exceed the cap
-            # (large directories on ext4/XFS) was reported ``too_large`` instead — two
-            # of the four reasons this module promises never to conflate. (Under
-            # ``O_RDONLY`` a directory now fails at the open with EISDIR, so it is
-            # refused even earlier; this stays as the backstop for platforms that
-            # permit the open.)
+            # This also settles the DIRECTORY case, and it is the ONLY thing that does,
+            # on every platform this project supports. ``O_RDONLY`` does NOT fail on a
+            # directory: EISDIR is raised for ``O_WRONLY``/``O_RDWR`` only, so the open
+            # above succeeds on Linux and macOS and this check is the load-bearing
+            # refusal, not a backstop for some other gate — do not remove it as
+            # redundant. Before it, a directory reached ``unreadable`` only because
+            # ``read_bytes`` raised ``IsADirectoryError``, which meant a directory whose
+            # ``st_size`` happened to exceed the cap (large directories on ext4/XFS) was
+            # reported ``too_large`` instead — two of the four reasons this module
+            # promises never to conflate.
             _LOGGER.warning("runs: %s is not a regular file; it is not read", path)
             return ArtifactRead(path=path, reason="unreadable")
 
@@ -334,7 +336,20 @@ def _read_json_artifact(path: Path) -> ArtifactRead:
     finally:
         # ``closefd=False`` above so this one owner closes the descriptor on every
         # path, including the early returns that never reach ``fdopen`` at all.
-        os.close(descriptor)
+        #
+        # Guarded, because ``close(2)`` is not infallible: it reports deferred errors
+        # (EIO on NFS and some FUSE mounts) and can fail EBADF/EINTR under a descriptor
+        # race. Raising from a ``finally`` REPLACES the ``ArtifactRead`` the branches
+        # above already computed, so an unguarded close is the one hole in this
+        # function's NEVER-raises contract — and the escaping ``OSError`` is not a
+        # :class:`~factory_console.errors.FactoryConsoleError`, so the edge layer has no
+        # handler for it and it surfaces as an unmapped 500. Swallowing is safe here and
+        # nowhere else: the bytes are already read and the verdict already decided, so a
+        # failed close cannot change the answer, only lose the descriptor.
+        try:
+            os.close(descriptor)
+        except OSError as error:
+            _LOGGER.warning("runs: %s could not be closed: %r", path, error)
 
     if len(raw) > MAX_ARTIFACT_BYTES:
         # The file GREW past the cap between the fstat and the read. Reported, never
