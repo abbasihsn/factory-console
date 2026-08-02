@@ -18,6 +18,7 @@ from factory_console.api.v1.health import router as health_router
 from factory_console.api.v1.project import router as project_router
 from factory_console.api.v1.roadmap import router as roadmap_router
 from factory_console.api.v1.search import router as search_router
+from factory_console.api.v1.spend import router as spend_router
 from factory_console.api.v1.tickets import router as tickets_router
 from factory_console.api.v1.tickets_write import router as tickets_write_router
 
@@ -35,5 +36,6 @@ router.include_router(search_router)
 router.include_router(graph_router)
 router.include_router(events_router)
 router.include_router(tickets_write_router)
+router.include_router(spend_router)
 
 __all__ = ["API_V1_PREFIX", "router"]
