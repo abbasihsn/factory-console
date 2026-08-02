@@ -154,7 +154,7 @@ def test_an_unreadable_dir_refuses_writes_and_is_distinct_from_absent(tmp_path: 
     # uid): "I could not look", not "there is nothing to find". It may be hiding a
     # `merged` marker, so it must not resolve the mutable `unknown` — that granted a
     # write precisely because the check could not run.
-    # ``_node_exists`` swallows only ENOENT/ENOTDIR/EBADF/ELOOP, so on EACCES it
+    # ``_node_exists`` swallows only ENOENT/ENOTDIR/EBADF, so on EACCES it
     # RAISES — without the OSError guard in probe_ticket_state this escapes the
     # read-only prober and 500s every list/read/write request for the project.
     run_state_dir = tmp_path / "run-state"
@@ -218,6 +218,65 @@ def test_a_missing_marker_is_still_absent_not_unreadable(tmp_path: Path) -> None
 
     assert probe_ticket_state(run_state_dir, "CAD-1") is RunState.todo
     assert probe_ticket_state(run_state_dir, "CAD-999") is RunState.absent
+
+
+def test_a_looping_higher_precedence_state_dir_refuses_rather_than_reading_the_stale_marker(
+    tmp_path: Path,
+) -> None:
+    # T80's RESOLUTION INVARIANT, reached through the ERRNO TABLE rather than through the
+    # precedence walk. `merged/` is a symlink loop: the entry EXISTS and cannot be
+    # RESOLVED, so `stat()` raises ELOOP. `_ABSENT_ERRNOS` used to include ELOOP (matching
+    # CPython's `pathlib._ignore_error`), which made `_node_exists` answer False instead of
+    # raising — so the walk stepped over `merged/` and returned the stale `todo/CAD-1`,
+    # the MUTABLE state, for a ticket the run-state may well have merged. That is amendment
+    # 3's fail-open exactly, arriving by a route the amendment's own fix did not cover:
+    # nothing propagated, so neither caller's OSError guard ever saw it.
+    #
+    # Nothing is lost by excluding ELOOP — a DANGLING symlink still answers ENOENT and is
+    # still ordinary absence (pinned by the test above).
+    run_state_dir = tmp_path / "run-state"
+    (run_state_dir / "todo").mkdir(parents=True)
+    (run_state_dir / "todo" / "CAD-1").touch()
+    try:
+        (run_state_dir / "merged").symlink_to(run_state_dir / "merged")
+    except (OSError, NotImplementedError):  # pragma: no cover - platform without symlinks
+        pytest.skip("platform does not support symlinks")
+
+    state = probe_ticket_state(run_state_dir, "CAD-1")
+
+    assert state is RunState.unreadable, (
+        "a state dir at a HIGHER precedence than the marker found could not be read, so "
+        "the resolution must refuse rather than fall back to the more permissive `todo`"
+    )
+    # The behaviour that matters, asserted on the state rather than on any message.
+    assert state not in write_gate.MUTABLE_STATES
+    assert state not in write_gate.DELETABLE_STATES
+    # The batch form must not drift from the single-ticket one.
+    resolve = run_state_resolver(RunStateSource(kind="directory", path=run_state_dir))
+    assert resolve("CAD-1") is RunState.unreadable
+
+
+def test_a_looping_lower_precedence_state_dir_does_not_change_a_higher_marker(
+    tmp_path: Path,
+) -> None:
+    # The inverse bound, and the test that fails if the ELOOP fix over-refuses: the walk
+    # returns on the FIRST hit, so a `merged/CAD-1` it could read settles the answer and a
+    # looping `todo/` BELOW it is never stat'ed. "At or above the marker found" is the
+    # bound; below it changes nothing.
+    run_state_dir = tmp_path / "run-state"
+    (run_state_dir / "merged").mkdir(parents=True)
+    (run_state_dir / "merged" / "CAD-1").touch()
+    try:
+        (run_state_dir / "todo").symlink_to(run_state_dir / "todo")
+    except (OSError, NotImplementedError):  # pragma: no cover - platform without symlinks
+        pytest.skip("platform does not support symlinks")
+
+    assert probe_ticket_state(run_state_dir, "CAD-1") is RunState.merged
+    # Asserted on BOTH forms, like the test above: the inverse bound is exactly where an
+    # over-refusing fix would show up, and it must not be able to show up in only one of
+    # the two implementations this module warns must not drift apart.
+    resolve = run_state_resolver(RunStateSource(kind="directory", path=run_state_dir))
+    assert resolve("CAD-1") is RunState.merged
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")

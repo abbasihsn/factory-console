@@ -73,7 +73,7 @@ No database. Source of truth is the target project's files, modeled as read-thro
 - **Project** — `{ rootPath, ticketsManifestPath, ticketsDir, roadmapPath|None, runStateDir|None, discoveredAt }`. Constructed once per request.
 - **Ticket** — `{ id, title, status, track|None, milestone|None, dependsOn: [str], provides: [str], files: [str], filePath, bodyMarkdown, bodyHtml, raw: dict }`. Joins a manifest entry with its `.md` at `docs/planning/tickets/<id>.md`.
 - **TicketSummary** — list projection: `{ id, title, status, track, milestone, runState, depCount, dependentCount }`.
-- **RunState** — enum `{ todo, in_flight, ready, merged, unknown }`, derived by probing the factory run-state directory.
+- **RunState** — enum, derived from the project's resolved run-state **source** (`.factory/run-state.json` in preference to the marker directory — see "Factory run-state directory" below, whose addenda are normative for HOW each member is resolved). Members: the four directory-form states `{ todo, in_flight, ready, merged }`; the six further factory statuses `{ in_progress, in_part, in_submilestone, flagged, failed, needs_human }` (T78, JSON form only); and the three "no state was read" answers `{ unknown, absent, unreadable }` (T80), which are the ones the write gates discriminate on. Single source of truth: `factory_console.domain.run_state.RunState`; the SPA's union is generated from it, never hand-maintained.
 - **DepNeighborhood** — `{ ticket, directDeps, directDependents, unresolvedDeps }`. Dependents computed by reverse-indexing `dependsOn` per request.
 - **Roadmap** — `{ path, bodyMarkdown, bodyHtml }` — MVP detects presence; v1 renders full body.
 

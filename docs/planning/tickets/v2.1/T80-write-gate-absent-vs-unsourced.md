@@ -234,3 +234,77 @@ stopped"*), **DL-058** (*absence of a record is not absence of a process*).
 - CPython **3.13**: the EACCES-raising behaviour `Path.exists()`/`is_dir()` lost in gh-113978 must not
   be assumed anywhere the invariant is enforced — this round already found one such site, and the
   audit in step 2 must confirm there are no others.
+
+### The audit (Amendment 3, step 2) — every resolution path, with its verdict
+
+Required by step 2: *"Audit every other resolution path in `run_state.py` against the invariant in the
+same pass... A path that is already correct is a finding too — record it as checked."* Every site that
+can turn a filesystem answer into a `RunState`, in resolution order:
+
+| # | Path | Verdict |
+|---|---|---|
+| 1 | `_node_exists` / `_is_directory` / `_is_regular_file` — the errno split | **DEFECT, fixed this round.** `_ABSENT_ERRNOS` included `ELOOP`, so a symlink loop answered "definitively absent" instead of raising. See below. |
+| 2 | `find_run_state_source` — discovery | **CHECKED.** A candidate that could not be probed resolves *to* that candidate and refuses, rather than being skipped into `None` (the mutable `unknown`). |
+| 3 | `find_run_state_dir` | **CHECKED, no production caller.** A `None` here does not mean "no directory exists"; nothing derives a safety decision from it (`atomic_write` forbids all documented locations unconditionally). |
+| 4 | `_directory_lists_any_ticket` — vacuity | **CHECKED.** Three-way `bool \| None`: `ENOENT`/`ENOTDIR` are definitive, every other `OSError` degrades to `None` ("could not tell"), which the caller refuses rather than reading as vacuity. |
+| 5 | `_marker_state` — the precedence walk | **CHECKED.** `OSError` propagates; the "at or above" bound is free from returning on the first hit, so an unreadable directory *below* a determined answer cannot change it. |
+| 6 | `probe_ticket_state` | **CHECKED, and NO PRODUCTION CALLER** — see the open finding below. |
+| 7 | `read_json_run_state` — document-level failures | **CHECKED, with a ratified residual.** A vanished file and content that could not be *parsed* resolve the mutable `unknown`; only an existing file whose bytes could not be read sets `unreadable`. The parse-failure half is ratified by `ARCHITECTURE.md` addendum (amendment 2) but sits in tension with the invariant — see the open finding below. |
+| 8 | `run_state_resolver` → `resolve_json` — per-entry failures | **RESIDUAL, NOT RATIFIED.** An entry that names *this* ticket under a status the console cannot classify resolves the mutable `unknown` via the `known_ticket_ids` arm — see the open finding below. |
+| 9 | `run_state_resolver` → `resolve_directory` | **CHECKED.** Unreadable-source canary settled once, vanished-directory re-check on the no-marker path, and `enumeration_failed` carried into the closure so "could not enumerate" never reads as "lists nobody". |
+| 10 | `write_gate._ensure_state_allowed` | **CHECKED.** One resolution site, two allowlists, `unreadable` in neither; a fresh resolver per gate call, so vacuity is never stale at gate time. |
+| 11 | `RealFileAdapter._safe_run_state` (`real.py`) | **CHECKED, read-only.** `PathTraversal` → `unknown` feeds list/deps/graph badges only; the write gate never routes through it. |
+
+**CPython 3.13 / gh-113978:** confirmed by grep that `run_state.py`, `write_gate.py` and
+`domain/run_state_source.py` contain **no** raw `Path.exists()` / `.is_dir()` / `.is_file()` — every
+node check goes through the three helpers that own the errno split. There are no other such sites.
+
+### The fifth case, found by the audit and fixed: `ELOOP` is not absence
+
+`_ABSENT_ERRNOS` was `{ENOENT, ENOTDIR, EBADF, ELOOP}`, matching CPython's `pathlib._ignore_error`.
+`ELOOP` does not mean "this node is not there" — it means the entry **exists** and could not be
+**resolved**. So the fail-open arrived through the errno table rather than through the walk, which is
+why amendment 3's fix to `_marker_state` did not cover it:
+
+- a looping `merged/<id>` answered `False` instead of raising, so the walk stepped over it and
+  returned the stale `todo/<id>` — the **mutable** state — for a ticket the factory may have merged;
+- a looping run-state **directory** answered `False` from `_is_directory`, which `run_state_resolver`
+  reads as "not a directory" and turns into the mutable `unknown` for **every** ticket in the project.
+
+Neither propagated, so no `OSError` guard ever saw them. `ELOOP` is now excluded and both cases
+refuse. Nothing is lost: a *dangling* symlink still answers `ENOENT` and is still ordinary absence
+(pinned by `test_a_missing_marker_is_still_absent_not_unreadable`). `EBADF` stays — a path-based
+`stat()` cannot raise it, so it is inert. Guarded by
+`test_a_looping_higher_precedence_state_dir_refuses_rather_than_reading_the_stale_marker` and its
+over-refusal inverse, `test_a_looping_lower_precedence_state_dir_does_not_change_a_higher_marker`.
+
+### Open, and needing a decision rather than an auto-fix
+
+Recorded here in the pattern the three amendments above established — a gate-policy question is
+decided by a human and written into this ticket, not silently patched.
+
+1. **An entry that names this ticket under an unclassifiable status resolves MUTABLE** (`resolve_json`,
+   the `ticket_id in parsed.known_ticket_ids` arm). The file parsed fine and *does* list this ticket;
+   only its `status` could not be mapped. By the invariant's own wording that is "the source claims,
+   and we could not see what" → **REFUSE** — the status we failed to read could have been `merged`.
+   Reachable without corruption: the factory gaining a tenth `FAC_STATES` member, a schema drift to
+   `{"T42": "merged"}` (status as the value, not an object), a `status` that is not a string. Note
+   `JsonRunState.unrecognised` is written and consumed by nothing, so the "visible gap" this is
+   defended by is a log line only. Currently pinned as intended behaviour by
+   `test_run_state_source.py`; overturning it means changing those tests, the two docstrings, and
+   ARCHITECTURE.md. **This is the fourth instance of the conflation, and the case the invariant
+   covers most plainly — it should probably become amendment 4.**
+2. **A `run-state.json` that exists but could not be PARSED makes the whole project mutable.** The
+   `ARCHITECTURE.md` addendum (amendment 2) explicitly ratifies this (`unknown` covers "content that
+   could not be parsed"), so unlike (1) it is a contract change, not just a code change. Worth
+   re-deciding anyway: the factory writes this file from another process, so a truncated or
+   half-written file makes every ticket it lists as `merged` editable for the length of the window.
+3. **`probe_ticket_state` has no production caller** (~130 lines re-deriving the same invariant that
+   `resolve_directory` implements independently), while `probe_ticket_state_from_source` — the write
+   gate's and the ticket-detail read's path — goes through `run_state_resolver` and therefore pays the
+   batch form's eager canary + full `_directory_lists_any_ticket` enumeration for a **single** id,
+   where `main` paid up to four `stat()` calls. So the duplication amendment 3 set out to remove is
+   still there, and the single-ticket path pays the batch cost. The two available fixes pull in
+   opposite directions — collapse `probe_ticket_state` into a wrapper (removes the duplication, keeps
+   the eager cost) or route the single-id path back through it (removes the cost, keeps the
+   duplication) — which is why this is a design decision and not an auto-fix.

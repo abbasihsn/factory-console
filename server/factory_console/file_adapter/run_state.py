@@ -52,9 +52,20 @@ _MARKER_PRECEDENCE = ("merged", "ready", "in-flight", "todo")
 # The factory's nine ``FAC_STATES`` mapped to console states, explicitly and
 # exhaustively. This is the ONE place a factory status name is interpreted: a
 # status absent from this table is NOT munged into a member, it becomes
-# ``unknown`` and is reported in ``JsonRunState.unrecognised``, so a factory that
-# gains a tenth state surfaces as a visible gap instead of a repo full of
-# ``unknown``. Three names (``todo``, ``ready``, ``merged``) are shared with the
+# ``unknown`` and is recorded in ``JsonRunState.unrecognised``.
+#
+# READ THAT LAST CLAUSE NARROWLY. ``unrecognised`` is written here and consumed by
+# NOTHING outside this module's tests, so a tenth factory state surfaces only as a
+# ``warning`` log line — while the ticket it describes resolves the MUTABLE
+# ``unknown`` and the write gate GRANTS the edit. An entry that names THIS ticket
+# under a status this console cannot classify is "the source claims, and we could
+# not see what", which T80's resolution invariant says must REFUSE; it is routed to
+# ``unknown`` by ``run_state_resolver``'s ``known_ticket_ids`` arm instead. That is a
+# deliberate, tested decision (``test_run_state_source.py`` pins it) and a gate-policy
+# question, not an oversight — but do not read this comment as saying the gap is
+# visible anywhere an operator or the gate would act on it.
+#
+# Three names (``todo``, ``ready``, ``merged``) are shared with the
 # directory form; the other six exist only here. Note ``in_progress`` maps to
 # ``RunState.in_progress`` and NOT to the directory form's ``in-flight``: the
 # factory has no ``in-flight``, and collapsing the two would lose which source
@@ -84,11 +95,22 @@ RUN_STATE_RELATIVE_LOCATIONS: tuple[Path, ...] = tuple(
 )
 
 
-# The errno set that means "this node definitively is not there" — the same one
-# CPython's ``pathlib._ignore_error`` uses. Everything else (``EACCES`` above all)
-# means "it may well be there and I could not look", which is the distinction T80's
-# second amendment turns on.
-_ABSENT_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP})
+# The errno set that means "this node definitively is not there". DELIBERATELY NARROWER
+# than CPython's ``pathlib._ignore_error``, which also swallows ``ELOOP``: a symlink loop
+# — or a chain past ``MAXSYMLINKS`` — means the entry EXISTS and could not be RESOLVED,
+# which is "I could not look", not "there is nothing to find". Nothing is lost by
+# excluding it, because a DANGLING symlink already answers ``ENOENT`` on its own.
+# Swallowing ``ELOOP`` reopened T80 amendment 3's fail-open through the errno table
+# rather than through the walk: a looping ``merged/<id>`` answered ``False`` instead of
+# raising, so :func:`_marker_state` stepped over it and returned a stale ``todo`` marker
+# — the MUTABLE state — for a ticket the factory had merged; and a looping run-state
+# directory answered ``False`` from :func:`_is_directory`, which :func:`run_state_resolver`
+# reads as "not a directory" and turns into the mutable ``unknown`` for EVERY ticket in
+# the project. ``EBADF`` stays: a path-based ``stat()`` cannot raise it, so it is inert
+# either way, and dropping it would only invite someone to re-add ``ELOOP`` alongside it.
+# Everything else (``EACCES`` above all) means "it may well be there and I could not
+# look", which is the distinction T80's second amendment turns on.
+_ABSENT_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR, errno.EBADF})
 
 
 def _node_exists(path: Path) -> bool:
@@ -99,8 +121,10 @@ def _node_exists(path: Path) -> bool:
     from the interpreter, which is what makes it a contract rather than an accident.
 
     :meth:`Path.exists` cannot carry that split portably. Through CPython 3.12 it
-    ignores only ``_IGNORED_ERRNOS`` (``ENOENT``/``ENOTDIR``/``EBADF``/``ELOOP``) and
-    RE-RAISES ``EACCES``; from CPython 3.13 (gh-113978) it delegates to ``os.path.*``
+    ignores only ``_IGNORED_ERRNOS`` (``ENOENT``/``ENOTDIR``/``EBADF``/``ELOOP`` — one
+    member wider than :data:`_ABSENT_ERRNOS`, see there for why ``ELOOP`` is not
+    absence) and RE-RAISES ``EACCES``; from CPython 3.13 (gh-113978) it delegates to
+    ``os.path.*``
     and swallows EVERY ``OSError``, answering ``False``. ``pyproject.toml`` declares
     ``requires-python = ">=3.11"`` with no upper bound, so both behaviours are inside
     the supported range — and on 3.13 the raise this module's entire ``unreadable``
@@ -464,8 +488,8 @@ def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
 
       The ``OSError`` guard around the marker loop is what turns that into a
       decision rather than a crash: :func:`_node_exists` swallows only
-      :data:`_ABSENT_ERRNOS` (``ENOENT``/``ENOTDIR``/``EBADF``/``ELOOP``), so on
-      ``EACCES`` it RAISES — a rule this module states itself rather than inheriting
+      :data:`_ABSENT_ERRNOS` (``ENOENT``/``ENOTDIR``/``EBADF``), so on ``EACCES``
+      — or ``ELOOP`` — it RAISES — a rule this module states itself rather than inheriting
       from :meth:`Path.exists`, whose errno handling changed in CPython 3.13 (see
       :func:`_node_exists`). Without the guard
       a permission-restricted run-state directory would escape this read-only prober
