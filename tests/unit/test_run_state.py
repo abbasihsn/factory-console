@@ -676,6 +676,12 @@ def test_an_unrecognised_state_that_names_nobody_changes_nothing(tmp_path: Path)
     # commits an empty one to git — turn a whole project read-only. A directory that
     # names nobody refuses nobody, so every id must resolve EXACTLY as it would if the
     # directory were not there at all.
+    #
+    # Amendment 1 makes this converse load-bearing rather than merely tidy, and it is the
+    # test that keeps the two cases apart: an UNSEARCHABLE `in_review/` now refuses every
+    # id in the source (the test further down), and that must not be read as licence to
+    # refuse whenever anything is unfamiliar. `in_review/` here is READABLE — we opened it
+    # and it names nobody — which is the "empty" the over-refusal guard was ever about.
     populated = tmp_path / "populated" / "run-state"
     _place_marker(populated, "todo", "T05", as_dir=False)
     (populated / "in_review").mkdir()
@@ -803,40 +809,55 @@ def test_an_undiscoverable_state_set_is_not_read_as_listing_you(
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
-def test_an_unrecognised_state_that_will_not_open_refuses_only_the_ids_it_could_hide(
+def test_an_unrecognised_state_that_will_not_open_refuses_every_id_in_the_source(
     tmp_path: Path,
 ) -> None:
-    # The converse bound, and the one over-refusal would break. `in_review/` is
-    # DISCOVERABLE (the run-state dir lists fine) but not SEARCHABLE, so the per-id probe
-    # raises EACCES for every id. Letting that propagate refused the whole project —
-    # including CAD-1, whose `todo/` marker reads perfectly — which is precisely the
-    # "misplaced folder turns a project read-only" outcome `_unrecognised_state_naming`
-    # says the per-id rule exists to prevent, and it made the module non-monotonic: an
-    # unlistable run-state dir (strictly LESS discoverable, the test above) answered
-    # every id while a listable one holding a single unsearchable subdirectory —
-    # strictly MORE discoverable — locked every id out.
+    # `in_review/` is DISCOVERABLE (the run-state dir lists fine) but not SEARCHABLE, so
+    # the per-id probe raises EACCES for every id.
+    #
+    # THIS TEST USED TO ASSERT THE OPPOSITE FOR CAD-1, and the reasoning is kept because
+    # it records why the wrong answer was convincing: CAD-1's `todo/` marker reads
+    # perfectly, so refusing it looked like the "misplaced folder turns a project
+    # read-only" outcome the per-id rule exists to prevent — and it made the module look
+    # non-monotonic, since an unlistable run-state dir (strictly LESS discoverable, the
+    # test above) answered every id while a listable one holding a single unsearchable
+    # subdirectory — strictly MORE discoverable — locked every id out.
+    #
+    # T92 amendment 1 overturns it. That guard is about a directory that names NOBODY —
+    # empty, and readable enough to KNOW it is empty (the converse is pinned by
+    # `test_an_unrecognised_state_that_names_nobody_changes_nothing`). An unsearchable
+    # directory is not empty, it is UNKNOWN: it cannot be enumerated, so CAD-1 cannot be
+    # ruled out of it, and if it names CAD-1 then the state it names has a precedence
+    # this console cannot rank — exactly the clause that already makes a VISIBLE
+    # `in_review/CAD-1` outrank `todo/CAD-1`. "Refusing might lock the project" is the
+    # fail-open this family has rejected six times, and a project going read-only until a
+    # human chmods one directory is the correct, LOUD outcome; the mutable answer was
+    # neither.
     run_state_dir = tmp_path / "run-state"
     _place_marker(run_state_dir, "todo", "CAD-1", as_dir=False)
     _place_marker(run_state_dir, "in_review", "CAD-2", as_dir=False)
     source = RunStateSource(kind="directory", path=run_state_dir)
     (run_state_dir / "in_review").chmod(0o600)
     try:
+        # An id with a perfectly readable known marker: refused too, now.
         marked = probe_ticket_state(run_state_dir, "CAD-1")
         marked_resolved = run_state_resolver(source)("CAD-1")
-        # An id with NO readable marker still refuses: the marker it needs may be the one
-        # sitting behind the directory that would not open, so this must not be `absent`
-        # (deletable) or the mutable `unknown`.
+        # And an id with NO readable marker: the marker it needs may be the one sitting
+        # behind the directory that would not open, so this must not be `absent`
+        # (deletable) or the mutable `unknown` either.
         unmarked = probe_ticket_state(run_state_dir, "CAD-99")
         unmarked_resolved = run_state_resolver(source)("CAD-99")
+        # The refusal quotes no value: the fix here is a permission bit, not a console
+        # upgrade, so the state's NAME would send an operator to the wrong one.
+        marked_reason = probe_ticket_state_with_reason(source, "CAD-1")
     finally:
         (run_state_dir / "in_review").chmod(0o755)
 
-    assert marked is RunState.todo
-    assert marked_resolved is RunState.todo
-    assert marked in write_gate.MUTABLE_STATES
-    for state in (unmarked, unmarked_resolved):
+    for state in (marked, marked_resolved, unmarked, unmarked_resolved):
         assert state is RunState.unreadable
+        assert state not in write_gate.MUTABLE_STATES
         assert state not in write_gate.DELETABLE_STATES
+    assert marked_reason == (RunState.unreadable, None)
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
@@ -845,13 +866,15 @@ def test_a_state_directory_that_will_not_open_is_reported_once_per_resolver(
 ) -> None:
     # The degradation above has to leave ONE trace, the same discipline every other
     # settled-once answer in this module obeys: an unrecognised state directory that
-    # would not open widens nothing but it does refuse ids, and an operator needs to
-    # read WHICH problem they have. The message must not borrow the enumeration one's
-    # prose — this run-state dir listed perfectly well, so "could not be enumerated"
-    # would send them to chmod the wrong path — and a 200-ticket projection must emit
-    # one line, not 200, or the write-audit records are drowned exactly when the console
-    # is degraded. Asserted on ONE resolver reused across ids, which is the only shape
-    # that can observe the `reported_unprobeable` latch at all.
+    # would not open refuses every id in the source, and an operator needs to read WHICH
+    # problem they have. The message must not borrow the enumeration one's prose — this
+    # run-state dir listed perfectly well, so "could not be enumerated" would send them
+    # to chmod the wrong path — and a 200-ticket projection must emit one line, not 200,
+    # or the write-audit records are drowned exactly when the console is degraded.
+    # Asserted on ONE resolver reused across ids, which is the only shape that can
+    # observe the `reported_unprobeable` latch at all — and the latch matters MORE since
+    # amendment 1, because the refusal now covers the marked ids too, so every id in a
+    # projection reaches it rather than only the unmarked tail.
     run_state_dir = tmp_path / "run-state"
     _place_marker(run_state_dir, "todo", "CAD-1", as_dir=False)
     _place_marker(run_state_dir, "in_review", "CAD-2", as_dir=False)
@@ -860,16 +883,19 @@ def test_a_state_directory_that_will_not_open_is_reported_once_per_resolver(
     try:
         with caplog.at_level("WARNING", logger=run_state_module._LOGGER.name):
             resolve = run_state_resolver(source)
-            unmarked = [resolve(f"CAD-{n}") for n in range(90, 96)]
+            # CAD-1 has a readable `todo/` marker; the rest have none. Both classes are
+            # refused now, and both share the one latched record.
+            ids = ("CAD-1", *(f"CAD-{n}" for n in range(90, 96)))
+            refused = [resolve(ticket_id) for ticket_id in ids]
             probed = probe_ticket_state(run_state_dir, "CAD-99")
     finally:
         (run_state_dir / "in_review").chmod(0o755)
 
-    assert all(state is RunState.unreadable for state in unmarked)
+    assert all(state is RunState.unreadable for state in refused)
     assert probed is RunState.unreadable
     could_not_look_in = [r for r in caplog.records if "could not look in" in r.getMessage()]
-    # Six refused ids through the resolver, one through the single-ticket prober: the
-    # resolver's latch collapses its six to one, and the prober — which has no resolver
+    # Seven refused ids through the resolver, one through the single-ticket prober: the
+    # resolver's latch collapses its seven to one, and the prober — which has no resolver
     # to latch on — accounts for the other.
     assert len(could_not_look_in) == 2
     # And it is the OTHER message that must not appear: this directory enumerated fine.
