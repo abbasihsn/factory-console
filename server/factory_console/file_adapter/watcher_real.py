@@ -3,11 +3,20 @@
 
 This is the concrete realization of the deliberate MVP "no watcher" extension
 flagged in the :mod:`~factory_console.file_adapter.watcher` port (T39): a single,
-opt-in, single-process, read-only component that observes the two subtrees v1
-cares about — planning docs under ``docs/planning/**`` and factory lane markers
-under ``.factory/run-state/**`` — and streams project-relative
-:class:`ChangeEvent`s to per-client subscribers so the backend SSE endpoint can
-drive the SPA's live refresh.
+opt-in, single-process, read-only component that observes what v1 cares about —
+planning docs under ``docs/planning/**``, factory lane markers under
+``.factory/run-state/**``, and the factory's primary run-state artifact, the FILE
+``.factory/run-state.json`` — and streams project-relative :class:`ChangeEvent`s
+to per-client subscribers so the backend SSE endpoint can drive the SPA's live
+refresh.
+
+The file source is watched by scheduling its PARENT directory non-recursively and
+filtering events down to that one filename (T91). Two reasons it cannot be watched
+directly: watchdog schedules directories, and the factory replaces the file via
+``mktemp`` + ``mv`` (INV-03), so anything bound to the file's inode would go quiet
+after the first update. That parent watch is a means to observe ONE file — every
+other entry under it is dropped in the handler, so scope does not widen to the
+rest of ``.factory``.
 
 Design (all three properties are load-bearing):
 
@@ -37,6 +46,7 @@ from watchdog.observers import Observer
 
 from factory_console.domain.watch import ChangeEvent, ChangeKind, ChangeScope
 from factory_console.file_adapter.run_state import (
+    RUN_STATE_JSON_RELATIVE_LOCATIONS,
     RUN_STATE_RELATIVE_LOCATIONS,
     is_run_state_marker,
 )
@@ -62,6 +72,14 @@ _ALLOWED_KINDS = frozenset(get_args(ChangeKind))
 # without it a run-state marker in the fallback layout would be mis-tagged
 # ``planning`` and refresh the wrong pane.
 _RUN_STATE_PREFIXES = tuple(loc.as_posix() for loc in RUN_STATE_RELATIVE_LOCATIONS)
+
+# The run-state FILE sources, as project-relative POSIX paths — the exact set an
+# event under a JSON parent watch must match to be surfaced. Same single source
+# of truth as the prefixes above, its ``json`` half. An event matching one of
+# these is scoped ``run-state`` like any directory-source event: the scope says
+# WHAT changed, not which on-disk form stored it, and a subscriber must not be
+# able to tell the two apart.
+_RUN_STATE_JSON_PATHS = frozenset(loc.as_posix() for loc in RUN_STATE_JSON_RELATIVE_LOCATIONS)
 
 
 class _ChangeEventHandler(FileSystemEventHandler):
@@ -101,6 +119,18 @@ class _ChangeEventHandler(FileSystemEventHandler):
         except ValueError:
             # Outside the project root (should not happen for scheduled roots) —
             # skip rather than leak an out-of-tree or absolute path.
+            return
+        if rel_path in _RUN_STATE_JSON_PATHS and not event.is_directory:
+            # The run-state FILE source (T91). Scoped exactly like a
+            # directory-source event, and checked BEFORE the prefix rule below,
+            # which cannot match it: ``.factory/run-state.json`` is a sibling of
+            # ``.factory/run-state``, not a path under it.
+            self._watcher._dispatch_from_thread(kind, "run-state", rel_path)
+            return
+        if Path(rel_path).parent.as_posix() in self._watcher._json_only_roots:
+            # This root is scheduled ONLY to see the run-state file above, and
+            # this event is not it. Dropping everything else here is what keeps
+            # the watch from widening to the rest of ``.factory``.
             return
         scope: ChangeScope = (
             "run-state"
@@ -142,6 +172,13 @@ class RealFileWatcher:
         self._project_root = Path(project_root).resolve()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._observer: Observer | None = None
+        # Project-relative POSIX directories scheduled ONLY to observe a run-state
+        # JSON file inside them (``.factory`` for ``.factory/run-state.json``).
+        # Filled by start(); the handler drops every event under one of these that
+        # is not the JSON file itself, so the parent watch never widens scope. A
+        # JSON parent that is ALREADY covered by a substantive watch is absent
+        # here — its other entries keep whatever meaning that watch gives them.
+        self._json_only_roots: frozenset[str] = frozenset()
         # The register/unregister/fan-out mechanics are shared with FakeFileWatcher
         # via _SubscriberHub (in watcher.py, NOT this guard-scanned source, so it
         # may use ``list.remove`` freely) — one implementation, no drift.
@@ -164,7 +201,9 @@ class RealFileWatcher:
         Called from the backend's async lifespan, so it captures the running loop
         here (there is no running loop on the watchdog thread later). Schedules a
         recursive handler on each of ``docs/planning`` and ``.factory/run-state``
-        that exists on disk; missing roots are skipped.
+        that exists on disk, plus a NON-recursive one on the parent of each
+        run-state JSON file (``.factory``) whose events the handler filters down
+        to that file. Missing roots are skipped.
         """
         if self._observer is not None:
             return
@@ -186,9 +225,25 @@ class RealFileWatcher:
                 candidate.relative_to(planning_root)
             except ValueError:
                 roots.append(candidate)
-        for root in roots:
+        # Recursive roots first, then the JSON sources' parents — so an already
+        # listed root WINS. Scheduling one physical path twice would report every
+        # event under it twice, and a parent already covered by a recursive watch
+        # needs no watch of its own; being watched for more than the JSON file, it
+        # is also not a json-only root, so the handler leaves its other entries
+        # alone. Only these parents are scheduled non-recursively: they exist to
+        # see ONE file, and recursing would drag all of ``.factory`` in for no gain.
+        scheduled: list[tuple[Path, bool]] = [(root, True) for root in roots]
+        json_only_roots: set[str] = set()
+        for relative in RUN_STATE_JSON_RELATIVE_LOCATIONS:
+            parent = self._project_root / relative.parent
+            if any(parent.is_relative_to(root) for root, _ in scheduled):
+                continue
+            scheduled.append((parent, False))
+            json_only_roots.add(relative.parent.as_posix())
+        self._json_only_roots = frozenset(json_only_roots)
+        for root, recursive in scheduled:
             if root.is_dir():
-                observer.schedule(handler, str(root), recursive=True)
+                observer.schedule(handler, str(root), recursive=recursive)
         # Even with no root present the observer is started so ``stop`` stays
         # symmetric; it simply has nothing scheduled.
         self._observer = observer

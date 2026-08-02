@@ -103,6 +103,23 @@ RUN_STATE_RELATIVE_LOCATIONS: tuple[Path, ...] = tuple(
     relative for kind, relative in RUN_STATE_SOURCE_LOCATIONS if kind == "directory"
 )
 
+# The run-state JSON FILE locations, project-relative, in probe order — the
+# ``json`` subset of the same single source of truth, and the exact complement of
+# :data:`RUN_STATE_RELATIVE_LOCATIONS`. It is a SEPARATE accessor rather than a
+# widening of that tuple because that one means "directory locations" and
+# :func:`is_run_state_marker` reads it as such: a marker is
+# ``<location>/<state>/<ticket_id>``, a shape a FILE source has no room for, so
+# folding the two together would silently change marker classification.
+#
+# The T40 ``RealFileWatcher`` (T91) schedules the PARENT directory of each of
+# these and filters events down to these exact paths. Watchdog cannot watch a
+# single file that gets replaced: the factory writes ``run-state.json`` via
+# ``mktemp`` + ``mv`` (INV-03), so a file watch would keep observing the
+# replaced inode and go quiet after the first update.
+RUN_STATE_JSON_RELATIVE_LOCATIONS: tuple[Path, ...] = tuple(
+    relative for kind, relative in RUN_STATE_SOURCE_LOCATIONS if kind == "json"
+)
+
 
 # The errno set that means "this node definitively is not there". DELIBERATELY NARROWER
 # than CPython's ``pathlib._ignore_error``, which also swallows ``ELOOP``: a symlink loop
