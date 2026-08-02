@@ -75,3 +75,34 @@ adding surface. T88 has not grown: four rounds, each finding real defects in the
 (a symlink escape, a resolve/stat-open TOCTOU, a FIFO hang, an AST-guard from-import bypass), and one
 narrow item left with a knowable answer. DL-060's test is *"has the thing being reviewed grown past
 what one round can cover?"* — here it has not, so the correct move is the one round it needs.
+
+---
+
+## Scope closed 2026-08-02 — the remaining four items are owned, not waived
+
+The resumption ran three more rounds. Each fixed a **fresh high-severity defect in the read-only AST
+guard** — a numeric flag-mask bypass, a self-introduced regression on aliased imports, stale comments
+— while the worthy-open count stayed at zero throughout, which tripped the loop's stuck-streak rule.
+That rule fired correctly: a round that keeps finding new highs in one surface, without the open count
+moving, is a round that should stop and let a human look.
+
+**Nothing high-severity is open.** Amendment 1's fix landed. Four medium items remain, and all four
+are assigned rather than dismissed:
+
+| Item | Owner |
+|---|---|
+| `invalid_ticket_id` for a well-formed id in `ticket_md.py` / `write_render.py` | **T96** |
+| `getattr(os, 'O_NOFOLLOW', 0)` degrades to no check, unlike `resolve_or_none` | **T96** |
+| The containment gate reimplemented rather than shared | **T96** |
+| No per-request log dedup — 2×N identical WARNINGs per poll | **T89**, where the loop lives |
+
+**The first three are the same class this Ticket's Amendment 1 opened**, in files this Ticket was not
+allowed to touch. Out of scope is not the same as not a defect, and T96 exists so the record says
+which one it was. The fourth was assigned by the reviewer itself to the Ticket that introduces the
+loop that makes it matter.
+
+**That the AST guard yielded a fresh high in all three rounds is the finding worth carrying**, not the
+individual fixes. A guard that produces a new bypass every time someone looks at it is a guard whose
+shape is wrong — including one round that fixed a bypass and **introduced a regression on aliased
+imports** in the same edit. It is a small enough surface to be worth revisiting deliberately rather
+than one round at a time.

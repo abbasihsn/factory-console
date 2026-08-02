@@ -1266,6 +1266,19 @@
       "provides": "The directory run-state form refuses, PER ID, the ids named under a state subdirectory this console has no name for — even when a recognised marker also names them, because the unknown state's precedence is unknown. A source populated only under unrecognised names is populated, not vacuous, so the vacuity scan counts markers under every subdirectory. An unrecognised directory naming no ids changes nothing: over-refusal is the failure mode the per-id narrowness exists to prevent. Closes the seventh and last instance of T80's fail-open class, found by T80's Amendment 4 step-4 enumeration rather than by a seventh review round.",
       "path": "docs/planning/tickets/v2.1/T92-unrecognised-state-directory.md",
       "status": "todo"
+    },
+    {
+      "id": "T96",
+      "title": "The wrong-cause error and the degrading guard, everywhere else",
+      "track": "backend",
+      "milestone": "v2.1",
+      "depends_on": [
+        "T88"
+      ],
+      "provides": "T88's Amendment 1 applied as a CLASS: invalid_ticket_id is never returned for a well-formed id anywhere, O_NOFOLLOW's absence degrades to a refusal rather than to no check, and the containment gate has one implementation instead of two.",
+      "path": "docs/planning/tickets/v2.1/T96-name-the-cause-class-wide.md",
+      "status": "todo",
+      "source": "T88 review round 3 of resumption, 2026-08-02"
     }
   ]
 }
