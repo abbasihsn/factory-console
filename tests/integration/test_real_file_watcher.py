@@ -65,6 +65,28 @@ async def _next_event(stream: object, task: asyncio.Task | None = None) -> Chang
     return await asyncio.wait_for(pending, _EVENT_TIMEOUT)
 
 
+async def _drain_until(stream: object, path: str, task: asyncio.Task | None = None) -> ChangeEvent:
+    """Await events until one names ``path``, discarding the rest.
+
+    For the rename cases, where the interesting event is not necessarily the first:
+    a backend may also report the temp file's own create, and which events precede
+    the one under test is a backend detail no assertion should depend on. Reuses the
+    primed first-event task the same way :func:`_next_event` does, then falls through
+    to fresh ``__anext__`` calls. Bounded by ``_EVENT_TIMEOUT`` overall, so a backend
+    that never reports ``path`` fails instead of hanging.
+    """
+
+    async def _drain() -> ChangeEvent:
+        pending = task
+        while True:
+            event = await (pending if pending is not None else stream.__anext__())
+            pending = None
+            if event.path == path:
+                return event
+
+    return await asyncio.wait_for(_drain(), _EVENT_TIMEOUT)
+
+
 async def test_write_under_each_root_emits_scoped_relative_event(tmp_path: Path) -> None:
     _make_project(tmp_path)
     watcher = RealFileWatcher(tmp_path)
@@ -193,22 +215,131 @@ async def test_atomic_rename_within_root_reports_destination_path(tmp_path: Path
         temp.write_text("# T50\n")
         temp.rename(tickets / "T50.md")
 
-        async def _drain_until_dest() -> ChangeEvent:
-            pending: asyncio.Task | None = first
-            while True:
-                event = await (pending if pending is not None else stream.__anext__())
-                pending = None
-                # Skip the temp file's own create event; the destination path is
-                # the assertion. (A backend that reports the rename as a plain
-                # create of the destination also satisfies this.)
-                if event.path == "docs/planning/tickets/T50.md":
-                    return event
-
-        event = await asyncio.wait_for(_drain_until_dest(), _EVENT_TIMEOUT)
+        # Skip the temp file's own create event; the destination path is the
+        # assertion. (A backend that reports the rename as a plain create of the
+        # destination also satisfies this.)
+        event = await _drain_until(stream, "docs/planning/tickets/T50.md", first)
         assert event.path == "docs/planning/tickets/T50.md"
         assert event.scope == "planning"
     finally:
         first.cancel()
+        await stream.aclose()
+        watcher.stop()
+
+
+async def test_json_run_state_source_write_emits_run_state_event(tmp_path: Path) -> None:
+    # T91/F1: since T78 the PRIMARY run-state source is a FILE,
+    # ``.factory/run-state.json``. The watcher used to schedule only the
+    # DIRECTORY locations, so on a JSON-sourced project a run-state change fired
+    # no event at all and the live-update path was silently dead. Writing the
+    # file must deliver a ChangeEvent scoped exactly like a directory-source one.
+    (tmp_path / "docs" / "planning").mkdir(parents=True)
+    (tmp_path / ".factory").mkdir()
+    watcher = RealFileWatcher(tmp_path)
+    watcher.start()
+    stream, first = await _primed_stream(watcher)
+    try:
+        (tmp_path / ".factory" / "run-state.json").write_text('{"version": 1, "tickets": {}}')
+        event = await _next_event(stream, first)
+        assert event.scope == "run-state"
+        assert event.path == ".factory/run-state.json"
+        assert event.kind in {"created", "modified"}
+    finally:
+        first.cancel()
+        await stream.aclose()
+        watcher.stop()
+
+
+async def test_json_run_state_source_atomic_rename_emits_event(tmp_path: Path) -> None:
+    # The factory REPLACES run-state.json via mktemp + mv (INV-03), so the file's
+    # inode changes on every update. A naive single-file watch would follow the
+    # old inode and go quiet after the first rename; watching the parent
+    # directory and filtering by name is what keeps this firing.
+    (tmp_path / ".factory").mkdir()
+    factory_dir = tmp_path / ".factory"
+    (factory_dir / "run-state.json").write_text('{"version": 1, "tickets": {}}')
+    watcher = RealFileWatcher(tmp_path)
+    watcher.start()
+    stream, first = await _primed_stream(watcher)
+    try:
+        temp = factory_dir / "run-state.json.tmp"
+        temp.write_text('{"version": 1, "tickets": {"T91": {"status": "merged"}}}')
+        temp.rename(factory_dir / "run-state.json")
+
+        event = await _drain_until(stream, ".factory/run-state.json", first)
+        assert event.scope == "run-state"
+    finally:
+        first.cancel()
+        await stream.aclose()
+        watcher.stop()
+
+
+async def test_other_files_beside_the_json_source_yield_nothing(tmp_path: Path) -> None:
+    # Watching ``.factory`` is a means to observe ONE file. T91 explicitly must
+    # not widen scope: any other entry under ``.factory`` stays invisible.
+    (tmp_path / ".factory").mkdir()
+    watcher = RealFileWatcher(tmp_path)
+    watcher.start()
+    stream, first = await _primed_stream(watcher)
+    try:
+        (tmp_path / ".factory" / "ledger.jsonl").write_text("{}\n")
+        (tmp_path / ".factory" / "notes").mkdir()
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(first, _QUIET_WINDOW)
+    finally:
+        first.cancel()
+        await stream.aclose()
+        watcher.stop()
+
+
+async def test_nested_content_under_the_json_parent_yields_nothing(tmp_path: Path) -> None:
+    # The sibling test above covers DIRECT children of ``.factory``. This one covers
+    # DEPTH, which is a different guard: the ``.factory`` watch is scheduled
+    # ``recursive=False`` precisely so nothing below it is ever reported, and the
+    # handler's json-only drop matches on the immediate parent only. A nested write
+    # therefore has to be invisible at the SCHEDULING layer — if that watch is ever
+    # flipped to recursive, this event would reach the handler, miss both the exact
+    # JSON match and the direct-parent drop, and be dispatched as ``planning``:
+    # scope widening the ticket forbids, and a refresh of the wrong pane.
+    #
+    # ``.factory/metrics/ledger.jsonl`` is not hypothetical — it is the real spend
+    # ledger this console already reads (T79, ``file_adapter/ledger.py``), so it is
+    # exactly the nested content a live project has sitting under the new watch.
+    (tmp_path / ".factory" / "metrics").mkdir(parents=True)
+    watcher = RealFileWatcher(tmp_path)
+    watcher.start()
+    stream, first = await _primed_stream(watcher)
+    try:
+        (tmp_path / ".factory" / "metrics" / "ledger.jsonl").write_text("{}\n")
+        (tmp_path / ".factory" / "metrics" / "deep").mkdir()
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(first, _QUIET_WINDOW)
+    finally:
+        first.cancel()
+        await stream.aclose()
+        watcher.stop()
+
+
+async def test_both_run_state_sources_present_do_not_double_fire(tmp_path: Path) -> None:
+    # With BOTH a run-state directory and the JSON file, one logical change must
+    # still yield exactly one ChangeEvent — the ``.factory`` watch (scheduled for
+    # the JSON file) and the recursive ``.factory/run-state`` watch must not each
+    # report the same change.
+    _make_project(tmp_path)
+    (tmp_path / ".factory" / "run-state.json").write_text('{"version": 1, "tickets": {}}')
+    watcher = RealFileWatcher(tmp_path)
+    watcher.start()
+    stream, first = await _primed_stream(watcher)
+    try:
+        (tmp_path / ".factory" / "run-state.json").write_text(
+            '{"version": 1, "tickets": {"T91": {"status": "ready"}}}'
+        )
+        event = await _next_event(stream, first)
+        assert event.path == ".factory/run-state.json"
+        assert event.scope == "run-state"
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(stream.__anext__(), _QUIET_WINDOW)
+    finally:
         await stream.aclose()
         watcher.stop()
 
@@ -288,11 +419,14 @@ async def test_start_is_idempotent(tmp_path: Path) -> None:
 
 
 async def test_start_is_safe_when_no_watched_root_exists(tmp_path: Path) -> None:
-    # Neither root exists — start still works and stops cleanly (nothing scheduled).
+    # No root exists — not the planning dir, not the run-state dir, and not the
+    # ``.factory`` parent of the JSON source — so start still works and stops
+    # cleanly with NOTHING scheduled (T91 must not invent a root that is absent).
     watcher = RealFileWatcher(tmp_path)
     watcher.start()
     try:
         assert watcher._observer is not None
+        assert watcher._observer.emitters == set()
     finally:
         watcher.stop()
 
