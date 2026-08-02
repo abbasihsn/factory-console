@@ -9,6 +9,12 @@ running, which shapes the whole reader:
   is NOT a zero bill. That question is answered by a ``Path | None``, separately
   from :func:`read_ledger`, whose :class:`LedgerRead` may honestly hold zero
   entries for an EMPTY ledger. The two facts never share a value.
+  There is a THIRD answer, and callers must handle it: when the node cannot be
+  probed at all, the function RAISES ``OSError`` rather than collapsing "I could
+  not look" into the ``None`` that means "definitively not there". A caller that
+  leaves it uncaught turns an unsearchable ``.factory/`` into an unmapped 500;
+  one that catches it reports the bill as UNKNOWN (found, unread) — which is what
+  ``api/v1/spend.py`` does. What it must never do is report ``$0.00``.
 - :func:`read_ledger` parses line by line and never lets one bad line cost the
   file. A line that is not JSON, or is JSON that does not validate, is recorded
   in ``skipped`` with its line number and reason, and the read continues.
@@ -110,6 +116,13 @@ def find_ledger_path(project_root: Path) -> Path | None:
     except OSError as error:
         if error.errno in _ABSENT_ERRNOS:
             return None
+        # The one failure in this module that leaves it as an exception, so it is
+        # also the one that would otherwise leave no trace: its caller answers
+        # "the bill is unknown" with HTTP 200, and an operator asking why would
+        # find a log naming the cause for the ``unreadable`` and ``file_too_large``
+        # cases below and nothing at all for this one. ``%r`` on the cause, per the
+        # rule at :func:`read_ledger` — the errno is the whole diagnostic here.
+        _LOGGER.warning("ledger: %s could not be probed: %r", candidate, error)
         raise
     except ValueError:
         # Parity with :meth:`Path.is_file`, which reads a non-encodable path as

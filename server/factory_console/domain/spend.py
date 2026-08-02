@@ -26,8 +26,12 @@ ledger are different responses; ``found`` is the field that says which.
 **Money rounds once, at the boundary.** :data:`COST_DECIMAL_PLACES` is applied
 here, where the response is built, and never per entry — rounding each entry and
 then summing is how a total drifts from the file it came from. Eight places is
-sub-microcent and preserves the factory's own figures verbatim (it writes at most
-eight), while still discarding the binary noise a long ``fsum`` leaves behind.
+sub-microcent, and it is enough to carry the factory's own per-model figures
+across unchanged: those are written to eight places or fewer. A lane's top-level
+``cost_usd`` is NOT so bounded — it is itself a float sum of those per-model
+figures, so the factory writes it with the trailing noise that produces (the
+real line this repo's tests use as ground truth carries fifteen decimal places).
+That noise is exactly what this rounding step is here to discard.
 
 Like :mod:`factory_console.domain.graph`, these models are imported by full path
 from their consumers and deliberately NOT re-exported from ``domain/__init__``, so
@@ -59,10 +63,13 @@ an even split would report two figures the ledger never measured.
 COST_DECIMAL_PLACES = 8
 """Decimal places every dollar figure in this module is rounded to, ONCE.
 
-Applied only where a response model is built. Eight places keeps the factory's own
-cost figures bit-identical (it writes no more than eight) while dropping the
-trailing binary noise of a float sum — a per-entry round, summed, would instead
-drift from the file by an amount that grows with the ledger.
+Applied only where a response model is built. Eight places carries the factory's
+per-model cost figures through unchanged — those are written to eight places or
+fewer — while dropping the trailing binary noise of a float sum. A lane's own
+``cost_usd`` routinely carries more places than that, being a float sum of the
+per-model figures; the extra places are noise, not measurement. A per-entry
+round, summed, would instead drift from the file by an amount that grows with
+the ledger.
 """
 
 
@@ -218,7 +225,13 @@ class SourceInfo(BaseModel):
     nothing to read. ``totals`` is a MEASURED zero only when ``read`` is true; on
     ``found: true, read: false`` it is a placeholder for a bill nobody could count.
 
-    ``path`` is the resolved ledger path when ``found``, and ``None`` when not.
+    ``path`` is where the console LOOKED, not proof that anything was there — it
+    is populated on all three outcomes, including ``found: false``. A view whose
+    entire job in the no-ledger case is to explain the absence has to be able to
+    name the place, and reading that off ``found`` instead would make the
+    frontend restate the ledger's location in its own source. ``found`` and
+    ``read``, not this field, are what say whether the file exists and was
+    parsed. It is ``None`` only when the path could not be formed at all.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")

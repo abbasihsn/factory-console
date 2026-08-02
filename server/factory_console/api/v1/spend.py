@@ -107,7 +107,16 @@ async def get_spend(request: Request) -> SpendResponse:
             skipped=[SkippedLineInfo(lineNo=0, reason="unreadable")],
         )
     if path is None:
-        return SpendResponse.from_report(aggregate([]), source=SourceInfo(found=False))
+        # ``path`` is reported even though nothing was found, because the view for
+        # this case (T84) has to say WHERE the console looked — that is the whole
+        # explanation for a fresh clone, and the alternative is the frontend
+        # hardcoding ``LEDGER_RELATIVE_PATH`` on the other side of the language
+        # boundary, where it drifts the first time the factory moves the file.
+        # ``found`` remains the field that says whether it is there.
+        return SpendResponse.from_report(
+            aggregate([]),
+            source=SourceInfo(found=False, path=str(root / LEDGER_RELATIVE_PATH)),
+        )
 
     result = read_ledger(path)
     return SpendResponse.from_report(

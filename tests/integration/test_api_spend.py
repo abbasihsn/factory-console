@@ -115,7 +115,14 @@ def test_a_project_with_no_ledger_reports_source_not_found(tmp_path: Path) -> No
     # rendering it as "$0.00" would be a false statement about real money.
     body = _get_spend(tmp_path)
 
-    assert body["source"] == {"found": False, "read": False, "path": None}
+    # The path is still reported: the no-ledger view's whole content is "there is
+    # no ledger, and here is where I looked", so the probed location travels even
+    # though nothing was found. ``found`` is what says it is absent.
+    assert body["source"] == {
+        "found": False,
+        "read": False,
+        "path": str(tmp_path / _LEDGER_RELATIVE),
+    }
     assert body["totals"]["costUsd"] == 0.0
     assert body["totals"]["entries"] == 0
     assert body["byTicket"] == []
@@ -141,7 +148,9 @@ def test_no_ledger_and_an_empty_ledger_are_distinguishable_responses(tmp_path: P
     assert absent["totals"] == present["totals"], "both are honestly zero dollars"
     assert absent["source"]["found"] is False
     assert present["source"]["found"] is True, "an empty ledger WAS read"
-    assert absent["source"]["path"] is None
+    assert absent["source"]["path"] == str(fresh_clone / _LEDGER_RELATIVE), (
+        "the probed location travels even when nothing is there"
+    )
     assert present["source"]["path"] == str(empty_path)
     assert absent != present, "a zero total and an unread ledger are not the same response"
 
