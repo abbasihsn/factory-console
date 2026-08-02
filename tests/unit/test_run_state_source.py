@@ -31,6 +31,7 @@ from pathlib import Path
 import pytest
 
 from factory_console.domain import JsonRunState, RunState, RunStateSource
+from factory_console.file_adapter import run_state as run_state_module
 from factory_console.file_adapter.run_state import (
     FACTORY_STATUS_ALIASES,
     find_run_state_dir,
@@ -335,6 +336,85 @@ def test_the_unclassifiable_refusal_names_the_value_it_could_not_read(tmp_path: 
     # An id the source does not name at all has no value to report, and an id in a
     # source that could not be read has none either — both keep the generic prose.
     assert probe_ticket_state_with_reason(source, "T99-no-entry")[1] is None
+
+
+def test_an_unclassifiable_file_is_logged_per_cause_not_per_entry(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # How many entries this parse refuses is set by a file the console does not own, and
+    # EVERY gated write plus every list/deps/graph projection re-parses it. So a status
+    # shared by 200 tickets must emit one line, not 200 on every request — the same
+    # log-once discipline `run_state_resolver` applies to the directory form with
+    # `reported_unreadable`/`reported_vanished`. Unbounded, it would drown the
+    # write-audit records the API emits alongside it.
+    tickets: dict[str, object] = {f"T{n:03d}": {"status": "in_orbit"} for n in range(200)}
+    tickets.update({f"B{n:03d}": "merged" for n in range(200)})  # not an object
+    tickets.update({f"N{n:03d}": {"status": 7} for n in range(200)})  # status not a string
+    path = _place_json(tmp_path, json.dumps({"version": 1, "tickets": tickets}))
+
+    with caplog.at_level("WARNING", logger=run_state_module._LOGGER.name):
+        parsed = read_json_run_state(path)
+
+    # Every entry is still recorded and still refused — deduplicating the LOG must not
+    # deduplicate the verdict, or 199 of the 200 tickets would silently become editable.
+    assert len(parsed.unclassifiable) == 600
+    assert parsed.unrecognised == ["in_orbit"]
+
+    unknown_status = [r for r in caplog.records if "does not know" in r.getMessage()]
+    not_objects = [r for r in caplog.records if "are not objects" in r.getMessage()]
+    no_status = [r for r in caplog.records if "no string status" in r.getMessage()]
+    assert len(unknown_status) == 1, "once per DISTINCT status, not once per entry"
+    assert len(not_objects) == 1
+    assert len(no_status) == 1
+    # The summaries still carry the scale and one id, so an operator can find the file's
+    # bad entries without the console having printed all of them.
+    assert "200" in not_objects[0].getMessage()
+    assert "200" in no_status[0].getMessage()
+
+
+def test_a_second_distinct_unknown_status_is_still_reported(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The dedupe above is per STATUS, not per file: a factory that gains two new statuses
+    # must produce two named gaps. Collapsing to one line would hide the second remedy.
+    path = _place_json(
+        tmp_path,
+        json.dumps(
+            {
+                "version": 1,
+                "tickets": {
+                    "T01": {"status": "in_orbit"},
+                    "T02": {"status": "in_orbit"},
+                    "T03": {"status": "in_review"},
+                },
+            }
+        ),
+    )
+
+    with caplog.at_level("WARNING", logger=run_state_module._LOGGER.name):
+        parsed = read_json_run_state(path)
+
+    assert parsed.unrecognised == ["in_orbit", "in_review"]
+    unknown_status = [r for r in caplog.records if "does not know" in r.getMessage()]
+    assert len(unknown_status) == 2
+    logged = " ".join(r.getMessage() for r in unknown_status)
+    assert "in_orbit" in logged and "in_review" in logged
+
+
+def test_a_run_state_cannot_be_both_readable_and_unreadable() -> None:
+    # The two flags describe THREE outcomes, not four. The fourth combination claims the
+    # file was both trusted and never read, and which way a consumer resolved it would
+    # depend on whichever flag it checked first — `_resolve_json_state` checks
+    # `unreadable` first and would refuse, a consumer checking `readable` first would
+    # grant writes against bytes nobody read. Rejecting it at construction keeps that
+    # ordering from ever being load-bearing (the invariant used to be docstring-only).
+    with pytest.raises(ValueError, match="unreadable"):
+        JsonRunState(readable=True, unreadable=True)
+
+    # The three legal combinations all still construct.
+    assert JsonRunState().readable is True
+    assert JsonRunState(readable=False).unreadable is False
+    assert JsonRunState(readable=False, unreadable=True).unreadable is True
 
 
 def test_a_hyphenated_status_is_not_munged_into_an_underscored_member(tmp_path: Path) -> None:

@@ -253,7 +253,7 @@ can turn a filesystem answer into a `RunState`, in resolution order:
 | 8 | `run_state_resolver` → `resolve_json` — per-entry failures | **RESIDUAL, NOT RATIFIED.** An entry that names *this* ticket under a status the console cannot classify resolves the mutable `unknown` via the `known_ticket_ids` arm — see the open finding below. |
 | 9 | `run_state_resolver` → `resolve_directory` | **CHECKED.** Unreadable-source canary settled once, vanished-directory re-check on the no-marker path, and `enumeration_failed` carried into the closure so "could not enumerate" never reads as "lists nobody". |
 | 10 | `write_gate._ensure_state_allowed` | **CHECKED.** One resolution site, two allowlists, `unreadable` in neither; a fresh resolver per gate call, so vacuity is never stale at gate time. |
-| 11 | `RealFileAdapter._safe_run_state` (`real.py`) | **CHECKED, read-only.** `PathTraversal` → `unknown` feeds list/deps/graph badges only; the write gate never routes through it. |
+| 11 | `RealFileAdapter._safe_run_state` (`real.py`) | ~~**CHECKED, read-only.** `PathTraversal` → `unknown` feeds list/deps/graph badges only; the write gate never routes through it.~~ **SUPERSEDED** — the later audit (amendment 4, row 11) found this verdict wrong: "read-only" is not a reason a resolution may answer mutable. `PathTraversal` → `unreadable` now. |
 
 **CPython 3.13 / gh-113978:** confirmed by grep that `run_state.py`, `write_gate.py` and
 `domain/run_state_source.py` contain **no** raw `Path.exists()` / `.is_dir()` / `.is_file()` — every
@@ -396,7 +396,7 @@ interpretable?", which is why two rows move.
 | 8 | `_resolve_json_state` (was `resolve_json`) — per-entry failures | **DEFECT, FIXED THIS ROUND.** The `known_ticket_ids` arm resolved the mutable `unknown` for an entry naming this ticket under an unclassifiable status. It now resolves `unreadable`, and the refusal names the value via `JsonRunState.unclassifiable`. This is the case the amendment was written for. |
 | 9 | `run_state_resolver` → `resolve_directory` | **CHECKED.** Canary settled once, vanished re-check on the no-marker path, `enumeration_failed` carried into the closure. |
 | 10 | `write_gate._ensure_state_allowed` | **CHECKED.** One resolution site, two allowlists, `unreadable` in neither. Now resolves through `probe_ticket_state_with_reason` — the same single read, so the state and the value the refusal names come from the same bytes. |
-| 11 | `RealFileAdapter._safe_run_state` (`real.py`) | **CHECKED, read-only.** `PathTraversal` → `unknown` feeds badges only; the write gate never routes through it. |
+| 11 | `RealFileAdapter._safe_run_state` (`real.py`) | **DEFECT, FIXED.** Both earlier audits passed this row on the grounds that it is read-only — but "it only feeds badges" is not one of the invariant's exemptions, and `unknown` is in `MUTABLE_STATES`, so the badge told the SPA to offer Edit and Delete for a ticket precisely BECAUSE its check could not run (the write was then refused as an opaque 400, not the 409 the badge implied). A `PathTraversal` is the prober declining to look, which is unavailable information, not silence. It now resolves `unreadable`; the id is logged. The single-ticket `read_run_state` still propagates `PathTraversal` — it joins a path, so the hard guard stays. |
 | 12 | `_MARKER_PRECEDENCE` — the marker directory's closed state vocabulary | **DEFECT, NOT FIXED — this is the seventh case, and it needs a decision.** See below. |
 
 ### The seventh case, found by this enumeration: the directory form has the same hole, one level up

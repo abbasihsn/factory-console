@@ -337,10 +337,19 @@ class RealFileAdapter:
         character class yet is a single-segment traversal — letting the directory
         prober raise
         :class:`~factory_console.file_adapter.path_safety.PathTraversal` would fail the
-        WHOLE request with a 400 that names no bad input. Map it to
-        :attr:`RunState.unknown` instead: that ticket shows an ``unknown`` badge rather
-        than crashing its neighbours' listing. The hard traversal guard still protects
-        the single-ticket :meth:`read_run_state` filesystem read.
+        WHOLE request with a 400 that names no bad input. Degrade it instead: that
+        ticket gets a badge rather than crashing its neighbours' listing. The hard
+        traversal guard still protects the single-ticket :meth:`read_run_state`
+        filesystem read.
+
+        The degraded state is the REFUSING :attr:`RunState.unreadable`, not the mutable
+        ``unknown``. A ``PathTraversal`` means the run-state was never determined —
+        the prober would not even look — which is the "information is UNAVAILABLE" case
+        T80 gives a state to, not the "nothing was said" case. Answering ``unknown``
+        here would put the id in ``MUTABLE_STATES``, so the SPA would show no read-only
+        banner and offer Edit and Delete for a ticket precisely BECAUSE its check could
+        not run; the write would then be refused as an opaque 400 rather than the 409
+        the badge implied. Only silence may be mutable.
 
         ``resolve`` is the per-request resolver from
         :func:`~factory_console.file_adapter.run_state.run_state_resolver`, so a
@@ -349,7 +358,12 @@ class RealFileAdapter:
         try:
             return resolve(ticket_id)
         except PathTraversal:
-            return RunState.unknown
+            _LOGGER.warning(
+                "run-state: %r is not a path-safe segment; it resolves unreadable and "
+                "is refused a write",
+                ticket_id,
+            )
+            return RunState.unreadable
 
     @staticmethod
     def _project_manifest(project: Project) -> TicketProjection:

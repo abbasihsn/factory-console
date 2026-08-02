@@ -30,7 +30,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from factory_console.domain.run_state import RunState
 
@@ -100,6 +100,10 @@ class JsonRunState(BaseModel):
     whose bytes WERE read and made no sense (non-UTF-8, invalid JSON, no ``tickets``
     object): those are content problems and keep the mutable ``unknown``.
     ``unreadable=True`` always implies ``readable=False``; the reverse does not hold.
+    That implication is ENFORCED (see :meth:`_reject_readable_and_unreadable`), not
+    merely documented: the two flags describe three outcomes, not four, and the fourth
+    combination is the one a resolver would read inconsistently depending on which flag
+    it happened to check first.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -110,6 +114,25 @@ class JsonRunState(BaseModel):
     unclassifiable: dict[str, str] = {}
     readable: bool = True
     unreadable: bool = False
+
+    @model_validator(mode="after")
+    def _reject_readable_and_unreadable(self) -> JsonRunState:
+        """Make the impossible fourth combination unrepresentable rather than documented.
+
+        ``readable=True, unreadable=True`` claims the file was both trusted and never
+        read. No parse path produces it, and every consumer would have to pick a flag to
+        believe: ``_resolve_json_state`` checks ``unreadable`` first and would refuse a
+        file it was simultaneously told to trust, while a consumer checking ``readable``
+        first would grant writes against bytes nobody read — the exact fail-open T80
+        amendment 2 closes. Rejecting it at construction keeps that choice from ever
+        being load-bearing.
+        """
+        if self.readable and self.unreadable:
+            raise ValueError(
+                "JsonRunState(readable=True, unreadable=True) is not a state a run-state "
+                "file can be in: unreadable bytes cannot also have parsed"
+            )
+        return self
 
 
 # The run-state artifact locations, project-relative, in probe order (highest

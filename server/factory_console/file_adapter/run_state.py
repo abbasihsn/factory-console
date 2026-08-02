@@ -699,6 +699,16 @@ def read_json_run_state(path: Path) -> JsonRunState:
     # it selects the refusal by ``known_ticket_ids`` membership, and looks the
     # description up here only to phrase it.
     unclassifiable: dict[str, str] = {}
+    # Ids whose entry could not be classified, accumulated for ONE summary record per
+    # parse instead of one per entry. How many entries this loop refuses is set by a
+    # file the console does not own, and every gated write plus every list/deps/graph
+    # projection re-parses it — so an unclassifiable status shared by 200 tickets would
+    # otherwise emit 200 identical lines on every request, drowning the write-audit
+    # records from ``_log_write``. This is the same log-once discipline the directory
+    # form applies with ``reported_unreadable``/``reported_vanished`` in
+    # :func:`run_state_resolver`; the two forms must not differ on it.
+    not_an_object: list[str] = []
+    no_string_status: list[str] = []
     for ticket_id, entry in tickets.items():
         known_ticket_ids.add(ticket_id)
         if not isinstance(entry, dict):
@@ -706,17 +716,13 @@ def read_json_run_state(path: Path) -> JsonRunState:
             # as a key of an object. The status may well be readable to a human, but
             # this console has no contract that says where to find it, so it is not
             # interpreted — guessing here would be exactly the string munging the
-            # alias table exists to prevent. ``%r`` (like every other externally
-            # sourced value logged in this module), never ``%s``: this key is
-            # arbitrary text from a file the console does not own, and the log
-            # formatter is one record per line — an unescaped newline in it would
-            # forge log records (e.g. a fake write-audit line).
-            _LOGGER.warning("run-state: %s entry %r is not an object", path, ticket_id)
+            # alias table exists to prevent.
+            not_an_object.append(ticket_id)
             unclassifiable[ticket_id] = "an entry that is not an object"
             continue
         status = entry.get("status")
         if not isinstance(status, str):
-            _LOGGER.warning("run-state: %s entry %r has no string status", path, ticket_id)
+            no_string_status.append(ticket_id)
             unclassifiable[ticket_id] = (
                 "an entry with no status"
                 if status is None
@@ -727,14 +733,35 @@ def read_json_run_state(path: Path) -> JsonRunState:
         if state is None:
             if status not in unrecognised:
                 unrecognised.append(status)
-            _LOGGER.warning(
-                "run-state: %s names status %r, which this console does not know",
-                path,
-                status,
-            )
+                # Once per DISTINCT status, not once per entry that carries it: the
+                # operator action is "teach the console this status", and the tenth
+                # ticket naming it adds nothing the first did not already say.
+                _LOGGER.warning(
+                    "run-state: %s names status %r, which this console does not know",
+                    path,
+                    status,
+                )
             unclassifiable[ticket_id] = f"status {status!r}"
             continue
         states[ticket_id] = state
+    # ``%r`` (like every other externally sourced value logged in this module), never
+    # ``%s``: these ids are arbitrary text from a file the console does not own, and
+    # the log formatter is one record per line — an unescaped newline in one would
+    # forge log records (e.g. a fake write-audit line).
+    if not_an_object:
+        _LOGGER.warning(
+            "run-state: %s has %d entries that are not objects (first: %r)",
+            path,
+            len(not_an_object),
+            not_an_object[0],
+        )
+    if no_string_status:
+        _LOGGER.warning(
+            "run-state: %s has %d entries with no string status (first: %r)",
+            path,
+            len(no_string_status),
+            no_string_status[0],
+        )
     return JsonRunState(
         states=states,
         unrecognised=unrecognised,

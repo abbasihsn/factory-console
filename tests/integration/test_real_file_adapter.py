@@ -301,11 +301,14 @@ def test_read_run_state_raises_path_traversal_for_dot_ids() -> None:
             adapter.read_run_state(project, bad_id)
 
 
-def test_safe_run_state_degrades_dot_ids_to_unknown(tmp_path: Path) -> None:
+def test_safe_run_state_degrades_dot_ids_to_unreadable(tmp_path: Path) -> None:
     # The LIST/DEPS projection probes run-state for EVERY ticket, so a single '.'/'..'
-    # id must degrade to unknown rather than raise PathTraversal and 400 the whole
-    # request. A valid id still resolves normally (present dir, no marker -> absent,
-    # per T80: the directory resolved and does not list this id).
+    # id must degrade rather than raise PathTraversal and 400 the whole request. It
+    # degrades to the REFUSING unreadable, not the mutable unknown: the prober would not
+    # even look, so the run-state is UNAVAILABLE, and answering unknown would put the id
+    # in MUTABLE_STATES — offering Edit and Delete precisely because the check could not
+    # run. A valid id still resolves normally (present dir, no marker -> absent, per
+    # T80: the directory resolved and does not list this id).
     run_state_dir = tmp_path / "run-state"
     (run_state_dir / "todo").mkdir(parents=True)
     # A marker for SOME other ticket, so the directory is not vacuous — a directory
@@ -315,7 +318,7 @@ def test_safe_run_state_degrades_dot_ids_to_unknown(tmp_path: Path) -> None:
     resolve = run_state_resolver(RunStateSource(kind="directory", path=run_state_dir))
     assert RealFileAdapter._safe_run_state(resolve, "CAD-1") is RunState.absent
     for bad_id in (".", ".."):
-        assert RealFileAdapter._safe_run_state(resolve, bad_id) is RunState.unknown
+        assert RealFileAdapter._safe_run_state(resolve, bad_id) is RunState.unreadable
 
 
 # --------------------------------------------------------------------------- #
