@@ -6,6 +6,13 @@ Exercises :func:`find_run_state_dir` (fallback probe order) and
 trees on the fly under ``tmp_path``. A final GUARD test parses this module's
 target source and asserts the read-only invariant: it contains no
 filesystem-mutating call.
+
+T92 adds the axis for a state subdirectory this console has NO NAME for (``in_review/``
+after the factory grows a tenth ``FAC_STATES`` entry): the ids it names refuse, ahead of
+any recognised marker for the same id; the refusal names the directory; markers under it
+count toward vacuity, so a source populated only under unknown names is not read as
+vacuous; and — the converse, which is where over-refusal would show — an unrecognised
+directory that names NOBODY changes nothing at all.
 """
 
 import os
@@ -28,6 +35,7 @@ from factory_console.file_adapter.run_state import (
     is_run_state_marker,
     probe_ticket_state,
     probe_ticket_state_from_source,
+    probe_ticket_state_with_reason,
     run_state_resolver,
 )
 
@@ -564,6 +572,192 @@ def test_a_stale_resolver_cannot_widen_the_write_gate(tmp_path: Path) -> None:
     assert probe_ticket_state_from_source(source, "CAD-118") is RunState.absent
     assert probe_ticket_state(run_state_dir, "CAD-118") is RunState.absent
     assert probe_ticket_state_from_source(source, "CAD-118") not in write_gate.MUTABLE_STATES
+
+
+# --------------------------------------------------------------------------- #
+# T92 — a state subdirectory this console has NO NAME for refuses the ids it names
+# --------------------------------------------------------------------------- #
+
+
+def test_an_id_named_only_under_an_unrecognised_state_is_refused_by_every_entry_point(
+    tmp_path: Path,
+) -> None:
+    # T80's seventh case, and the directory form's version of its JSON fix: the factory
+    # gains a tenth FAC_STATES member and writes `in_review/T05`. Before T92 no code
+    # path opened that directory at all — the vacuity scan and the precedence walk both
+    # iterated only `_MARKER_PRECEDENCE` — so T05 was named nowhere this console looked
+    # and resolved `absent`, which is DELETABLE: the console would have deleted a ticket
+    # a lane owns. The factory said something about T05 in a vocabulary this console
+    # does not have, which is "read and could not be interpreted", so it refuses.
+    #
+    # Asserted through all four entry points because the module's own stated invariant
+    # is that the forms must not drift: one filesystem, one answer.
+    run_state_dir = tmp_path / "run-state"
+    _place_marker(run_state_dir, "in_review", "T05", as_dir=False)
+    source = RunStateSource(kind="directory", path=run_state_dir)
+
+    assert probe_ticket_state(run_state_dir, "T05") is RunState.unreadable
+    assert run_state_resolver(source)("T05") is RunState.unreadable
+    assert probe_ticket_state_from_source(source, "T05") is RunState.unreadable
+    # And the gate consequence, which is the whole point: refused BOTH writes, where
+    # `absent` would have permitted the delete.
+    assert probe_ticket_state(run_state_dir, "T05") not in write_gate.MUTABLE_STATES
+    assert probe_ticket_state(run_state_dir, "T05") not in write_gate.DELETABLE_STATES
+
+
+def test_the_refusal_names_the_state_directory_it_could_not_interpret(tmp_path: Path) -> None:
+    # Criterion 3: "not tracked" and "could not be read" send an operator to the wrong
+    # fix — one hunts a missing marker that is right there, the other chmods a directory
+    # whose permissions are fine. The refusal carries the state's NAME, in the same slot
+    # and the same shape as the JSON form's `status 'in_review'`, so
+    # `TicketNotMutable` phrases both from one field.
+    run_state_dir = tmp_path / "run-state"
+    _place_marker(run_state_dir, "in_review", "T05", as_dir=False)
+    source = RunStateSource(kind="directory", path=run_state_dir)
+
+    assert probe_ticket_state_with_reason(source, "T05") == (
+        RunState.unreadable,
+        "state 'in_review'",
+    )
+    # An id the unknown state does NOT name carries no reason — there is nothing to
+    # quote, and a reason here would phrase a refusal for a ticket that was resolved.
+    assert probe_ticket_state_with_reason(source, "T99")[1] is None
+
+
+def test_an_unrecognised_state_outranks_a_recognised_marker_for_the_same_id(
+    tmp_path: Path,
+) -> None:
+    # Criterion 2, and the clause that makes the fix honest rather than cosmetic: T05 is
+    # named under `todo/` (mutable, and the highest-precedence answer the console can
+    # read here) AND under `in_review/`. The known marker no longer settles it, because
+    # the unknown state's PRECEDENCE is unknown too — `in_review` might outrank `merged`,
+    # let alone `todo`. Answering `todo` would hand the write gate an edit on a ticket
+    # the factory has moved on from, which is the same fail-open by a shorter route.
+    run_state_dir = tmp_path / "run-state"
+    _place_marker(run_state_dir, "todo", "T05", as_dir=False)
+    _place_marker(run_state_dir, "in_review", "T05", as_dir=False)
+    source = RunStateSource(kind="directory", path=run_state_dir)
+
+    assert probe_ticket_state(run_state_dir, "T05") is RunState.unreadable
+    assert run_state_resolver(source)("T05") is RunState.unreadable
+    assert probe_ticket_state_with_reason(source, "T05")[1] == "state 'in_review'"
+    # `merged` too — the ticket's own worded example, and the case where the refusal
+    # changes what a marker this console CAN read is allowed to answer.
+    _place_marker(run_state_dir, "merged", "T06", as_dir=False)
+    _place_marker(run_state_dir, "in_review", "T06", as_dir=False)
+    assert probe_ticket_state(run_state_dir, "T06") is RunState.unreadable
+    assert run_state_resolver(source)("T06") is RunState.unreadable
+
+
+def test_markers_under_only_unrecognised_states_are_not_vacuous(tmp_path: Path) -> None:
+    # Criterion 1, and the fail-open that hits the whole project rather than one ticket:
+    # every marker lives under `in_review/`, so the old scan (four fixed names) saw
+    # nothing, called the source VACUOUS, and answered the mutable `unknown` for every
+    # id in the project — the write gate off everywhere, on the project the factory is
+    # busiest with. The source LISTS tickets; this console simply cannot name their
+    # states, so the ids it does not name are `absent`, exactly as they would be under
+    # any other populated source.
+    run_state_dir = tmp_path / "run-state"
+    _place_marker(run_state_dir, "in_review", "T05", as_dir=False)
+    source = RunStateSource(kind="directory", path=run_state_dir)
+
+    for resolved in (
+        probe_ticket_state(run_state_dir, "T99"),
+        run_state_resolver(source)("T99"),
+    ):
+        assert resolved is RunState.absent
+        assert resolved not in write_gate.MUTABLE_STATES
+
+
+def test_an_unrecognised_state_that_names_nobody_changes_nothing(tmp_path: Path) -> None:
+    # Criterion 4, asserted as the CONVERSE because over-refusal is the failure mode the
+    # per-id rule exists to prevent: the broad rule ("any unrecognised directory makes
+    # the source unreadable") would let one misplaced folder — or the `.gitkeep` that
+    # commits an empty one to git — turn a whole project read-only. A directory that
+    # names nobody refuses nobody, so every id must resolve EXACTLY as it would if the
+    # directory were not there at all.
+    populated = tmp_path / "populated" / "run-state"
+    _place_marker(populated, "todo", "T05", as_dir=False)
+    (populated / "in_review").mkdir()
+    (populated / "in_review" / ".gitkeep").write_text("", encoding="utf-8")
+    populated_source = RunStateSource(kind="directory", path=populated)
+
+    # A known marker still answers its own state, and the project stays as mutable as
+    # it was: `todo` is in MUTABLE_STATES.
+    assert probe_ticket_state(populated, "T05") is RunState.todo
+    assert run_state_resolver(populated_source)("T05") is RunState.todo
+    assert probe_ticket_state_with_reason(populated_source, "T05") == (RunState.todo, None)
+    # An id nobody names is still `absent` here — the source lists T05, so it is
+    # authoritative, and the empty `in_review/` neither added to nor removed from that.
+    assert probe_ticket_state(populated, "T99") is RunState.absent
+
+    # And an otherwise VACUOUS project stays vacuous: an empty unrecognised directory
+    # must not be the thing that makes a source authoritative, or every ticket in a
+    # project the factory has never run on resolves `absent` and every write 409s.
+    vacuous = tmp_path / "vacuous" / "run-state"
+    (vacuous / "in_review").mkdir(parents=True)
+    vacuous_source = RunStateSource(kind="directory", path=vacuous)
+    assert probe_ticket_state(vacuous, "T05") is RunState.unknown
+    assert run_state_resolver(vacuous_source)("T05") is RunState.unknown
+    assert probe_ticket_state(vacuous, "T05") in write_gate.MUTABLE_STATES
+
+
+def test_a_stray_file_where_a_state_dir_would_be_is_not_a_state(tmp_path: Path) -> None:
+    # The narrowness one level further down. `<run-state>/README` cannot name a ticket
+    # (`README/T05` answers ENOTDIR, i.e. absent), and a dot-leading entry is
+    # scaffolding — `.gitkeep` committed at the top level, `.DS_Store`. Recording either
+    # as "a factory state this console must learn" would bury the real gap in noise,
+    # which is the opposite of the visibility criterion 5 asks for.
+    run_state_dir = tmp_path / "run-state"
+    _place_marker(run_state_dir, "todo", "T05", as_dir=False)
+    (run_state_dir / "README").write_text("what this directory is", encoding="utf-8")
+    (run_state_dir / ".DS_Store").write_text("", encoding="utf-8")
+
+    assert probe_ticket_state(run_state_dir, "T05") is RunState.todo
+    assert probe_ticket_state(run_state_dir, "T99") is RunState.absent
+
+
+def test_each_unknown_state_name_is_logged_once_per_resolver_not_once_per_ticket(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Criterion 5: the unknown names are COLLECTED AND SURFACED, not merely refused —
+    # one refused ticket says "this ticket is stuck", while the named state says "your
+    # console is a version behind the factory", which is the actionable one. Surfaced
+    # the same way `JsonRunState.unrecognised` is (a log record naming the value), and
+    # under the same log-once discipline this module applies everywhere else: once per
+    # DISTINCT name per scan, since the tenth id named under `in_review` adds nothing
+    # the first did not, and a 200-ticket projection must not emit 200 lines.
+    run_state_dir = tmp_path / "run-state"
+    _place_marker(run_state_dir, "in_review", "T05", as_dir=False)
+    (run_state_dir / "quarantined").mkdir()
+    source = RunStateSource(kind="directory", path=run_state_dir)
+
+    with caplog.at_level("WARNING", logger=run_state_module._LOGGER.name):
+        resolve = run_state_resolver(source)
+        states = [resolve(f"T{n:02d}") for n in range(20)]
+
+    assert RunState.unreadable in states
+    unknown_states = [r for r in caplog.records if "does not know" in r.getMessage()]
+    # One line per distinct name — including the one that names nobody, since "which
+    # state does this console not know?" is the operator's question either way.
+    assert len(unknown_states) == 2
+    assert any("'in_review'" in r.getMessage() for r in unknown_states)
+    assert any("'quarantined'" in r.getMessage() for r in unknown_states)
+
+
+def test_an_unrecognised_state_marker_is_already_a_marker_path_for_the_watcher(
+    tmp_path: Path,
+) -> None:
+    # The T40/T91 watcher needs NO change, and this pins why: `is_run_state_marker`
+    # deliberately tests the path's SHAPE (`<location>/<state>/<ticket_id>`) and never
+    # the state's NAME, so it already treats `in_review/T05` as a marker and already
+    # refreshes the projection when the factory writes one. Had it matched on the four
+    # known names, a state directory this console cannot name would also have gone
+    # unwatched — the same gap, one layer out, and invisible until a badge went stale.
+    assert is_run_state_marker(".factory/run-state/in_review/T05") is True
+    assert is_run_state_marker("docs/planning/.run-state/quarantined/T05") is True
+    # Still shape-bound in the other direction: a bare unknown state dir is not a marker.
+    assert is_run_state_marker(".factory/run-state/in_review") is False
 
 
 # --------------------------------------------------------------------------- #
