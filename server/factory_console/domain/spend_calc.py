@@ -37,15 +37,17 @@ touches the attribute.
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 from factory_console.domain.ledger import LedgerEntry, TokenCounts
+from factory_console.domain.ledger import ModelSpend as LedgerModelSpend
 from factory_console.domain.spend import (
     COST_DECIMAL_PLACES,
     LevelSpend,
     ModelSpend,
     SpendReport,
+    SpendTokens,
     SpendTotals,
     TicketSpend,
 )
@@ -61,29 +63,33 @@ class _Tokens:
     cache_creation: int = 0
     total: int = 0
 
-    def add(
-        self,
-        *,
-        input: int,
-        output: int,
-        cache_read: int,
-        cache_creation: int,
-        total: int,
-    ) -> None:
-        """Add one contribution's five counts."""
-        self.input += input
-        self.output += output
-        self.cache_read += cache_read
-        self.cache_creation += cache_creation
-        self.total += total
+    def add(self, counts: TokenCounts) -> None:
+        """Add one contribution's five counts.
 
-    def frozen(self) -> TokenCounts:
-        """Return the immutable :class:`TokenCounts` for a response model."""
-        return TokenCounts(
+        Takes the whole :class:`TokenCounts` rather than five keyword ints so the
+        field list is spelled ONCE. Five loose kwargs made every caller re-spell
+        the same names, and a mistyped or forgotten one was a runtime
+        ``TypeError`` no type checker could see; passing the model makes a missing
+        field a checked error at the one place the object is built.
+        """
+        self.input += counts.input
+        self.output += counts.output
+        self.cache_read += counts.cache_read
+        self.cache_creation += counts.cache_creation
+        self.total += counts.total
+
+    def frozen(self) -> SpendTokens:
+        """Return the immutable, camelCase :class:`SpendTokens` for a response.
+
+        THE one place the ledger's snake_case parse vocabulary is translated into
+        the console's camelCase wire vocabulary — see :class:`SpendTokens` for why
+        the two are separate types at all.
+        """
+        return SpendTokens(
             input=self.input,
             output=self.output,
-            cache_read=self.cache_read,
-            cache_creation=self.cache_creation,
+            cacheRead=self.cache_read,
+            cacheCreation=self.cache_creation,
             total=self.total,
         )
 
@@ -133,13 +139,7 @@ def aggregate(entries: list[LedgerEntry]) -> SpendReport:
 
         totals.costs.append(entry.cost_usd)
         totals.entries += 1
-        totals.tokens.add(
-            input=entry.tokens.input,
-            output=entry.tokens.output,
-            cache_read=entry.tokens.cache_read,
-            cache_creation=entry.tokens.cache_creation,
-            total=entry.tokens.total,
-        )
+        totals.tokens.add(entry.tokens)
 
         for ticket_id in dict.fromkeys(entry.ids):
             # ``dict.fromkeys`` de-duplicates while keeping order: an entry that
@@ -154,8 +154,7 @@ def aggregate(entries: list[LedgerEntry]) -> SpendReport:
         for model_id, cost, tokens in _model_contributions(entry):
             bucket = by_model.setdefault(model_id, _Bucket())
             bucket.costs.append(cost)
-            bucket.entries += 1
-            bucket.tokens.add(**tokens)
+            bucket.tokens.add(tokens)
 
         level_bucket = by_level.setdefault(entry.level, _Bucket())
         level_bucket.costs.append(entry.cost_usd)
@@ -190,18 +189,19 @@ def aggregate(entries: list[LedgerEntry]) -> SpendReport:
 def _models_of(entry: LedgerEntry) -> list[str]:
     """The model ids this entry names, verbatim, ``by_model`` first.
 
-    Used for :attr:`~factory_console.domain.spend.TicketSpend.models` and, via
-    :func:`_model_contributions`, for the by-model cut, so both cuts agree on which
-    models an entry involved.
+    Used for :attr:`~factory_console.domain.spend.TicketSpend.models`, and DERIVED
+    from :func:`_model_contributions` rather than re-deciding the same precedence,
+    so the models named on a ticket row are exactly the models that entry
+    contributed to the by-model cut. Stating the fallback rule twice would let the
+    two cuts disagree the first time only one copy was changed — and they would
+    disagree silently, since each is tested against itself.
     """
-    if entry.by_model:
-        return list(entry.by_model)
-    return [entry.model] if entry.model else []
+    return [model_id for model_id, _, _ in _model_contributions(entry)]
 
 
 def _model_contributions(
     entry: LedgerEntry,
-) -> Iterable[tuple[str, float, dict[str, int]]]:
+) -> Iterator[tuple[str, float, TokenCounts]]:
     """Yield ``(model_id, cost, token counts)`` for each model this entry spent on.
 
     Prefers the entry's ``by_model`` breakdown — the authoritative split, since one
@@ -217,30 +217,28 @@ def _model_contributions(
     """
     if entry.by_model:
         for model_id, spend in entry.by_model.items():
-            yield (
-                model_id,
-                spend.cost_usd,
-                {
-                    "input": spend.input,
-                    "output": spend.output,
-                    "cache_read": spend.cache_read,
-                    "cache_creation": spend.cache_creation,
-                    "total": spend.input + spend.output + spend.cache_read + spend.cache_creation,
-                },
-            )
+            yield model_id, spend.cost_usd, _counts_of(spend)
         return
     if entry.model:
-        yield (
-            entry.model,
-            entry.cost_usd,
-            {
-                "input": entry.tokens.input,
-                "output": entry.tokens.output,
-                "cache_read": entry.tokens.cache_read,
-                "cache_creation": entry.tokens.cache_creation,
-                "total": entry.tokens.total,
-            },
-        )
+        yield entry.model, entry.cost_usd, entry.tokens
+
+
+def _counts_of(spend: LedgerModelSpend) -> TokenCounts:
+    """The :class:`TokenCounts` of one ``by_model`` value, with a derived total.
+
+    A ``by_model`` object carries four counts and no ``total`` — the factory writes
+    a total only for the lane as a whole — so the total is summed from the parts
+    HERE, in one named place, rather than inline at the call site. That keeps "a
+    by_model total is the sum of its four counts" a single statement to find and to
+    change, instead of an expression buried in a tuple literal.
+    """
+    return TokenCounts(
+        input=spend.input,
+        output=spend.output,
+        cache_read=spend.cache_read,
+        cache_creation=spend.cache_creation,
+        total=spend.input + spend.output + spend.cache_read + spend.cache_creation,
+    )
 
 
 def _dearest_first(buckets: dict[str, _Bucket]) -> list[tuple[str, _Bucket, float]]:

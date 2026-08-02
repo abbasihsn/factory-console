@@ -42,7 +42,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from factory_console.domain.ledger import SkipReason, TokenCounts
+from factory_console.domain.ledger import SkipReason
 
 AttributionRule = Literal["full-to-each-id"]
 """How an entry's cost is spread over the several ticket ids it may name."""
@@ -66,12 +66,39 @@ drift from the file by an amount that grows with the ledger.
 """
 
 
+class SpendTokens(BaseModel):
+    """Summed token counts in the console's OWN camelCase wire vocabulary.
+
+    A near-twin of :class:`~factory_console.domain.ledger.TokenCounts`, and
+    deliberately NOT that class. The ledger's model is shaped by the FILE: it
+    spells the factory's ``cache_read``/``cache_creation`` and it is
+    ``extra="ignore"`` because another program owns that format. Both traits are
+    wrong for a response — the REST v1 contract is camelCase, and a shape this repo
+    builds AND serialises end to end takes the house ``extra="forbid"``.
+
+    Reusing the ledger model here would publish snake_case keys in the one nested
+    object of an otherwise camelCase body, and would leave the console's published
+    contract to be rewritten by a future edit to a model that exists to track
+    someone else's file. So the parse shape and the wire shape are separate types,
+    converted in exactly one place —
+    :meth:`~factory_console.domain.spend_calc._Tokens.frozen`.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    input: int = 0
+    output: int = 0
+    cacheRead: int = 0
+    cacheCreation: int = 0
+    total: int = 0
+
+
 class SpendTotals(BaseModel):
     """What the whole read cost: dollars, entry count, and summed token counts.
 
     ``entries`` counts the ledger entries that PARSED. It is deliberately reported
     beside the money so a caller can compare it against
-    :attr:`SpendReport.skipped` and see that a total was computed over 40 of 43
+    :attr:`SpendResponse.skipped` and see that a total was computed over 40 of 43
     lines — a partial bill that says so, rather than a confident wrong number.
 
     ``tokens`` sums the entries' own ``tokens`` objects field by field, including
@@ -83,7 +110,7 @@ class SpendTotals(BaseModel):
 
     costUsd: float = 0.0
     entries: int = 0
-    tokens: TokenCounts = TokenCounts()
+    tokens: SpendTokens = SpendTokens()
 
 
 class TicketSpend(BaseModel):
@@ -128,7 +155,7 @@ class ModelSpend(BaseModel):
 
     model: str
     costUsd: float = 0.0
-    tokens: TokenCounts = TokenCounts()
+    tokens: SpendTokens = SpendTokens()
 
 
 class LevelSpend(BaseModel):
@@ -166,12 +193,26 @@ class SkippedLineInfo(BaseModel):
 
 
 class SourceInfo(BaseModel):
-    """Whether this project HAS a ledger, and where it is.
+    """Whether this project HAS a ledger, whether it could be READ, and where it is.
 
     THE field that keeps "no ledger" from being read as "$0.00". ``found: false``
     is the fresh-clone case and a client must be able to act on it directly, rather
     than inferring absence from a zero total — which an empty ledger also produces,
     and which for an unmeasured project would be a false statement about real money.
+
+    ``read`` carries the SAME distinction one step further, because ``found`` alone
+    does not survive a ledger that exists and could not be opened. A file over the
+    reader's size cap, or one that cannot be stat'd or read at all, yields zero
+    entries — so ``found: true`` over zeroed totals would state that a ledger WAS
+    read and measured nothing, which for an 11 MiB file full of real lanes is the
+    same false statement ``found`` exists to prevent, merely relocated. ``read:
+    false`` says the bill is UNKNOWN rather than zero; the reason is in
+    :attr:`SpendResponse.skipped`, at ``lineNo`` 0.
+
+    So ``read`` means "the figures below came from actually reading a file", and it
+    defaults to ``False`` — the honest value for the no-ledger case, where there was
+    nothing to read. ``totals`` is a MEASURED zero only when ``read`` is true; on
+    ``found: true, read: false`` it is a placeholder for a bill nobody could count.
 
     ``path`` is the resolved ledger path when ``found``, and ``None`` when not.
     """
@@ -179,6 +220,7 @@ class SourceInfo(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     found: bool
+    read: bool = False
     path: str | None = None
 
 
@@ -217,8 +259,14 @@ class SpendResponse(SpendReport):
     is not decoration: T79 caps how many skipped lines it materialises but keeps
     counting them, and dropping that count here would make a catastrophically
     corrupt ledger report exactly as partial as a mildly corrupt one.
+
     ``len(skipped) + skippedOmitted`` is the exact number of lines missing from
-    :attr:`SpendReport.totals`.
+    :attr:`SpendReport.totals` — **for per-line failures only**. A skip at
+    ``lineNo`` 0 is not a line: it reports that the WHOLE file was not read
+    (``unreadable``, or over the reader's size cap), so it stands for an unknown
+    number of lines, not for one. That case is exactly ``source.read: false``, and a
+    client counting unparsed lines must branch on it rather than render "1 line
+    could not be read" over a ledger nothing ever opened.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")

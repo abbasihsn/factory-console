@@ -28,6 +28,7 @@ from fastapi.testclient import TestClient
 from factory_console.app import create_app
 from factory_console.domain import Project
 from factory_console.file_adapter import FakeFileAdapter
+from factory_console.file_adapter.ledger import MAX_LEDGER_BYTES, MAX_SKIPPED_LINES
 
 # The same verbatim real ledger line the unit tests read (see the module docstring).
 REAL_ENTRY_LINE = (
@@ -57,6 +58,21 @@ def _write_ledger(project_root: Path, text: str) -> Path:
     path = project_root / _LEDGER_RELATIVE
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+    return path
+
+
+def _write_over_cap_ledger(project_root: Path) -> Path:
+    """Write a ledger just past the reader's byte cap, sparsely.
+
+    Sparse-extends past the cap rather than materialising 10 MiB of bytes — the
+    same idiom ``tests/unit/test_ledger.py`` uses for the cap, since the reader
+    decides on ``stat().st_size`` and never reads the content.
+    """
+    path = project_root / _LEDGER_RELATIVE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as handle:
+        handle.write(REAL_ENTRY_LINE.encode("utf-8") + b"\n")
+        handle.truncate(MAX_LEDGER_BYTES + 1)
     return path
 
 
@@ -97,7 +113,7 @@ def test_a_project_with_no_ledger_reports_source_not_found(tmp_path: Path) -> No
     # rendering it as "$0.00" would be a false statement about real money.
     body = _get_spend(tmp_path)
 
-    assert body["source"] == {"found": False, "path": None}
+    assert body["source"] == {"found": False, "read": False, "path": None}
     assert body["totals"]["costUsd"] == 0.0
     assert body["totals"]["entries"] == 0
     assert body["byTicket"] == []
@@ -138,7 +154,7 @@ def test_a_real_entry_is_aggregated_into_all_three_cuts(tmp_path: Path) -> None:
 
     body = _get_spend(tmp_path)
 
-    assert body["source"] == {"found": True, "path": str(path)}
+    assert body["source"] == {"found": True, "read": True, "path": str(path)}
     assert body["totals"]["costUsd"] == 5.74055835, "rounded once, at the boundary"
     assert body["totals"]["entries"] == 1
     assert body["totals"]["tokens"]["total"] == 7543318
@@ -162,6 +178,42 @@ def test_a_real_entry_is_aggregated_into_all_three_cuts(tmp_path: Path) -> None:
     }, "model ids verbatim, at the factory's exact figures"
     assert body["byLevel"] == [{"level": "ticket", "costUsd": 5.74055835, "entries": 1}]
     assert body["skipped"] == []
+
+
+# --------------------------------------------------------------------------- #
+# The wire vocabulary is camelCase, all the way into the nested token object
+# --------------------------------------------------------------------------- #
+
+
+def test_token_counts_are_published_in_camel_case(tmp_path: Path) -> None:
+    # ARCHITECTURE.md's REST v1 contract is "JSON camelCase". The ledger's own
+    # TokenCounts is snake_case because it mirrors a file another program writes,
+    # so serialising it directly would put the one snake_case object in an
+    # otherwise camelCase body — and freeze it there, since /api/v1 renames are a
+    # v2 change.
+    _write_ledger(tmp_path, REAL_ENTRY_LINE + "\n")
+
+    body = _get_spend(tmp_path)
+
+    assert set(body["totals"]["tokens"]) == {
+        "input",
+        "output",
+        "cacheRead",
+        "cacheCreation",
+        "total",
+    }
+    assert body["totals"]["tokens"]["cacheRead"] == 7261803
+    assert body["totals"]["tokens"]["cacheCreation"] == 232826
+    for row in body["byModel"]:
+        assert set(row["tokens"]) == {
+            "input",
+            "output",
+            "cacheRead",
+            "cacheCreation",
+            "total",
+        }
+    assert "cache_read" not in str(body), "no snake_case key survives anywhere in the body"
+    assert "cache_creation" not in str(body)
 
 
 # --------------------------------------------------------------------------- #
@@ -196,6 +248,55 @@ def test_the_skipped_excerpt_is_not_exposed_over_http(tmp_path: Path) -> None:
     (skip,) = body["skipped"]
     assert set(skip) == {"lineNo", "reason"}
     assert "a-recognisable-malformed-line" not in str(body)
+
+
+def test_an_over_cap_ledger_is_found_but_reports_that_it_was_not_read(tmp_path: Path) -> None:
+    # The gap a totals-only assertion cannot see: a ledger too big to read returns
+    # ZERO entries, exactly like an empty one. Without source.read, `found: true`
+    # over zeroed totals says this project was measured and cost nothing — the same
+    # false statement about real money that the missing-ledger branch avoids, just
+    # moved one branch later.
+    _write_over_cap_ledger(tmp_path)
+
+    body = _get_spend(tmp_path)
+
+    assert body["source"]["found"] is True, "the file is right there"
+    assert body["source"]["read"] is False, "but nothing in it was ever parsed"
+    assert body["totals"]["costUsd"] == 0.0
+    assert body["totals"]["entries"] == 0
+    assert body["skipped"] == [{"lineNo": 0, "reason": "file_too_large"}]
+
+
+def test_an_unread_ledger_is_distinguishable_from_an_empty_one(tmp_path: Path) -> None:
+    # The pair the bug hides between: both are `found: true` with zero dollars.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    _write_ledger(empty, "")
+    over_cap = tmp_path / "over_cap"
+    over_cap.mkdir()
+    _write_over_cap_ledger(over_cap)
+
+    measured = _get_spend(empty)
+    unknown = _get_spend(over_cap)
+
+    assert measured["totals"] == unknown["totals"], "both report zero dollars"
+    assert measured["source"]["read"] is True, "an empty ledger WAS read: a measured zero"
+    assert unknown["source"]["read"] is False, "an over-cap ledger was not: an unknown bill"
+
+
+def test_a_skipped_count_past_the_detail_cap_reaches_the_wire(tmp_path: Path) -> None:
+    # Every other assertion on this field is `== 0`, which is also the value it
+    # would carry if the kwarg were dropped entirely — so a passthrough typo would
+    # ship undetected. MAX_SKIPPED_LINES bad lines plus two more forces it non-zero.
+    bad_lines = MAX_SKIPPED_LINES + 2
+    _write_ledger(tmp_path, "not json at all\n" * bad_lines)
+
+    body = _get_spend(tmp_path)
+
+    assert len(body["skipped"]) == MAX_SKIPPED_LINES, "the detail list stops at the cap"
+    assert body["skippedOmitted"] == 2, "and the rest are still counted, not dropped"
+    assert len(body["skipped"]) + body["skippedOmitted"] == bad_lines
+    assert body["source"]["read"] is True, "the file WAS read; its lines just did not parse"
 
 
 def test_a_directory_at_the_ledger_path_is_no_ledger_at_all(tmp_path: Path) -> None:

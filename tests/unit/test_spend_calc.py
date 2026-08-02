@@ -133,7 +133,7 @@ def test_a_multi_model_entry_contributes_under_each_by_model_key_exactly() -> No
     assert by_model["claude-sonnet-5"].costUsd == 5.02143785
     assert by_model["claude-haiku-4-5-20251001"].costUsd == 0.0041205
     assert by_model["claude-opus-4-8[1m]"].costUsd == 0.715
-    assert by_model["claude-sonnet-5"].tokens.cache_read == 7261803
+    assert by_model["claude-sonnet-5"].tokens.cacheRead == 7261803
     assert by_model["claude-haiku-4-5-20251001"].tokens.output == 903
 
 
@@ -157,6 +157,30 @@ def test_by_model_is_ordered_dearest_first() -> None:
     ]
 
 
+def test_equal_cost_rows_are_broken_by_name_not_by_the_order_they_arrived() -> None:
+    # The tie-break is the half of the ordering that insertion order would satisfy
+    # by accident: with distinct costs, dropping the secondary key changes nothing.
+    # Two ledgers holding the same records in a different order must serialise
+    # identically, or a client diffing them sees churn that is not spend.
+    costs = {"T-zulu": 1.0, "T-alpha": 1.0, "T-mike": 1.0}
+    forward = aggregate([_entry(ids=[t], cost_usd=c) for t, c in costs.items()])
+    backward = aggregate([_entry(ids=[t], cost_usd=c) for t, c in reversed(costs.items())])
+
+    assert [row.ticketId for row in forward.byTicket] == ["T-alpha", "T-mike", "T-zulu"]
+    assert [row.ticketId for row in backward.byTicket] == ["T-alpha", "T-mike", "T-zulu"]
+
+
+def test_equal_cost_levels_are_also_broken_by_name() -> None:
+    report = aggregate(
+        [
+            _entry(level="zulu", cost_usd=2.0),
+            _entry(level="alpha", cost_usd=2.0),
+        ]
+    )
+
+    assert [row.level for row in report.byLevel] == ["alpha", "zulu"]
+
+
 def test_an_entry_without_a_by_model_breakdown_falls_back_to_its_model() -> None:
     # A rolled-up entry has no per-model split; its cost must still appear in the
     # by-model cut rather than dropping out of it.
@@ -173,6 +197,24 @@ def test_an_entry_naming_no_model_at_all_is_in_the_totals_only() -> None:
 
     assert report.byModel == [], "a record naming no model claims none"
     assert report.totals.costUsd == 1.25
+
+
+def test_a_ticket_row_names_exactly_the_models_of_the_by_model_cut() -> None:
+    # The two cuts decide "which models" from one source, so they cannot drift.
+    # Asserted across all three shapes of entry: a breakdown, a bare scalar model,
+    # and neither.
+    for overrides, expected in (
+        ({}, ["claude-haiku-4-5-20251001", "claude-opus-4-8[1m]", "claude-sonnet-5"]),
+        ({"by_model": {}, "model": "sonnet"}, ["sonnet"]),
+        ({"by_model": {}, "model": None}, []),
+    ):
+        report = aggregate([_entry(ids=["T1"], **overrides)])
+
+        (row,) = report.byTicket
+        assert row.models == expected
+        assert row.models == sorted(r.model for r in report.byModel), (
+            "a ticket names exactly the models that were billed to the by-model cut"
+        )
 
 
 # --------------------------------------------------------------------------- #
