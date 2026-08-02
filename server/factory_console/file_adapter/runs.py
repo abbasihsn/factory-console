@@ -23,16 +23,27 @@ is not read, and the cap is REPORTED as ``too_large`` rather than short-read in
 silence. Only a REGULAR file is read at all: a size is a bound on a regular file
 and on nothing else.
 
+Both of those gates are applied to an OPEN DESCRIPTOR rather than to a path, which
+is what makes them hold. The artifacts are written by a process the console does not
+control, so anything decided by name between two lookups describes a file that may
+no longer be the one read — see :func:`_read_json_artifact` for what that let
+through.
+
 ``read_result``/``read_receipt`` turn a ticket id into a filesystem path segment,
 so they re-validate the id
 (:func:`~factory_console.file_adapter.path_safety.validate_ticket_id_as_segment`)
 and then check the RESOLVED path is still contained under the project root — the
-same defense-in-depth :mod:`~factory_console.file_adapter.run_state` and
-:mod:`~factory_console.file_adapter.ticket_md` apply, raising the same shared
-:class:`~factory_console.file_adapter.path_safety.PathTraversal`.
+same defense-in-depth :mod:`~factory_console.file_adapter.ticket_md` and
+:mod:`~factory_console.file_adapter.write_render` apply, raising the same shared
+:class:`~factory_console.file_adapter.path_safety.PathTraversal`. Note the pairing is
+those two and NOT the other ``.factory`` readers: neither
+:mod:`~factory_console.file_adapter.run_state` nor
+:mod:`~factory_console.file_adapter.ledger` resolves or contains anything, so this is
+the first artifact reader under ``.factory/`` to impose the check rather than one
+more module inheriting a house-wide habit.
 
 :func:`read_last_stop` takes no ticket id, but it gets the CONTAINMENT half of that
-check anyway (:func:`_contained_artifact_path`). Owning the path a caller asks for
+check anyway (:func:`_within_root`, applied inline). Owning the path a caller asks for
 is not the same as owning the file it lands on: ``.factory/last-stop.json`` is a
 constant, and a symlink there — or at ``.factory`` itself — still resolves wherever
 it likes, which is precisely the escape the results/receipts gate exists to close
@@ -49,6 +60,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import stat
 from pathlib import Path
 
@@ -144,7 +156,7 @@ def _safe_artifact_path(project_root: Path, relative_dir: Path, ticket_id: str) 
     path-safe segment
     (:func:`~factory_console.file_adapter.path_safety.validate_ticket_id_as_segment`),
     and the resolved candidate must stay under the resolved project root
-    (:func:`_contained_artifact_path`).
+    (:func:`_within_root`).
 
     Returns ``None`` when the path could not be RESOLVED at all, which is a
     different answer from an escape: nothing was proven unsafe, the question could
@@ -192,13 +204,53 @@ def _read_json_artifact(path: Path) -> ArtifactRead:
     between results, receipts and last-stop.
 
     NEVER raises. Every failure becomes a named reason (see
-    :data:`~factory_console.domain.runs.ArtifactSkipReason`): the node is stat'd
-    first — so a non-regular file is refused before it is opened and an oversized
-    one before its bytes are touched — then read under an INDEPENDENT byte bound,
-    then parsed, and only a top-level JSON OBJECT counts as data.
+    :data:`~factory_console.domain.runs.ArtifactSkipReason`): the file is OPENED
+    first, then every gate — node type, size, byte bound — is applied to the opened
+    descriptor, then parsed, and only a top-level JSON OBJECT counts as data.
+
+    The open comes first, and that ordering is the point. A ``stat`` followed by an
+    ``open`` of the same NAME are two independent lookups, and this module's own
+    threat model — ``.factory/`` is written by a process the console does not control
+    and may belong to an untrusted checkout — is exactly the one where a name can be
+    re-pointed between them. Deciding from the name meant the containment,
+    regular-file and size verdicts all described a file that need no longer be the one
+    read: swapping in a symlink after the check returned any JSON the server process
+    could open as this project's artifact with ``reason is None`` on it, and swapping
+    in a FIFO reinstated the blocking ``open`` the ``S_ISREG`` gate was written to
+    prevent. Opening once and interrogating the DESCRIPTOR closes both: there is only
+    one lookup left to race, and ``os.fstat`` cannot describe a different file from
+    the one the bytes come from.
+
+    KNOWN RESIDUAL, stated so it is not mistaken for closed: the containment check in
+    :func:`_safe_artifact_path`/:func:`read_last_stop` still runs against a NAME, and
+    ``O_NOFOLLOW`` only refuses a symlink as the FINAL component. An INTERMEDIATE
+    component swapped between the check and this open — ``.factory`` or
+    ``.factory/results`` replaced by a symlink out of the root — is still followed by
+    the kernel, so a sufficiently well-timed local writer can still be read through.
+    Closing it needs a component-by-component ``os.open(..., O_DIRECTORY | O_NOFOLLOW,
+    dir_fd=...)`` descent from the project root, and that is NOT a drop-in hardening:
+    this module deliberately RESOLVES symlinks and then bounds the result, which
+    permits the legitimate deployment where ``.factory`` is a symlink to a shared
+    artifacts mount or another worktree that still lands inside the root. A nofollow
+    descent refuses that case too, so choosing it is a contract decision about which
+    project layouts the console supports, not a bug fix — see T89/T90 before making it.
     """
     try:
-        info = path.stat()
+        # ``O_NOFOLLOW`` refuses a symlink swapped in as the final component — the path
+        # was already fully resolved by the caller, so a symlink here is by definition
+        # one that appeared after the containment check and has no legitimate reading.
+        # ``O_NONBLOCK`` makes the open itself total: on a FIFO it returns immediately
+        # instead of blocking forever waiting for a writer, so the node-type check below
+        # gets to run and reject it. Both are absent on some platforms; ``getattr``
+        # degrades to 0 rather than an AttributeError, which is the same
+        # interpreter/platform-drift care ``_resolve_or_none`` takes.
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        descriptor = os.open(path, flags)
     except (FileNotFoundError, NotADirectoryError):
         # Nothing is there — no file, or a path component that is not a directory,
         # which amounts to the same thing. The ordinary state of a fresh clone, so
@@ -206,73 +258,86 @@ def _read_json_artifact(path: Path) -> ArtifactRead:
         # degradation.
         return ArtifactRead(path=path, reason="absent")
     except OSError as error:
-        # It may well be there and we could not look (EACCES, EIO). ``%r`` on the
-        # cause, per this package's convention: an OSError's text carries the
-        # offending filename, the log formatter is one record per line, and an
-        # unescaped newline in it would forge a record.
-        _LOGGER.warning("runs: %s could not be stat'd: %r", path, error)
+        # It may well be there and we could not look: EACCES, EIO, EISDIR (a directory
+        # cannot be opened O_RDONLY), and ELOOP for the swapped-in symlink O_NOFOLLOW
+        # just refused. ``%r`` on the cause, per this package's convention: an
+        # OSError's text carries the offending filename, the log formatter is one
+        # record per line, and an unescaped newline in it would forge a record.
+        _LOGGER.warning("runs: %s could not be opened: %r", path, error)
         return ArtifactRead(path=path, reason="unreadable")
     except ValueError:
-        # A path that cannot be encoded (an embedded NUL). ``Path.stat`` raises this
+        # A path that cannot be encoded (an embedded NUL). ``os.open`` raises this
         # rather than an ``OSError``, so the clause above does not cover it, and the
         # NEVER-raises contract is stated without exceptions — the same
         # ``except ValueError`` the run-state probes carry.
         _LOGGER.warning("runs: an artifact path could not be encoded; it is not read")
         return ArtifactRead(path=path, reason="unreadable")
 
-    if not stat.S_ISREG(info.st_mode):
-        # Only a REGULAR file is read. A size is a bound on a regular file and on
-        # nothing else: a FIFO and a character device both stat as ``st_size == 0``,
-        # so each sails past the cap below — and then ``open()`` on the FIFO BLOCKS
-        # until a writer appears (stalling the request, and with it the event loop,
-        # with no timeout), while ``/dev/zero`` reached through a symlink never sees
-        # EOF and is read until the process dies. The node type is therefore checked
-        # BEFORE the file is opened, not inferred from the read failing — the same
-        # rule ``ledger.find_ledger_path`` states with ``is_file()`` and
-        # ``run_state.find_run_state_source`` with ``_is_regular_file``.
-        #
-        # This also settles the DIRECTORY case here rather than reactively: a
-        # directory used to reach ``unreadable`` only because ``read_bytes`` raised
-        # ``IsADirectoryError``, which meant a directory whose ``st_size`` happened to
-        # exceed the cap (large directories on ext4/XFS) was reported ``too_large``
-        # instead — two of the four reasons this module promises never to conflate.
-        _LOGGER.warning("runs: %s is not a regular file; it is not read", path)
-        return ArtifactRead(path=path, reason="unreadable")
-
-    if info.st_size > MAX_ARTIFACT_BYTES:
-        _LOGGER.warning(
-            "runs: %s is %d bytes, over the %d-byte cap; not read",
-            path,
-            info.st_size,
-            MAX_ARTIFACT_BYTES,
-        )
-        return ArtifactRead(path=path, reason="too_large")
-
     try:
-        with path.open("rb") as handle:
-            # Bounded at the READ, not merely at the stat above. The stat's size is
-            # already stale by the time it is acted on — this module's own comments
-            # note the factory rewrites these files while the console is running — so
-            # a file that stats at 18 bytes and is extended to gigabytes before this
-            # line would otherwise be pulled into memory whole, which is the
-            # unbounded read on a request path the cap exists to prevent. Reading
-            # ``MAX + 1`` makes the cap a property of this call: at most one byte
-            # over is ever held, and that byte is what distinguishes "exactly at the
-            # cap" (read) from "over it" (reported).
-            raw = handle.read(MAX_ARTIFACT_BYTES + 1)
-    except (FileNotFoundError, NotADirectoryError):
-        # It vanished between the stat and the read — the factory rewrites these
-        # files while the console is running. Still "there is nothing to find",
-        # not "I could not look", so it keeps the ``absent`` reason.
-        return ArtifactRead(path=path, reason="absent")
-    except OSError as error:
-        # Everything else: PermissionError, an I/O error, and IsADirectoryError for
-        # a directory that replaced the artifact after the ``S_ISREG`` check above.
-        _LOGGER.warning("runs: %s could not be read: %r", path, error)
-        return ArtifactRead(path=path, reason="unreadable")
+        try:
+            info = os.fstat(descriptor)
+        except OSError as error:
+            _LOGGER.warning("runs: %s could not be stat'd: %r", path, error)
+            return ArtifactRead(path=path, reason="unreadable")
+
+        if not stat.S_ISREG(info.st_mode):
+            # Only a REGULAR file is read, and the question is now asked of the OPENED
+            # file, so the answer cannot be invalidated by a later swap. A size is a
+            # bound on a regular file and on nothing else: a FIFO and a character
+            # device both stat as ``st_size == 0``, so each would sail past the cap
+            # below — and ``/dev/zero`` reached this way never sees EOF and would be
+            # read until the process dies. The same rule ``ledger.find_ledger_path``
+            # states with ``is_file()`` and ``run_state.find_run_state_source`` with
+            # ``_is_regular_file``.
+            #
+            # This also settles the DIRECTORY case: a directory used to reach
+            # ``unreadable`` only because ``read_bytes`` raised ``IsADirectoryError``,
+            # which meant a directory whose ``st_size`` happened to exceed the cap
+            # (large directories on ext4/XFS) was reported ``too_large`` instead — two
+            # of the four reasons this module promises never to conflate. (Under
+            # ``O_RDONLY`` a directory now fails at the open with EISDIR, so it is
+            # refused even earlier; this stays as the backstop for platforms that
+            # permit the open.)
+            _LOGGER.warning("runs: %s is not a regular file; it is not read", path)
+            return ArtifactRead(path=path, reason="unreadable")
+
+        if info.st_size > MAX_ARTIFACT_BYTES:
+            _LOGGER.warning(
+                "runs: %s is %d bytes, over the %d-byte cap; not read",
+                path,
+                info.st_size,
+                MAX_ARTIFACT_BYTES,
+            )
+            return ArtifactRead(path=path, reason="too_large")
+
+        try:
+            with os.fdopen(descriptor, "rb", closefd=False) as handle:
+                # Bounded at the READ, not merely at the fstat above. That size is
+                # already stale by the time it is acted on — this module's own comments
+                # note the factory rewrites these files while the console is running —
+                # so a file that stats at 18 bytes and is extended to gigabytes before
+                # this line would otherwise be pulled into memory whole, which is the
+                # unbounded read on a request path the cap exists to prevent. Reading
+                # ``MAX + 1`` makes the cap a property of this call: at most one byte
+                # over is ever held, and that byte is what distinguishes "exactly at
+                # the cap" (read) from "over it" (reported).
+                raw = handle.read(MAX_ARTIFACT_BYTES + 1)
+        except OSError as error:
+            # An I/O error on a descriptor that is already open. Note ``absent`` is NOT
+            # reachable here any more and must not be restored: the file is open, so it
+            # cannot vanish mid-read — unlinking it only drops the name, and this
+            # descriptor keeps reading the inode. "It disappeared between the check and
+            # the read" was an artefact of checking by name, and holding the descriptor
+            # is what removed it.
+            _LOGGER.warning("runs: %s could not be read: %r", path, error)
+            return ArtifactRead(path=path, reason="unreadable")
+    finally:
+        # ``closefd=False`` above so this one owner closes the descriptor on every
+        # path, including the early returns that never reach ``fdopen`` at all.
+        os.close(descriptor)
 
     if len(raw) > MAX_ARTIFACT_BYTES:
-        # The file GREW past the cap between the stat and the read. Reported, never
+        # The file GREW past the cap between the fstat and the read. Reported, never
         # parsed from the truncated prefix: a short read of a rewritten artifact is
         # a smaller, wrong record, and ``too_large`` is the same answer the
         # pre-read check gives for the same file one moment earlier.

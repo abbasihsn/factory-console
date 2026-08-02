@@ -80,6 +80,20 @@ def validate_ticket_id_as_segment(ticket_id: str) -> None:
     leaving an id that :mod:`~factory_console.file_adapter.run_state` refuses and a
     sibling reader accepts, which is a path-safety difference no test would think
     to look for.
+
+    The two rules raise DIFFERENT messages under the one ``invalid_ticket_id`` code,
+    and the split is deliberate. A pattern violation defers to
+    :meth:`PathTraversal.from_pattern_violation`, which this module declares the single
+    owner of that message — so an id rejected here and the same id rejected at the HTTP
+    boundary (:mod:`~factory_console.api.error_handlers`) or by
+    :mod:`~factory_console.file_adapter.ticket_md` produce a word-identical envelope,
+    which is the whole point of that classmethod and was lost while this function
+    restated the generic reason for a violation it had already identified precisely.
+    Bare ``.``/``..`` keep the generic reason because they SATISFY the pattern —
+    telling an operator their id "must match ``^[A-Za-z0-9_.-]+$``" when it does would
+    send them to fix an id that is already well-formed.
     """
-    if re.fullmatch(TICKET_ID_PATTERN, ticket_id) is None or ticket_id in (".", ".."):
+    if re.fullmatch(TICKET_ID_PATTERN, ticket_id) is None:
+        raise PathTraversal.from_pattern_violation(ticket_id)
+    if ticket_id in (".", ".."):
         raise PathTraversal(ticket_id)

@@ -37,7 +37,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 ArtifactSkipReason = Literal["absent", "unreadable", "unparseable", "too_large"]
 """Why an artifact yielded no data. Every reason is a WHOLE-FILE reason.
@@ -64,10 +64,21 @@ ArtifactSkipReason = Literal["absent", "unreadable", "unparseable", "too_large"]
 class ArtifactRead(BaseModel):
     """The result of reading ONE ``.factory`` JSON artifact: what it said, or why not.
 
-    Exactly one of the two outcomes holds, and they are mutually exclusive by
-    construction of the reader: ``reason is None`` iff ``data`` is a successfully
-    parsed JSON object. When ``reason`` is set, ``data`` is ``None``; a caller may
-    therefore branch on either field and reach the same answer.
+    Exactly one of the two outcomes holds: ``reason is None`` iff ``data`` is a
+    successfully parsed JSON object. When ``reason`` is set, ``data`` is ``None``; a
+    caller may therefore branch on either field and reach the same answer.
+
+    That ``iff`` is ENFORCED (:meth:`_exactly_one_outcome`), not merely documented.
+    Both fields default to ``None``, so ``ArtifactRead(path=p)`` — an easy thing for a
+    consumer or a test double to write for a case it forgot to name — would otherwise
+    be accepted in precisely the state the paragraph above says cannot exist, and the
+    two blessed branches would then DISAGREE about it: a caller testing ``reason is
+    None`` reads it as a clean read and subscripts ``data`` into a ``TypeError``, while
+    a caller testing ``data is None`` renders an empty state. That is the same
+    absent/malformed collapse this type exists to prevent, so it is rejected at
+    construction — the rule :class:`~factory_console.domain.run_state_source.JsonRunState`
+    and :class:`~factory_console.domain.write.WriteResult` already set for their own
+    two-field invariants.
 
     ``path`` is carried on both outcomes — including ``absent`` — because "which
     file was this about" is exactly what an operator needs to act on a reason.
@@ -87,3 +98,24 @@ class ArtifactRead(BaseModel):
     path: Path
     data: dict[str, Any] | None = None
     reason: ArtifactSkipReason | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_outcome(self) -> ArtifactRead:
+        """Reject both impossible combinations: neither outcome, and both at once.
+
+        ``data is None`` and ``reason is None`` together say a read happened and
+        produced nothing and had no reason to — the unnamed empty this whole module
+        exists to abolish. Both set together says the file was read successfully AND
+        skipped. Neither is producible by :mod:`~factory_console.file_adapter.runs`;
+        making them unconstructible keeps that a property of the TYPE rather than of
+        one reader that happens to be careful today.
+
+        Note an empty JSON object is a successful read: ``data={}`` is falsy but not
+        ``None``, so it must be tested with ``is None`` and not for truthiness.
+        """
+        if (self.data is None) == (self.reason is None):
+            raise ValueError(
+                "ArtifactRead must carry exactly one of data or reason, "
+                f"got data={self.data!r}, reason={self.reason!r}"
+            )
+        return self

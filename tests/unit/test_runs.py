@@ -23,6 +23,7 @@ from _read_only_guard import (
     assert_module_carries_read_only_header,
     assert_module_is_read_only,
 )
+from pydantic import ValidationError
 
 from factory_console.domain.runs import ArtifactRead
 from factory_console.file_adapter import runs as runs_module
@@ -114,6 +115,44 @@ def test_the_reader_does_not_model_the_artifacts_fields(tmp_path: Path) -> None:
     result = read_result(tmp_path, TICKET_ID)
 
     assert result.data == {"a_field_invented_tomorrow": {"nested": [1]}}
+
+
+# --------------------------------------------------------------------------- #
+# The result type's own invariant: data XOR reason, enforced not documented
+# --------------------------------------------------------------------------- #
+
+
+def test_an_artifact_read_cannot_be_constructed_with_neither_outcome() -> None:
+    # Both fields default to None, so this is the shape a consumer or a test double
+    # writes for a case it forgot to name — and it is exactly the unnamed empty this
+    # module exists to abolish. A caller branching on ``reason is None`` would read it
+    # as a clean read and subscript ``data`` into a TypeError.
+    with pytest.raises(ValidationError, match="exactly one of data or reason"):
+        ArtifactRead(path=Path("/tmp/x.json"))
+
+
+def test_an_artifact_read_cannot_be_constructed_with_both_outcomes() -> None:
+    # The other impossible combination: read successfully AND skipped.
+    with pytest.raises(ValidationError, match="exactly one of data or reason"):
+        ArtifactRead(path=Path("/tmp/x.json"), data={"a": 1}, reason="absent")
+
+
+def test_an_empty_json_object_is_a_successful_read_not_an_unnamed_empty() -> None:
+    # ``data={}`` is falsy but NOT None, so the invariant must be tested with ``is
+    # None`` and never for truthiness — an artifact that is legitimately ``{}`` is a
+    # successful read, and rejecting it here would make a valid file unrepresentable.
+    read = ArtifactRead(path=Path("/tmp/x.json"), data={})
+
+    assert read.reason is None
+    assert read.data == {}
+
+
+@pytest.mark.parametrize("reason", ["absent", "unreadable", "unparseable", "too_large"])
+def test_each_reason_constructs_without_data(reason: str) -> None:
+    read = ArtifactRead(path=Path("/tmp/x.json"), reason=reason)
+
+    assert read.data is None
+    assert read.reason == reason
 
 
 # --------------------------------------------------------------------------- #
@@ -258,7 +297,7 @@ def test_a_directory_at_the_last_stop_path_is_unreadable(tmp_path: Path) -> None
     assert read_last_stop(tmp_path).reason == "unreadable"
 
 
-def test_a_permission_denied_stat_is_unreadable_never_absent(
+def test_a_permission_denied_open_is_unreadable_never_absent(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     # THE fail-quiet this result type exists to prevent, and the one an easy refactor
@@ -266,13 +305,13 @@ def test_a_permission_denied_stat_is_unreadable_never_absent(
     # except clause, so widening that clause to swallow ``PermissionError`` would make
     # a result the console cannot read report as "the factory never ran here".
     # Monkeypatched rather than chmod'd so the assertion is about THIS module's errno
-    # split and not about pathlib's, which changed across CPython versions.
+    # split and not about the platform's, which is not uniform.
     _write_artifact(tmp_path, _result_relative(), '{"status":"ready"}')
 
     def _denied(*_args: object, **_kwargs: object) -> None:
         raise PermissionError(13, "Permission denied")
 
-    monkeypatch.setattr(Path, "stat", _denied)
+    monkeypatch.setattr(os, "open", _denied)
 
     result = read_result(tmp_path, TICKET_ID)
 
@@ -280,38 +319,166 @@ def test_a_permission_denied_stat_is_unreadable_never_absent(
     assert result.data is None
 
 
-def test_a_permission_denied_read_is_unreadable_never_absent(
+def test_a_permission_denied_fstat_is_unreadable_never_absent(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # The same split one step later: the stat succeeds and the OPEN is refused.
+    # The same split one step later: the open succeeds and interrogating the DESCRIPTOR
+    # is refused. Split from the open case because the two sit in different try blocks
+    # and only one of them has an ``absent`` clause to be wrongly widened into.
     _write_artifact(tmp_path, _result_relative(), '{"status":"ready"}')
 
     def _denied(*_args: object, **_kwargs: object) -> None:
         raise PermissionError(13, "Permission denied")
 
-    monkeypatch.setattr(Path, "open", _denied)
+    monkeypatch.setattr(os, "fstat", _denied)
 
     assert read_result(tmp_path, TICKET_ID).reason == "unreadable"
 
 
-def test_an_artifact_that_vanishes_between_the_stat_and_the_read_is_absent(
+def test_an_artifact_that_vanishes_before_the_open_is_absent(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # The race the module names: the factory rewrites these files while the console
-    # is running, so a file can stat and then be gone. It is still "there is nothing
-    # to find", NOT "I could not look" — routing it to ``unreadable`` would report a
-    # degradation for an ordinary rewrite. Mocked because a real race is not
-    # reproducible deterministically.
+    # The race the module names: the factory rewrites these files while the console is
+    # running, so a file can be enumerated and then be gone by the time it is opened. It
+    # is still "there is nothing to find", NOT "I could not look" — routing it to
+    # ``unreadable`` would report a degradation for an ordinary rewrite. Mocked because
+    # a real race is not reproducible deterministically.
     _write_artifact(tmp_path, _result_relative(), '{"status":"ready"}')
 
     def _vanished(*_args: object, **_kwargs: object) -> None:
         raise FileNotFoundError(2, "No such file or directory")
 
-    monkeypatch.setattr(Path, "open", _vanished)
+    monkeypatch.setattr(os, "open", _vanished)
 
     result = read_result(tmp_path, TICKET_ID)
 
     assert result.reason == "absent"
+    assert result.data is None
+
+
+def test_unlinking_an_open_artifact_does_not_make_it_absent(tmp_path: Path) -> None:
+    # The counterpart to the test above, and the reason the mid-read ``absent`` clause
+    # was DELETED rather than moved: once the descriptor is held, the file cannot vanish
+    # out from under the read. Unlinking drops the name only; the inode is still there
+    # and still readable. A future refactor back to reading by name would reintroduce
+    # the window this asserts is closed, and would fail here.
+    path = _write_artifact(tmp_path, _result_relative(), '{"status":"ready"}')
+
+    real_fstat = os.fstat
+    unlinked: list[Path] = []
+
+    def _unlink_then_fstat(descriptor: int) -> object:
+        # Fires between the open and the read, which is exactly the window that used to
+        # be a name lookup.
+        if not unlinked:
+            unlinked.append(path)
+            path.unlink()
+        return real_fstat(descriptor)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(os, "fstat", _unlink_then_fstat)
+        result = read_result(tmp_path, TICKET_ID)
+
+    assert unlinked, "the artifact must actually have been unlinked mid-read"
+    assert result.reason is None, "an open descriptor outlives the name it was opened by"
+    assert result.data == {"status": "ready"}
+
+
+def test_a_path_that_cannot_be_encoded_is_unreadable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # ``os.open`` answers a path it cannot encode (an embedded NUL) with ``ValueError``,
+    # NOT an ``OSError``, so the errno clauses do not cover it. Without its own clause
+    # the NEVER-raises contract breaks and the reader 500s. Monkeypatched because a
+    # ``Path`` carrying a real NUL cannot be constructed and written through pathlib.
+    _write_artifact(tmp_path, _result_relative(), '{"status":"ready"}')
+
+    def _unencodable(*_args: object, **_kwargs: object) -> None:
+        raise ValueError("embedded null byte")
+
+    monkeypatch.setattr(os, "open", _unencodable)
+
+    result = read_result(tmp_path, TICKET_ID)
+
+    assert result.reason == "unreadable", "'I could not look' — nothing was ever examined"
+    assert result.data is None
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(RecursionError("maximum recursion depth exceeded"), id="recursion"),
+        pytest.param(MemoryError(), id="memory"),
+    ],
+)
+def test_a_pathological_document_is_unparseable_not_a_crash(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, error: BaseException
+) -> None:
+    # ``json.loads`` answers pathological input with exceptions OUTSIDE ``ValueError``:
+    # deeply nested arrays raise ``RecursionError``, a huge document ``MemoryError``.
+    # Narrowing the except clause back to ``ValueError`` alone is an easy mistake to
+    # make (``JSONDecodeError`` IS a ``ValueError``, so the obvious tests still pass)
+    # and would break the NEVER-raises contract, 500ing every request naming this
+    # ticket until the file changed. Raised directly rather than by building a genuinely
+    # pathological payload, so the test is fast and deterministic.
+    _write_artifact(tmp_path, _result_relative(), '{"status":"ready"}')
+
+    def _pathological(*_args: object, **_kwargs: object) -> None:
+        raise error
+
+    monkeypatch.setattr(runs_module.json, "loads", _pathological)
+
+    result = read_result(tmp_path, TICKET_ID)
+
+    assert result.reason == "unparseable"
+    assert result.data is None
+
+
+@pytest.mark.parametrize("reader", [read_result, read_receipt], ids=["result", "receipt"])
+def test_a_project_root_that_will_not_resolve_is_refused_not_assumed_contained(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, reader
+) -> None:
+    # ``_within_root`` returns None when the ROOT itself cannot be resolved — the
+    # containment question could not be put. That must be a refusal: treating an
+    # unanswered question as "contained" is the fail-open this gate exists to prevent.
+    # Distinct from the escape case, which is PROVEN and raises.
+    _write_artifact(tmp_path, _result_relative(), '{"status":"ready"}')
+    _write_artifact(tmp_path, _receipt_relative(), '{"verdict":"pass"}')
+
+    real_resolve = Path.resolve
+
+    def _root_will_not_resolve(self: Path, *args: object, **kwargs: object) -> Path:
+        if self == tmp_path:
+            raise RuntimeError(f"Symlink loop from {self}")
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", _root_will_not_resolve)
+
+    result = reader(tmp_path, TICKET_ID)
+
+    assert result.reason == "unreadable", "an unanswerable containment question is a refusal"
+    assert result.data is None
+
+
+def test_a_project_root_that_will_not_resolve_refuses_last_stop_too(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The same gate on the reader that has no id to validate, so the two cannot drift
+    # in what counts as an unanswerable containment question.
+    _write_artifact(tmp_path, LAST_STOP_RELATIVE_PATH, '{"reason":"merged"}')
+
+    real_resolve = Path.resolve
+
+    def _root_will_not_resolve(self: Path, *args: object, **kwargs: object) -> Path:
+        if self == tmp_path:
+            raise RuntimeError(f"Symlink loop from {self}")
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", _root_will_not_resolve)
+
+    result = read_last_stop(tmp_path)
+
+    assert result.reason == "unreadable"
     assert result.data is None
 
 
@@ -329,11 +496,12 @@ def test_a_file_where_a_parent_directory_belongs_is_absent(tmp_path: Path) -> No
     assert result.data is None
 
 
-def test_a_non_regular_file_is_refused_before_it_is_opened(tmp_path: Path) -> None:
-    # A FIFO stats as size 0, so it passes the size cap — and opening it BLOCKS until
-    # a writer appears, hanging the request with no timeout. The node type must be
-    # checked before the open, so this returns rather than hanging. If this test ever
-    # hangs instead of failing, that is the regression.
+def test_a_non_regular_file_is_refused_without_blocking(tmp_path: Path) -> None:
+    # A FIFO stats as size 0, so it passes the size cap — and opening it for reading
+    # BLOCKS until a writer appears, hanging the request with no timeout. Two things
+    # keep that from happening: the open carries ``O_NONBLOCK`` so it returns
+    # immediately, and the node type is then read off the DESCRIPTOR and refused. If
+    # this test ever hangs instead of failing, that is the regression.
     if not hasattr(os, "mkfifo"):
         pytest.skip("platform has no FIFOs")
     path = tmp_path / _result_relative()
@@ -415,32 +583,43 @@ def test_an_artifact_exactly_at_the_cap_is_still_read(tmp_path: Path) -> None:
 def test_a_file_that_grows_past_the_cap_after_the_stat_is_still_capped(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # The cap must bound the READ, not a stat that is already stale when it is acted
+    # The cap must bound the READ, not an fstat that is already stale when it is acted
     # on: the factory rewrites these files while the console is running, so a file
     # that stats small and is extended before the read would otherwise be pulled into
     # memory whole — the unbounded read on a request path the cap exists to prevent.
-    # The stat is pinned to a small size while the file on disk is over the cap.
+    # The fstat is pinned to a small size while the file on disk is over the cap.
+    #
+    # Pinned by DESCRIPTOR, not by path. An earlier revision keyed the fake on
+    # ``self == path`` while the module stat'd the RESOLVED path, so on any platform
+    # whose tmp dir contains a symlink component (macOS: /var -> /private/var) the fake
+    # never fired, the real size was already over the cap, and the assertion below was
+    # satisfied by the pre-read check — leaving the read-time cap, the only thing this
+    # test names, unexercised while still green.
     path = tmp_path / _result_relative()
     path.parent.mkdir(parents=True)
     with path.open("wb") as handle:
         handle.write(b'{"status":"ready"}')
         handle.truncate(MAX_ARTIFACT_BYTES + 1)
 
-    real_stat = Path.stat
+    real_fstat = os.fstat
+    pinned: list[int] = []
 
     class _SmallStat:
         st_mode = stat_module.S_IFREG | 0o644
         st_size = 18
 
-    def _stale_stat(self: Path, *args: object, **kwargs: object) -> object:
-        if self == path:
+    def _stale_fstat(descriptor: int) -> object:
+        info = real_fstat(descriptor)
+        if stat_module.S_ISREG(info.st_mode) and info.st_size == MAX_ARTIFACT_BYTES + 1:
+            pinned.append(descriptor)
             return _SmallStat()
-        return real_stat(self, *args, **kwargs)
+        return info
 
-    monkeypatch.setattr(Path, "stat", _stale_stat)
+    monkeypatch.setattr(os, "fstat", _stale_fstat)
 
     result = read_result(tmp_path, TICKET_ID)
 
+    assert pinned, "the stale-size fake must actually have fired, or this proves nothing"
     assert result.reason == "too_large", "the cap is a property of the read, not of the stat"
     assert result.data is None, "never parsed from the truncated prefix"
 
@@ -491,8 +670,13 @@ def test_an_unsafe_id_is_refused_before_the_filesystem_is_touched(
     def _forbidden(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("an unsafe ticket id must not reach the filesystem")
 
+    # Patch what the module ACTUALLY calls. An earlier revision guarded
+    # ``Path.read_bytes``, which this module has never called — an inert guard that
+    # made the test look stricter than it was, leaving the real read entry point
+    # unwatched.
+    monkeypatch.setattr(os, "open", _forbidden)
+    monkeypatch.setattr(os, "fstat", _forbidden)
     monkeypatch.setattr(Path, "stat", _forbidden)
-    monkeypatch.setattr(Path, "read_bytes", _forbidden)
 
     with pytest.raises(PathTraversal):
         reader(tmp_path, "../../etc/passwd")
