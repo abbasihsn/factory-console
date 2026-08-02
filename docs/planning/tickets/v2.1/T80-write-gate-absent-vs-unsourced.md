@@ -166,3 +166,71 @@ the unreadable case through it.
   rule, unchanged);
 - `main`'s prior behaviour is not restored literally: it returned a **500**, which is a crash rather
   than a decision. The correct answer is a deliberate refusal at the gate, not an unhandled error.
+
+---
+
+## Amendment 3, 2026-08-02 — state the invariant once, instead of a fourth special case
+
+The review after Amendment 2 left one high open, and it is the **fourth instance of a single
+conflation** this ticket has now been amended for three times:
+
+> `_marker_state` resolves a stale lower-precedence marker (e.g. `todo`) as the ticket's state when a
+> **higher-precedence** state directory (e.g. `merged`) is **unreadable**, rather than refusing.
+> `run_state.py:303`
+
+A merged ticket can therefore read as `todo` — **mutable** — because the directory that would have
+said `merged` could not be read.
+
+### The pattern, and why a fourth patch is the wrong move
+
+| # | Case | Resolution |
+|---|---|---|
+| 1 | No run-state source at all | mutable — the original rule |
+| 2 | A source that lists nobody | mutable — Amendment 1 |
+| 3 | A source that cannot be read at all | refuse — Amendment 2 |
+| 4 | A source **partly** unreadable, at a higher precedence than the marker found | **this** |
+
+Each was found only after the previous one shipped. **That is the diagnosis: the ticket has been
+patched case by case for a rule it never stated.** A fifth case will exist — nested precedence,
+symlinked state dirs, a marker under a directory that vanishes mid-probe — and it will be found the
+same way, one review round after it is introduced.
+
+So this amendment states the rule, and the residual is one of its consequences rather than its point:
+
+> **THE RESOLUTION INVARIANT.** A run-state resolution that **could not read** something it needed
+> must **refuse**. It may never fall back to a state that is *more permissive* than the one it failed
+> to check.
+>
+> "I looked and found nothing" and "I could not look" are different answers. Only the first may
+> return a mutable state.
+
+This is the program's own rule, stated everywhere else and never here: **INV-42** (a check that could
+not be executed is `fail`, never `passed`), `verification-policy.ts`
+(`human_verification_required`, never a silent skip), `sessions.ts` (*"unverifiable is not
+stopped"*), **DL-058** (*absence of a record is not absence of a process*).
+
+### What to build
+
+1. Apply the invariant in `_marker_state`: if **any** directory at a precedence **at or above** the
+   marker actually found could not be read, refuse — do not return the lower marker. The bound is
+   *"at or above"*, because a lower-precedence directory being unreadable cannot change an answer
+   already determined by a higher one.
+2. **Audit every other resolution path in `run_state.py` against the invariant in the same pass**, and
+   list them in the PR body with their verdict. This is what makes this amendment different from the
+   previous three: the point is to close the *class*, not the instance. A path that is already correct
+   is a finding too — record it as checked.
+3. The existing test that pins today's behaviour is **superseded**, not deleted: rewrite it to assert
+   the refusal, and keep its comment explaining why the old answer looked reasonable.
+
+### Verification
+
+- a `merged` directory that cannot be read, with a stale `todo` marker present → **refuses**; the
+  ticket does not read as `todo`;
+- the inverse bound: an unreadable **lower**-precedence directory, with a readable higher-precedence
+  marker → **resolves normally**, because the answer was already determined. This is the test that
+  fails if the fix over-refuses;
+- all three earlier cases unchanged: no source → mutable · vacuous → mutable · wholly unreadable →
+  refuse;
+- CPython **3.13**: the EACCES-raising behaviour `Path.exists()`/`is_dir()` lost in gh-113978 must not
+  be assumed anywhere the invariant is enforced — this round already found one such site, and the
+  audit in step 2 must confirm there are no others.
