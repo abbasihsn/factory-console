@@ -48,7 +48,14 @@ def _module_from_source(tmp_path, source: str) -> types.ModuleType:
         pytest.param("path.mkdir()", id="mkdir"),
         pytest.param("path.unlink()", id="unlink"),
         pytest.param('path.rename("other")', id="rename"),
+        pytest.param('os.rename(path, "other")', id="os-rename"),
         pytest.param('os.replace(path, "other")', id="replace"),
+        # ``Path.replace(target)`` is a rename, and it is the spelling this pathlib-first
+        # codebase would actually reach for. Its receiver is an ordinary local, so the
+        # receiver rule that stops ``status.replace("_", "-")`` cannot admit it — ARITY
+        # separates them instead: the path form takes exactly one argument, the string
+        # form at least two.
+        pytest.param('path.replace("other")', id="path-replace"),
         pytest.param("os.makedirs(path)", id="makedirs"),
         pytest.param("os.remove(path)", id="remove"),
         pytest.param("path.rmdir()", id="rmdir"),
@@ -138,6 +145,59 @@ def test_the_guard_fires_on_a_mutating_call_imported_by_name(tmp_path, call: str
 
 
 @pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param(
+            "from shutil import rmtree as _rm\n\n\ndef f(path):\n    return _rm(path)\n",
+            id="aliased-shutil-rmtree",
+        ),
+        pytest.param(
+            "from os import remove as _unlink\n\n\ndef f(path):\n    return _unlink(path)\n",
+            id="aliased-os-remove",
+        ),
+        # The aliased FLAG, which defeats the flag-name scan the same way: the mask names
+        # ``_C``, and ``_C`` is not an ``O_`` name.
+        pytest.param(
+            "from os import O_CREAT as _C\n\n\ndef f(path, os):\n"
+            "    return os.open(path, os.O_RDONLY | _C)\n",
+            id="aliased-os-O_CREAT",
+        ),
+        # The import alone, with no call through it at all — the import IS the violation,
+        # which is what also covers an alias dispatched through a form no name-matcher
+        # sees.
+        pytest.param(
+            "from shutil import move as _mv\n\n\ndef f(path):\n    return path\n",
+            id="aliased-import-never-called",
+        ),
+        # The aliased MODULE, which is a different bypass from the aliased function above
+        # and the one that qualifying the collision-prone names by receiver would
+        # otherwise have opened: ``sh.move`` is ``shutil.move`` under another name, and a
+        # receiver rule that knew only the literal spellings would have let it through —
+        # a name the receiver-free matching it replaced had caught.
+        pytest.param(
+            "import shutil as sh\n\n\ndef f(a, b):\n    return sh.move(a, b)\n",
+            id="aliased-shutil-module-move",
+        ),
+        pytest.param(
+            "import os as _os\n\n\ndef f(path):\n    return _os.remove(path)\n",
+            id="aliased-os-module-remove",
+        ),
+        pytest.param(
+            "import os as _os\n\n\ndef f(path):\n    return _os.truncate(path, 0)\n",
+            id="aliased-os-module-truncate",
+        ),
+    ],
+)
+def test_the_guard_fires_on_a_mutating_name_imported_under_an_alias(tmp_path, source: str) -> None:
+    # The bypass one ``as`` clause beyond the bare-name spelling above. A call node cannot
+    # see the import that bound its name, so matching the name as written finds ``_rm``
+    # and stops — exactly the "one import statement away from contributing nothing" hole
+    # the bare-name branch was added to close, reopened by renaming.
+    with pytest.raises(AssertionError, match="must be read-only"):
+        assert_module_is_read_only(_module_from_source(tmp_path, source))
+
+
+@pytest.mark.parametrize(
     "call",
     [
         pytest.param('open(path, "w")', id="builtin-positional"),
@@ -224,6 +284,26 @@ def test_the_guard_fires_on_a_mutating_open(tmp_path, call: str) -> None:
         # MODE-SHAPED" let this straight through — the one form the numeric check exists
         # to stop, defeated by spelling the path inline.
         pytest.param('os.open("/target/file.txt", 577)', id="numeric-flag-mask-literal-path"),
+        # The numeric mask HOISTED into a local, which is the combination of the two
+        # spellings above and used to escape both checks at once: the call node shows only
+        # the name ``flags`` to the numeric check, while the flag-NAME scan finds no name
+        # because a bare octal spells none. It is one line from the shape
+        # ``file_adapter.runs`` itself uses, and it passed green.
+        pytest.param(
+            "flags = 0o1101\n    os.open(path, flags)",
+            id="numeric-mask-hoisted-into-a-local",
+        ),
+        pytest.param(
+            "flags = 577\n    os.open(path, flags=flags)",
+            id="numeric-mask-hoisted-into-a-local-keyword",
+        ),
+        # A number OR-ed in beside a named flag: the named half is read-only, so the flag
+        # scan is satisfied, and the mask is a ``BinOp`` rather than a bare literal, so
+        # reading the argument as a constant saw nothing.
+        pytest.param(
+            "os.open(path, os.O_RDONLY | 0o100)",
+            id="numeric-mask-or-ed-beside-a-named-flag",
+        ),
     ],
 )
 def test_the_guard_fires_on_a_mutating_os_open_flag(tmp_path, call: str) -> None:
@@ -319,6 +399,30 @@ def test_the_guard_fires_on_a_mutating_os_open_flag(tmp_path, call: str) -> None
         # to be spelled out of mode characters is still a filename, and reading it as a
         # mode would fail a plain read.
         pytest.param('def f():\n    return open("wax")\n', id="builtin-open-mode-shaped-filename"),
+        # The collision the forbidden set's own exclusion rule forbids, which five of its
+        # members broke anyway. Matched receiver-free, these ordinary reads reported as
+        # filesystem mutations — ``status.replace("_", "-")`` as ``replace()`` and
+        # ``candidates.remove(x)`` as ``remove()`` — which is the false fire this guard's
+        # docstring calls the failure that gets it worked around rather than fixed.
+        pytest.param(
+            'def f(status):\n    return status.replace("_", "-")\n',
+            id="str-replace",
+        ),
+        pytest.param("def f(candidates, x):\n    candidates.remove(x)\n", id="list-remove"),
+        pytest.param(
+            "def f(model):\n    return dataclasses.replace(model, a=1)\n",
+            id="dataclasses-replace",
+        ),
+        pytest.param("def f(queue, item):\n    return queue.move(item)\n", id="non-fs-move"),
+        pytest.param("def f(report):\n    return report.truncate()\n", id="non-fs-truncate"),
+        # ``rename`` collides the same way, and is separated by ARITY rather than by
+        # receiver: the dataframe spelling passes its columns as a KEYWORD, while
+        # ``path.rename(other)`` — which must still fire, and does, above — takes exactly
+        # one positional argument.
+        pytest.param(
+            "def f(frame):\n    return frame.rename(columns={'a': 'b'})\n",
+            id="non-fs-rename-by-keyword",
+        ),
     ],
 )
 def test_the_guard_stays_silent_on_a_read_only_call(tmp_path, source: str) -> None:

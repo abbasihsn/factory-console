@@ -187,16 +187,38 @@ def _reportable_path(candidate: Path) -> Path:
     answers and another on two of them — and a caller keying artifacts by it gets two
     keys for one file whenever the project root is relative or symlinked.
 
-    BOTH refusal conditions arrive here, and they are not the same, so neither may be
-    assumed. The path (or the root) could not be resolved AT ALL — in which case the
-    retry below fails again and falls back to :meth:`Path.absolute`, which performs no
-    filesystem lookup and so cannot fail the same way, rather than to the bare join.
-    Or the path resolved and provably LEFT the root, in which case the retry succeeds
-    and this reports the escape target — deliberately, per Amendment 1: a refusal names
-    the path that could not be used, and the out-of-root target is that path.
-    ``tests/unit/test_runs.py`` pins it. Do not "simplify" this to an unconditional
-    :meth:`Path.absolute` on the reading that resolution has already failed — it has
-    not, on the second branch, and that would silently change what an escape reports.
+    THREE refusal conditions arrive here. They are the three sub-cases
+    :data:`~factory_console.domain.runs.ArtifactSkipReason` names in the SECOND of its two
+    routes to ``unreadable`` — "the path could not be PROVEN to resolve inside the project
+    root", i.e. an unresolvable path, an unresolvable root, or a resolved path that
+    provably escaped. (Its first route, a file that exists and whose bytes would not read,
+    never reaches here: that is decided on an open descriptor in
+    :func:`_read_json_artifact`, which reports the path it already has.) They do not all
+    resolve alike, so none may be assumed:
+
+    1. the CANDIDATE could not be resolved (a symlink loop on the artifact itself). The
+       retry below fails again and falls back to :meth:`Path.absolute`, which performs no
+       filesystem lookup and so cannot fail the same way, rather than to the bare join;
+    2. the candidate resolved and provably LEFT the root (a symlinked ``.factory``). The
+       retry succeeds and this reports the escape TARGET — deliberately, per Amendment 1:
+       a refusal names the path that could not be used, and the out-of-root target is that
+       path;
+    3. the ROOT could not be resolved, so containment was UNDECIDABLE
+       (:func:`~factory_console.file_adapter.path_safety.within_root` answered ``None``).
+       The candidate itself resolves fine, so the retry succeeds here too — but what it
+       returns is an ordinary CONTAINED path, not an escape target. Only case 2 proves an
+       escape, and only case 2 may be read as reporting one.
+
+    An earlier revision of this docstring described only cases 1 and 2, which read case 3's
+    perfectly ordinary path as "the escape target" — the same conflation of "provably
+    outside" with "could not be checked" that
+    :func:`~factory_console.file_adapter.path_safety.within_root` returns three values to
+    keep apart.
+
+    ``tests/unit/test_runs.py`` pins the reported path on all three. Do not "simplify"
+    this to an unconditional :meth:`Path.absolute` on the reading that resolution has
+    already failed — it has not, on cases 2 and 3, and that would silently change what
+    they report.
     """
     resolved = resolve_or_none(candidate)
     if resolved is not None:

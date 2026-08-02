@@ -490,9 +490,13 @@ def test_a_pathological_document_is_unparseable_not_a_crash(
     assert result.data is None
 
 
-@pytest.mark.parametrize("reader", [read_result, read_receipt], ids=["result", "receipt"])
+@pytest.mark.parametrize(
+    ("reader", "relative"),
+    [(read_result, _result_relative()), (read_receipt, _receipt_relative())],
+    ids=["result", "receipt"],
+)
 def test_a_project_root_that_will_not_resolve_is_refused_not_assumed_contained(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, reader
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, reader, relative: Path
 ) -> None:
     # ``_within_root`` returns None when the ROOT itself cannot be resolved — the
     # containment question could not be put. That must be a refusal: treating an
@@ -500,6 +504,9 @@ def test_a_project_root_that_will_not_resolve_is_refused_not_assumed_contained(
     # Distinct from the escape case, which is PROVEN and raises.
     _write_artifact(tmp_path, _result_relative(), '{"status":"ready"}')
     _write_artifact(tmp_path, _receipt_relative(), '{"verdict":"pass"}')
+
+    # Computed BEFORE the monkeypatch, because it needs the real ``resolve``.
+    contained = (tmp_path / relative).resolve()
 
     real_resolve = Path.resolve
 
@@ -514,6 +521,12 @@ def test_a_project_root_that_will_not_resolve_is_refused_not_assumed_contained(
 
     assert result.reason == "unreadable", "an unanswerable containment question is a refusal"
     assert result.data is None
+    # The third refusal case ``_reportable_path`` handles, and the one a binary
+    # escaped/unresolvable reading of it gets wrong: the CANDIDATE resolves perfectly well
+    # here — only the root did not — so the retry succeeds and the reported path is this
+    # ordinary CONTAINED artifact path. It is emphatically not an escape target, and
+    # nothing may report it as one: an undecidable containment is not a proven escape.
+    assert result.path == contained
 
 
 def test_a_project_root_that_will_not_resolve_refuses_last_stop_too(
@@ -788,6 +801,15 @@ def test_a_symlink_loop_is_unreadable_and_does_not_escape_as_a_crash(
 
     assert result.reason == "unreadable"
     assert result.data is None
+    # ``_reportable_path``'s first case: resolution failed, so the retry fails too and the
+    # fallback is :meth:`Path.absolute`, which does no filesystem lookup. Asserted as a
+    # SHAPE rather than an exact path because the two supported interpreters disagree on
+    # which branch runs — 3.11/3.12 raise ELOOP and take the fallback, 3.13 resolves and
+    # returns — so pinning one spelling would fail on the other for identical bytes on
+    # disk. What must hold on both is that a refusal still names an absolute path to the
+    # artifact rather than losing it: an operator acts on that path.
+    assert result.path.is_absolute()
+    assert result.path.name == f"{TICKET_ID}.json"
 
 
 def test_a_symlinked_last_stop_is_not_read_through_out_of_the_project(tmp_path: Path) -> None:

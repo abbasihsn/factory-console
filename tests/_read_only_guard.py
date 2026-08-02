@@ -45,16 +45,14 @@ _FORBIDDEN_ATTR_CALLS = frozenset(
         "mkdir",
         "rmdir",
         "unlink",
-        "rename",
         "renames",
-        "replace",
         "makedirs",
-        "remove",
         "removedirs",
         # shutil's mutating surface. The module docstring cites ``shutil.move`` as the
         # example of what belongs here, so its absence read as coverage that was never
         # there — ``shutil.rmtree`` in a READ-ONLY module used to pass this guard green.
-        "move",
+        # ``move`` itself is collision-prone and lives in
+        # :data:`_RECEIVER_QUALIFIED_ATTR_CALLS`.
         "rmtree",
         "copyfile",
         "copyfileobj",
@@ -64,20 +62,26 @@ _FORBIDDEN_ATTR_CALLS = frozenset(
         # creates or alters something under the observed project, which the READ-ONLY
         # header forbids just as squarely.
         "symlink",
-        "link",
         "mknod",
         "mkfifo",
-        "truncate",
         "chmod",
         "chown",
         "utime",
-        # The PATHLIB spellings of the two names above it, which this set otherwise pairs
-        # without exception: ``mkdir``/``makedirs``, ``unlink``/``remove``,
-        # ``rename``/``replace``, ``rmdir``/``removedirs``. ``symlink``/``link`` arrived
-        # without their ``Path`` counterparts, and this codebase is pathlib-first — every
-        # guarded module threads ``Path`` objects and the guard's own positive tests are
-        # written as ``path.mkdir()`` — so the spelling a read-only module would actually
-        # reach for was the one spelling not covered.
+        # The PATHLIB spellings of the two names above it. This set pairs the os and
+        # pathlib spellings wherever NEITHER collides — ``mkdir``/``makedirs``,
+        # ``rmdir``/``removedirs`` — and the pairing is the reason it cannot simply be
+        # "every mutating name": ``unlink``/``remove``, ``rename``/``replace`` and
+        # ``link``/``hardlink_to`` each have a half that names an ordinary method too, and
+        # those halves live in :data:`_RECEIVER_QUALIFIED_ATTR_CALLS` instead. Which half
+        # collides is not predictable from which library it comes from — ``unlink`` is
+        # pathlib's and is collision-free, ``rename`` is pathlib's and is NOT
+        # (``DataFrame.rename``) — so membership is decided per name, never per library.
+        #
+        # The two below are here because ``symlink``/``link`` arrived without their
+        # ``Path`` counterparts, and this codebase is pathlib-first — every guarded module
+        # threads ``Path`` objects and the guard's own positive tests are written as
+        # ``path.mkdir()`` — so the spelling a read-only module would actually reach for
+        # was the one spelling not covered.
         "symlink_to",
         "hardlink_to",
         # DESCRIPTOR-level mutation, the half that was missing from a set listing only
@@ -101,6 +105,31 @@ _FORBIDDEN_ATTR_CALLS = frozenset(
         "fchown",
     }
 )
+# Mutating names that DO collide with ordinary non-filesystem methods, so the set above
+# cannot hold them: matched receiver-free there, ``status.replace("_", "-")`` and
+# ``candidates.remove(x)`` both reported as filesystem mutations, and a guard that fires
+# on a plain read is the failure this module's own tests call the one that gets it worked
+# around rather than fixed. They were listed there regardless, so the "every listed name
+# is receiver-free by construction" claim the call walk used to make was false of every
+# name now in this set. The count is deliberately not quoted, for the reason stated where
+# the call walk refuses to quote the other set's size: it would go stale on the next name
+# either set gains.
+#
+# They are still matched in the BARE spelling (``remove(path)`` after ``from os import
+# remove``), where the collision does not arise: ``list.remove``/``str.replace`` are
+# METHODS and always carry a receiver, so a bare call to one of these names in a
+# read-only module is the filesystem function. Only the ATTRIBUTE spelling needs the
+# receiver, and :func:`_is_ambiguous_name_mutating` decides it.
+_RECEIVER_QUALIFIED_ATTR_CALLS = frozenset(
+    {"replace", "rename", "remove", "move", "link", "truncate"}
+)
+# The subset of the names above that pathlib ALSO spells, where the filesystem call takes
+# exactly one argument and the colliding method does not — see
+# :func:`_is_ambiguous_name_mutating`, which uses arity to keep ``path.rename(other)``
+# caught without catching ``frame.rename(columns=...)``.
+_PATHLIB_SINGLE_ARG_MUTATIONS = frozenset({"replace", "rename"})
+# Receivers on which a name from the set above is unambiguously the filesystem call.
+_FS_MODULE_RECEIVERS = frozenset({"os", "shutil"})
 # open() mode characters that request writing/creation/truncation.
 _FORBIDDEN_OPEN_MODE_CHARS = frozenset("wax+")
 # Every character an open MODE string may contain. Used to tell a mode from a path
@@ -211,7 +240,7 @@ def _mode_requests_mutation(mode: ast.expr | None) -> TypeGuard[ast.Constant]:
     return False
 
 
-def _opens_with_an_opaque_flag_mask(call: ast.Call) -> bool:
+def _opens_with_an_opaque_flag_mask(call: ast.Call, mask_names: set[str]) -> bool:
     """Does this ``open`` call pass its flag mask as a bare NUMERIC literal?
 
     :func:`_forbidden_open_flags` recognises a mask only by the NAMES in it, so
@@ -238,12 +267,16 @@ def _opens_with_an_opaque_flag_mask(call: ast.Call) -> bool:
     TWO KNOWN RESIDUALS, stated rather than implied.
 
     First: a mask that is neither a literal nor a named flag — ``os.open(path, mask)``
-    where ``mask`` is a parameter — is undecidable from the syntax alone and is NOT
-    caught here. :func:`_forbidden_open_flags` covers the realistic in-module spelling of
-    that (a mask hoisted into a local is still built from names it scans at module
-    scope); a mask arriving from outside the module is not something a read-only adapter
-    has any reason to accept, and catching it would need dataflow this guard deliberately
-    does not do.
+    where ``mask`` is a PARAMETER — is undecidable from the syntax alone and is NOT caught
+    here. Two module-scope scans cover the in-module spellings between them:
+    :func:`_forbidden_open_flags` for a mask built from flag NAMES, and
+    :func:`_opaque_flag_mask_names` for one built from a bare NUMBER. The second was
+    added because the first does not in fact cover it — this paragraph used to claim "a
+    mask hoisted into a local is still built from names it scans at module scope", which
+    holds only while the local is built from names, and ``flags = 0o1101`` builds one from
+    none. A mask arriving from outside the module is not something a read-only adapter has
+    any reason to accept, and catching it would need dataflow this guard deliberately does
+    not do.
 
     Second, and it is the price of not whitelisting receivers: ``os.open("rb", 577)`` —
     a PATH literal spelled wholly out of the READ-only mode characters — is excluded
@@ -269,11 +302,24 @@ def _opens_with_an_opaque_flag_mask(call: ast.Call) -> bool:
     through the one check written to stop it.
     """
     for keyword in call.keywords:
-        if keyword.arg == "flags" and _is_opaque_int_constant(keyword.value):
+        if keyword.arg == "flags" and _is_opaque_mask(keyword.value, mask_names):
             return True
     if len(call.args) < 2 or _is_mode_shaped_constant(call.args[0]):
         return False
-    return _is_opaque_int_constant(call.args[1])
+    return _is_opaque_mask(call.args[1], mask_names)
+
+
+def _is_opaque_mask(node: ast.expr, mask_names: set[str]) -> bool:
+    """Is this flag argument an opaque mask, whether spelled inline or via a local?
+
+    Two spellings, one answer. Inline is the literal (or a ``|`` carrying one), and
+    :func:`_is_opaque_flag_expression` decides it. Via a local is an ``ast.Name`` that
+    :func:`_opaque_flag_mask_names` already resolved at module scope — the spelling that
+    used to escape, because reading the call alone showed only the name.
+    """
+    if _is_opaque_flag_expression(node):
+        return True
+    return isinstance(node, ast.Name) and node.id in mask_names
 
 
 def _is_mode_shaped_constant(node: ast.expr | None) -> TypeGuard[ast.Constant]:
@@ -307,6 +353,165 @@ def _is_opaque_int_constant(node: ast.expr) -> bool:
         and isinstance(node.value, int)
         and not isinstance(node.value, bool)
     )
+
+
+def _is_ambiguous_name_mutating(func: ast.Attribute, call: ast.Call, receivers: set[str]) -> bool:
+    """Is this ATTRIBUTE call of a :data:`_RECEIVER_QUALIFIED_ATTR_CALLS` name a mutation?
+
+    Only the attribute spelling reaches here, and only for a name that collides with an
+    ordinary method, so the receiver is what tells ``os.remove(p)`` from
+    ``candidates.remove(x)``. Two ways to answer yes:
+
+    1. the receiver names a filesystem MODULE — ``os.replace``, ``shutil.move``,
+       ``os.truncate`` — whatever the arity. ``receivers`` is
+       :func:`_fs_module_receiver_names`'s answer and NOT the bare
+       :data:`_FS_MODULE_RECEIVERS` constant, because a module may be imported under
+       another name: ``import shutil as sh`` makes ``sh.move(a, b)`` the same call, and
+       matching the literal spellings alone let it through — which the receiver-free
+       matching this function replaced had caught;
+    2. the call is a :data:`_PATHLIB_SINGLE_ARG_MUTATIONS` name with exactly ONE
+       positional argument and no keywords — ``path.replace(target)`` /
+       ``path.rename(target)``, both renames. Their colliding twins do not have that
+       shape: ``str.replace`` takes at least two arguments and ``DataFrame.rename`` is
+       called with keywords, so arity separates them where the receiver's name cannot.
+       This codebase is pathlib-first, so those spellings are the ones a read-only module
+       would actually reach for, and dropping them to fix the false positive would have
+       traded one silent gap for another.
+
+    TWO accepted residuals, stated rather than implied.
+
+    First: a ``remove``/``move``/``link``/``truncate`` called on a NON-module receiver
+    bound to a path — ``p.truncate(0)`` on an open file object — is not caught, because
+    nothing in the syntax separates it from ``candidates.remove(x)`` and this guard does no
+    type inference. ``unlink``, the pathlib spelling a module would use to delete, is
+    collision-free and stays matched receiver-free in :data:`_FORBIDDEN_ATTR_CALLS`.
+
+    Second, and it is the price of deciding rule 2 on arity: the KEYWORD spelling of those
+    same renames — ``path.replace(target=other)`` — has no positional argument, so it does
+    not match and is not caught. Every other spelling-pair in this guard is checked in both
+    forms deliberately, and this one is the exception, because the keyword form is also
+    exactly what tells ``DataFrame.rename(columns=...)`` apart. Closing it needs the type
+    of the receiver, which is the inference this guard does not do; the ``os.``-qualified
+    spelling of both names remains caught either way.
+    """
+    if _receiver_name(func) in receivers:
+        return True
+    return func.attr in _PATHLIB_SINGLE_ARG_MUTATIONS and len(call.args) == 1 and not call.keywords
+
+
+def _fs_module_receiver_names(tree: ast.AST) -> set[str]:
+    """Every local name bound to a filesystem module, including aliases.
+
+    Starts from the literal spellings (:data:`_FS_MODULE_RECEIVERS`) and adds whatever
+    ``import os as _os`` / ``import shutil as sh`` bound them to. Without this, qualifying
+    the collision-prone names by receiver would be a DETECTION LOSS rather than a
+    false-positive fix: ``sh.move(a, b)`` is exactly the ``shutil.move`` the forbidden set
+    exists to catch, and the guard's own tests already exercise an aliased ``os`` in the
+    ``_os.fdopen(fd, "wb")`` case, so the spelling is one this codebase expects to see.
+
+    The literals are kept as a floor because a receiver need not come from an import at
+    all — this guard's own tests hand ``os``/``shutil`` in as function PARAMETERS.
+    """
+    names = set(_FS_MODULE_RECEIVERS)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(
+                alias.asname or alias.name
+                for alias in node.names
+                if alias.name in _FS_MODULE_RECEIVERS
+            )
+    return names
+
+
+def _receiver_name(func: ast.Attribute) -> str | None:
+    """The NAME of an attribute call's receiver: ``os`` for ``os.remove``, else ``None``.
+
+    A dotted receiver answers its LAST component (``os.path.foo`` → ``path``), the same
+    shape :func:`assert_module_is_read_only` uses to derive a call's own name.
+
+    This resolves SPELLING only, never binding: an ``import os as _os`` receiver answers
+    ``_os``, because that is what the source says. Mapping that back to the module it
+    names is :func:`_fs_module_receiver_names`'s job, and the two are kept apart so the
+    alias handling lives in one place rather than being half-done here.
+    """
+    value = func.value
+    if isinstance(value, ast.Name):
+        return value.id
+    if isinstance(value, ast.Attribute):
+        return value.attr
+    return None
+
+
+def _is_opaque_flag_expression(node: ast.expr) -> bool:
+    """Is ``node`` a flag mask that names no flag — a bare int, or a ``|`` with one in it?
+
+    Recurses ONLY through bitwise-OR operands, never through arbitrary subexpressions.
+    That bound is load-bearing rather than incidental: ``file_adapter.runs`` builds its
+    mask as ``os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | ...``, whose ``0`` defaults are
+    int constants sitting inside CALL arguments. A blanket walk would find them and report
+    that module's portability idiom — the one the ``getattr`` branch of
+    :func:`_forbidden_open_flags` exists to bless — as an opaque mask.
+    """
+    if _is_opaque_int_constant(node):
+        return True
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _is_opaque_flag_expression(node.left) or _is_opaque_flag_expression(node.right)
+    return False
+
+
+def _opaque_flag_mask_names(tree: ast.AST) -> set[str]:
+    """Names bound to a mask that NAMES no flag, collected over the whole module.
+
+    The numeric twin of :func:`_forbidden_open_flags`, and it exists for the same reason
+    that one is module-scoped. :func:`_opens_with_an_opaque_flag_mask` reads only what the
+    CALL passes, so ``flags = 0o1101`` on one line and ``os.open(path, flags)`` on the next
+    showed it an ``ast.Name`` and nothing else — while the flag-NAME scan found no flag
+    named, because a bare octal names none. That is one spelling in which a read-only
+    module opens a writable descriptor and passes both checks green, and it is one line
+    away from the shape ``file_adapter.runs`` already uses.
+    """
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and _is_opaque_flag_expression(node.value):
+            names.update(target.id for target in node.targets if isinstance(target, ast.Name))
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and node.value is not None
+            and _is_opaque_flag_expression(node.value)
+            and isinstance(node.target, ast.Name)
+        ):
+            names.add(node.target.id)
+    return names
+
+
+def _forbidden_imported_names(tree: ast.AST) -> list[str]:
+    """Every mutating name IMPORTED anywhere under ``tree``, whatever it was renamed to.
+
+    The call walk matches a name as written, so ``from shutil import rmtree as _rm`` +
+    ``_rm(p)`` presents an ``ast.Name`` reading ``_rm`` and matches nothing — the same
+    bypass the bare-name branch was added to close, one ``as`` clause further along. The
+    aliased flag spelling (``from os import O_CREAT as _C``) defeats
+    :func:`_forbidden_open_flags` identically.
+
+    Matched on the IMPORTED name rather than the local alias, so the rename is irrelevant,
+    and the import ITSELF is the violation rather than any call through it — the rule
+    :func:`_forbidden_open_flags` already states for flags ("a read-only module has no
+    reason to NAME a write flag anywhere") applied to the mutating functions too. That
+    also covers an alias called through a form no name-matcher sees, such as a dict of
+    handlers.
+    """
+    forbidden = _FORBIDDEN_ATTR_CALLS | _RECEIVER_QUALIFIED_ATTR_CALLS | _FORBIDDEN_OPEN_FLAGS
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            found.update(alias.name for alias in node.names if alias.name in forbidden)
+        elif isinstance(node, ast.Import):
+            found.update(
+                alias.name.rsplit(".", 1)[-1]
+                for alias in node.names
+                if alias.name.rsplit(".", 1)[-1] in forbidden
+            )
+    return sorted(found)
 
 
 def _is_getattr_call(node: ast.AST) -> TypeGuard[ast.Call]:
@@ -353,6 +558,10 @@ def assert_module_is_read_only(module: ModuleType) -> None:
     """Assert ``module``'s source contains no filesystem-mutating call."""
     tree = ast.parse(_module_source(module))
     violations: list[str] = []
+    # Both module-scope scans run BEFORE the call walk, because each answers a question a
+    # single call node cannot — see :func:`_opaque_flag_mask_names`.
+    mask_names = _opaque_flag_mask_names(tree)
+    fs_receivers = _fs_module_receiver_names(tree)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -366,9 +575,18 @@ def assert_module_is_read_only(module: ModuleType) -> None:
         # said "26 names" and was already wrong by seven the day it was written, which is
         # the same stale-count drift the module docstring refuses to reintroduce for the
         # adopter list. ``_forbidden_open_flags`` below already recognises both
-        # spellings of a flag; these branches make the call names agree with it. Every
-        # listed name is receiver-free by construction (see ``_FORBIDDEN_ATTR_CALLS``),
-        # which is precisely what makes matching it as a bare name safe.
+        # spellings of a flag; these branches make the call names agree with it.
+        #
+        # ``_FORBIDDEN_ATTR_CALLS`` is the receiver-free half, and it is now ONLY that:
+        # every name that collides with an ordinary method moved to
+        # ``_RECEIVER_QUALIFIED_ATTR_CALLS``, whose attribute spelling is decided by
+        # :func:`_is_ambiguous_name_mutating` instead. (No count here either, for the
+        # reason given just above — the split has already gained a name since it was made.)
+        # This comment used to assert every listed name was "receiver-free by
+        # construction", which was false of the moved ones and made the guard fire on
+        # ``status.replace("_", "-")``. Neither set is matched through an ALIAS here — an
+        # import cannot be seen from a call node — so :func:`_forbidden_imported_names`
+        # covers that spelling at module scope.
         name = (
             func.attr
             if isinstance(func, ast.Attribute)
@@ -380,6 +598,11 @@ def assert_module_is_read_only(module: ModuleType) -> None:
             continue
         if name in _FORBIDDEN_ATTR_CALLS:
             violations.append(f"{name}() at line {node.lineno}")
+        elif name in _RECEIVER_QUALIFIED_ATTR_CALLS:
+            # Bare spelling is unambiguous (a colliding method always has a receiver);
+            # the attribute spelling needs one — see :func:`_is_ambiguous_name_mutating`.
+            if isinstance(func, ast.Name) or _is_ambiguous_name_mutating(func, node, fs_receivers):
+                violations.append(f"{name}() at line {node.lineno}")
         elif name in _OPEN_ATTR_NAMES:
             # ``path.open(...)`` / ``os.open(...)`` / ``os.fdopen(...)`` and their bare
             # forms. ``file_adapter.runs`` reads through ``os.open`` + ``os.fdopen``
@@ -395,7 +618,7 @@ def assert_module_is_read_only(module: ModuleType) -> None:
             mode = _open_mode_arg(node, bound=isinstance(func, ast.Attribute))
             if _mode_requests_mutation(mode):
                 violations.append(f"{name}(mode={mode.value!r}) at line {node.lineno}")
-            elif _opens_with_an_opaque_flag_mask(node):
+            elif _opens_with_an_opaque_flag_mask(node, mask_names):
                 # A flag mask spelled as a number names no flag, so the module-scope scan
                 # below cannot see it — see :func:`_opens_with_an_opaque_flag_mask`.
                 violations.append(f"{name}(flags=<numeric mask>) at line {node.lineno}")
@@ -405,6 +628,11 @@ def assert_module_is_read_only(module: ModuleType) -> None:
     # ``file_adapter.runs`` actually builds.
     violations.extend(
         f"names the mutating open flag {flag}" for flag in _forbidden_open_flags(tree)
+    )
+    # Imports are collected over the whole module for the same reason, and they catch the
+    # ALIASED spelling of everything above — see :func:`_forbidden_imported_names`.
+    violations.extend(
+        f"imports the mutating name {imported}" for imported in _forbidden_imported_names(tree)
     )
 
     module_name = Path(inspect.getsourcefile(module) or module.__name__).name
