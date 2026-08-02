@@ -235,7 +235,7 @@ describe('spend page', () => {
 		expect(screen.queryByTestId('partial-total')).toBeNull();
 	});
 
-	it('says the bill is unknown when the ledger was found but never read', () => {
+	it('says the bill is unknown, and shows NO figure, when the ledger was found but never read', () => {
 		const unread = {
 			...fullSpend,
 			totals: { costUsd: 0, entries: 0, tokens: tokens(0, 0, 0, 0) },
@@ -247,12 +247,191 @@ describe('spend page', () => {
 			skippedOmitted: 0
 		} satisfies SpendResponse;
 
-		render(Page, { props: { data: data(unread) } });
+		const { container } = render(Page, { props: { data: data(unread) } });
 
-		const marker = screen.getByTestId('partial-total');
-		expect(normalized(marker)).toMatch(/could not be read/i);
+		expect(normalized(screen.getByTestId('unread-ledger'))).toMatch(/unknown/i);
+		expect(screen.getByText(LEDGER_PATH)).toBeTruthy();
+
+		// `totals` here is a placeholder for a bill nobody counted, so the same
+		// assertion the no-ledger case makes applies: no money figure at all. A
+		// "$0.00" under a caveat is still a number someone can screenshot.
+		expect(screen.queryByTestId('spend-total')).toBeNull();
+		expect(container.textContent).not.toMatch(/\$\s?\d/);
+		// And no zeroed tables or "No X spend recorded." panels, which would assert
+		// a measurement that never happened.
+		expect(screen.queryByRole('table')).toBeNull();
+		expect(screen.queryByText(/No ticket spend recorded/)).toBeNull();
 		// It must NOT claim one countable line went missing: a line-0 skip stands
 		// for the whole file.
-		expect(normalized(marker)).not.toMatch(/1 ledger line/);
+		expect(container.textContent).not.toMatch(/1 ledger line/);
+	});
+
+	it('treats a found-but-unread ledger as unknown even when the body carries no skip entry', () => {
+		// The line-0 skip is T82's convention, not a schema guarantee: `skipped` is
+		// optional on the wire. Keying the unknown-bill case off it would let this
+		// body render a confident "$0.00".
+		const unreadNoSkip = {
+			...fullSpend,
+			totals: { costUsd: 0, entries: 0, tokens: tokens(0, 0, 0, 0) },
+			byTicket: [],
+			byModel: [],
+			byLevel: [],
+			source: { found: true, read: false, path: LEDGER_PATH },
+			skipped: [],
+			skippedOmitted: 0
+		} satisfies SpendResponse;
+
+		const { container } = render(Page, { props: { data: data(unreadNoSkip) } });
+
+		expect(normalized(screen.getByTestId('unread-ledger'))).toMatch(/unknown/i);
+		expect(screen.queryByTestId('spend-total')).toBeNull();
+		expect(container.textContent).not.toMatch(/\$\s?\d/);
+	});
+
+	it('names the .factory/ directory in the unread case when the probed path is null', () => {
+		// Mirrors the no-ledger branch: a sentence that says a ledger was found has
+		// to be able to say where, so the location clause never just disappears.
+		const unreadNoPath = {
+			...fullSpend,
+			totals: { costUsd: 0, entries: 0, tokens: tokens(0, 0, 0, 0) },
+			byTicket: [],
+			byModel: [],
+			byLevel: [],
+			source: { found: true, read: false, path: null },
+			skipped: [{ lineNo: 0, reason: 'unreadable' as const }],
+			skippedOmitted: 0
+		} satisfies SpendResponse;
+
+		render(Page, { props: { data: data(unreadNoPath) } });
+
+		expect(normalized(screen.getByTestId('unread-ledger'))).toMatch(/unknown/i);
+		expect(screen.getAllByText('.factory/').length).toBeGreaterThan(0);
+	});
+
+	it('marks the total partial when every skipped line fell past the reader detail cap', () => {
+		// `skipped` is empty but lines ARE missing from the figure — gating the
+		// notice on `skipped.length` would render this incomplete total as complete.
+		const omittedOnly = {
+			...fullSpend,
+			skipped: [],
+			skippedOmitted: 3
+		} satisfies SpendResponse;
+
+		render(Page, { props: { data: data(omittedOnly) } });
+
+		const marker = screen.getByTestId('partial-total');
+		expect(normalized(marker)).toMatch(/3 ledger lines/);
+		expect(normalized(marker)).toMatch(/excluded/i);
+	});
+
+	it('renders a non-zero sub-cent cost as "<$0.01" rather than "$0.00"', () => {
+		// Rounding a real-but-tiny bill to "$0.00" is the same false "this was free"
+		// claim the no-ledger branch exists to prevent, reached by rounding.
+		const subCent = {
+			...fullSpend,
+			totals: { ...fullSpend.totals, costUsd: 0.0031 },
+			byTicket: [
+				{ ticketId: 'T84', attributedCostUsd: 0.0031, entries: 1, models: ['claude-haiku-4-5'] }
+			],
+			byModel: [{ model: 'claude-haiku-4-5', costUsd: 0.0031, tokens: tokens(10, 5, 0, 0) }],
+			byLevel: [{ level: 'ticket', costUsd: 0.0031, entries: 1 }]
+		} satisfies SpendResponse;
+
+		render(Page, { props: { data: data(subCent) } });
+
+		expect(screen.getByTestId('spend-total').textContent?.trim()).toBe('<$0.01');
+		// Every cut renders it the same way, so no row reads as free.
+		expect(screen.getAllByText('<$0.01')).toHaveLength(4);
+		expect(screen.queryByText('$0.00')).toBeNull();
+	});
+
+	it('renders a measured zero as "$0.00", not as the sub-cent marker', () => {
+		const measuredZero = {
+			...fullSpend,
+			totals: { costUsd: 0, entries: 0, tokens: tokens(0, 0, 0, 0) },
+			byTicket: [],
+			byModel: [],
+			byLevel: []
+		} satisfies SpendResponse;
+
+		render(Page, { props: { data: data(measuredZero) } });
+
+		// `found: true, read: true` — the ledger WAS opened and it really did cost
+		// nothing, so the zero is a measurement and is stated as one.
+		expect(screen.getByTestId('spend-total').textContent?.trim()).toBe('$0.00');
+		expect(screen.queryByText('<$0.01')).toBeNull();
+	});
+
+	it('renders the per-cut empty states when a read ledger has no rows', () => {
+		const noRows = {
+			...fullSpend,
+			byTicket: [],
+			byModel: [],
+			byLevel: []
+		} satisfies SpendResponse;
+
+		render(Page, { props: { data: data(noRows) } });
+
+		expect(screen.getByText('No ticket spend recorded.')).toBeTruthy();
+		expect(screen.getByText('No model spend recorded.')).toBeTruthy();
+		expect(screen.getByText('No level spend recorded.')).toBeTruthy();
+		expect(screen.queryByRole('table')).toBeNull();
+	});
+
+	it('renders the empty states when the optional cut fields are omitted entirely', () => {
+		// The server may omit these keys rather than send `[]` — they are optional in
+		// the generated schema, which is what the page's `?? []` fallbacks are for.
+		const omitted = {
+			attribution: 'full-to-each-id',
+			totals: fullSpend.totals,
+			source: { found: true, read: true, path: LEDGER_PATH },
+			skippedOmitted: 0
+		} satisfies SpendResponse;
+
+		render(Page, { props: { data: data(omitted) } });
+
+		expect(screen.getByText('No ticket spend recorded.')).toBeTruthy();
+		expect(screen.getByText('No model spend recorded.')).toBeTruthy();
+		expect(screen.getByText('No level spend recorded.')).toBeTruthy();
+		expect(screen.queryByTestId('partial-total')).toBeNull();
+	});
+
+	it('renders a ticket row whose models list is omitted', () => {
+		const noModels = {
+			...fullSpend,
+			byTicket: [{ ticketId: 'T84', attributedCostUsd: 1.2, entries: 2 }]
+		} satisfies SpendResponse;
+
+		render(Page, { props: { data: data(noModels) } });
+
+		expect(screen.getByText('T84')).toBeTruthy();
+		expect(screen.getByText('$1.20')).toBeTruthy();
+	});
+
+	it('falls back to naming the .factory/ directory when the probed path is null', () => {
+		const noPath = {
+			...noLedgerSpend,
+			source: { found: false, read: false, path: null }
+		} satisfies SpendResponse;
+
+		render(Page, { props: { data: data(noPath) } });
+
+		expect(screen.getByText(/No spend ledger for this project\./)).toBeTruthy();
+		expect(screen.queryByText(LEDGER_PATH)).toBeNull();
+		expect(screen.getAllByText('.factory/').length).toBeGreaterThan(0);
+	});
+
+	it('uses singular wording for a single entry and a single skipped line', () => {
+		const one = {
+			...fullSpend,
+			totals: { ...fullSpend.totals, entries: 1 },
+			skipped: [{ lineNo: 7, reason: 'not_json' as const }],
+			skippedOmitted: 0
+		} satisfies SpendResponse;
+
+		const { container } = render(Page, { props: { data: data(one) } });
+
+		expect(normalized(screen.getByTestId('partial-total'))).toMatch(/1 ledger line could not be/);
+		expect(container.textContent).toMatch(/1 ledger entry/);
 	});
 });
