@@ -57,6 +57,7 @@ _FORBIDDEN_ATTR_CALLS = frozenset(
         "move",
         "rmtree",
         "copyfile",
+        "copyfileobj",
         "copy2",
         "copytree",
         # os-level creation and metadata mutation. None of these writes bytes, but each
@@ -70,6 +71,34 @@ _FORBIDDEN_ATTR_CALLS = frozenset(
         "chmod",
         "chown",
         "utime",
+        # The PATHLIB spellings of the two names above it, which this set otherwise pairs
+        # without exception: ``mkdir``/``makedirs``, ``unlink``/``remove``,
+        # ``rename``/``replace``, ``rmdir``/``removedirs``. ``symlink``/``link`` arrived
+        # without their ``Path`` counterparts, and this codebase is pathlib-first — every
+        # guarded module threads ``Path`` objects and the guard's own positive tests are
+        # written as ``path.mkdir()`` — so the spelling a read-only module would actually
+        # reach for was the one spelling not covered.
+        "symlink_to",
+        "hardlink_to",
+        # DESCRIPTOR-level mutation, the half that was missing from a set listing only
+        # path-level names. It is not hypothetical here: ``file_adapter.runs`` is the
+        # first read-only module to hold a raw descriptor (``os.open`` + ``os.fdopen``,
+        # so its gates apply to the opened inode rather than to a name), and the
+        # path-level twins ``truncate``/``chmod``/``chown`` above were listed while their
+        # ``f``-prefixed forms — the only ones that can act on that descriptor — were not.
+        #
+        # Bare ``write`` and ``writelines`` are deliberately NOT here, on the same
+        # collision rule that excludes bare ``copy``: they name every file-like object's
+        # method (``sys.stdout.write``, ``io.StringIO.write``), so listing them
+        # receiver-free would fail a read. That leaves ``os.write(fd, ...)`` itself
+        # uncovered by NAME — which is why the flag mask that produced a writable
+        # descriptor is now a violation in its own right; see
+        # :func:`_opens_with_an_opaque_flag_mask`.
+        "pwrite",
+        "writev",
+        "ftruncate",
+        "fchmod",
+        "fchown",
     }
 )
 # open() mode characters that request writing/creation/truncation.
@@ -174,6 +203,98 @@ def _mode_requests_mutation(mode: ast.expr | None) -> TypeGuard[ast.Constant]:
     )
 
 
+def _opens_with_an_opaque_flag_mask(call: ast.Call) -> bool:
+    """Does this ``open`` call pass its flag mask as a bare NUMERIC literal?
+
+    :func:`_forbidden_open_flags` recognises a mask only by the NAMES in it, so
+    ``os.open(path, 577)`` — the same bits as ``O_RDONLY | O_CREAT | O_EXCL``, spelled
+    without naming any of them — is invisible to it. It is invisible to every other
+    branch too: an integer is not a mode string, so :func:`_mode_requests_mutation`
+    never sees it either. That leaves one spelling in which a READ-ONLY module can open
+    a descriptor for WRITING and pass this guard green, and it is the spelling that
+    matters most now that a guarded module holds raw descriptors at all — once the
+    descriptor is writable, ``os.write(fd, ...)`` finishes the job under a name too
+    generic to forbid receiver-free (see ``_FORBIDDEN_ATTR_CALLS``).
+
+    The mask is treated as a violation rather than DECODED, deliberately. Decoding would
+    pin this guard to one platform's flag values, and a read-only module gives up nothing
+    by naming ``os.O_RDONLY`` instead of spelling it as a number — so requiring the name
+    is free, while guessing at the number is not.
+
+    Both spellings of the mask are checked — positional (``os.open(path, 577)``) and the
+    ``flags=`` KEYWORD (``os.open(path, flags=577)``) — for the same reason the call
+    names above are matched in both spellings: which one appears is the caller's choice,
+    and neither is any less a writable open. The keyword form was the residual left by a
+    positional-only check, and it is the easier one to write by accident.
+
+    TWO KNOWN RESIDUALS, stated rather than implied.
+
+    First: a mask that is neither a literal nor a named flag — ``os.open(path, mask)``
+    where ``mask`` is a parameter — is undecidable from the syntax alone and is NOT
+    caught here. :func:`_forbidden_open_flags` covers the realistic in-module spelling of
+    that (a mask hoisted into a local is still built from names it scans at module
+    scope); a mask arriving from outside the module is not something a read-only adapter
+    has any reason to accept, and catching it would need dataflow this guard deliberately
+    does not do.
+
+    Second, and it is the price of not whitelisting receivers: ``os.open("rb", 577)`` —
+    a PATH literal spelled wholly out of the READ-only mode characters — is excluded
+    here, because it is character-for-character indistinguishable from
+    ``path.open("rb", 8192)``, which must stay silent. Only the receiver tells them
+    apart, and this guard dropped receiver whitelisting because it was wrong in both
+    directions (see :func:`_open_mode_arg`). The exposure is narrow: a mode-shaped path
+    that also contains a WRITE character is still caught by
+    :func:`_mode_requests_mutation` one branch earlier — ``os.open("w", 577)`` reports as
+    ``mode='w'`` — so what escapes is only a file whose name is drawn from ``rbtU``. This
+    is the same ambiguity the ``path-literal-that-is-itself-mode-shaped`` case in
+    ``tests/unit/test_read_only_guard.py`` already accepts for the mode check, and it is
+    accepted here for the same reason: a guard that fired on ``path.open("rb", 8192)``
+    would be worked around rather than fixed.
+
+    The bound ``Path.open(mode, buffering)`` form is excluded: its argument 1 is an int
+    BY DESIGN, so reading it as a flag mask would fail a plain read. What excludes it is
+    argument 0 being MODE-SHAPED — drawn wholly from :data:`_OPEN_MODE_CHARS` — and not
+    merely being a string, which is the same shape test :func:`_mode_requests_mutation`
+    uses to tell a mode from a path. "Any string constant" is the weaker test and it
+    leaks: ``os.open("/target/file.txt", 577)`` has a string at argument 0 too, so
+    excluding on stringness alone let a LITERAL path carry a writable mask straight
+    through the one check written to stop it.
+    """
+    for keyword in call.keywords:
+        if keyword.arg == "flags" and _is_opaque_int_constant(keyword.value):
+            return True
+    if len(call.args) < 2 or _is_mode_shaped_constant(call.args[0]):
+        return False
+    return _is_opaque_int_constant(call.args[1])
+
+
+def _is_mode_shaped_constant(node: ast.expr) -> bool:
+    """Is ``node`` a string literal that could be an open MODE rather than a path?
+
+    A mode is drawn wholly from :data:`_OPEN_MODE_CHARS`; any realistic path literal
+    carries a separator, a dot, or a letter outside that alphabet. Shared by the
+    numeric-mask check so "this argument is the mode, not the path" is decided ONE way
+    — the same rule :func:`_mode_requests_mutation` applies.
+    """
+    return (
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and bool(node.value)
+        and set(node.value) <= _OPEN_MODE_CHARS
+    )
+
+
+def _is_opaque_int_constant(node: ast.expr) -> bool:
+    """Is ``node`` an integer literal — a flag mask that names no flag?"""
+    # ``bool`` is an ``int`` subclass, so it is excluded explicitly rather than left to
+    # ``isinstance`` — ``open(f, True)`` is not a flag mask.
+    return (
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, int)
+        and not isinstance(node.value, bool)
+    )
+
+
 def _is_getattr_call(node: ast.AST) -> TypeGuard[ast.Call]:
     """Is ``node`` a call to the builtin ``getattr``?"""
     if not isinstance(node, ast.Call):
@@ -257,6 +378,10 @@ def assert_module_is_read_only(module: ModuleType) -> None:
             mode = _open_mode_arg(node, bound=isinstance(func, ast.Attribute))
             if _mode_requests_mutation(mode):
                 violations.append(f"{name}(mode={mode.value!r}) at line {node.lineno}")
+            elif _opens_with_an_opaque_flag_mask(node):
+                # A flag mask spelled as a number names no flag, so the module-scope scan
+                # below cannot see it — see :func:`_opens_with_an_opaque_flag_mask`.
+                violations.append(f"{name}(flags=<numeric mask>) at line {node.lineno}")
 
     # Flags are collected over the WHOLE module rather than per call — see
     # :func:`_forbidden_open_flags` for why a per-call walk could not see the mask
