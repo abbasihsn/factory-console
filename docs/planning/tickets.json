@@ -1308,6 +1308,19 @@
       "status": "todo",
       "audit_finding": "end-to-end-behaviour",
       "audit_date": "2026-08-02"
+    },
+    {
+      "id": "T96",
+      "title": "The wrong-cause error and the degrading guard, everywhere else",
+      "track": "backend",
+      "milestone": "v2.1",
+      "depends_on": [
+        "T88"
+      ],
+      "provides": "T88's Amendment 1 applied as a CLASS: invalid_ticket_id is never returned for a well-formed id anywhere, O_NOFOLLOW's absence degrades to a refusal rather than to no check, and the containment gate has one implementation instead of two.",
+      "path": "docs/planning/tickets/v2.1/T96-name-the-cause-class-wide.md",
+      "status": "todo",
+      "source": "T88 review round 3 of resumption, 2026-08-02"
     }
   ]
 }
