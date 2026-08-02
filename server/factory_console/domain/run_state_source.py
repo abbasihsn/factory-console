@@ -8,18 +8,20 @@ have to re-derive from a path shape, so the prober reports it: a
 :class:`RunStateSource` carries the resolved ``kind`` alongside its ``path``, and
 every downstream read dispatches on that ``kind``.
 
-:class:`JsonRunState` is the parsed result of the JSON form, and carries FOUR
+:class:`JsonRunState` is the parsed result of the JSON form, and carries FIVE
 things: the states it named; the statuses it named that this console does not
 recognise (so a factory that gains a tenth status shows up as an explicit gap
 rather than as a project silently full of ``unknown``); ``known_ticket_ids``,
 every id the file mentioned at all, which is what separates "listed, but we could
 not classify it" from "not listed" and so decides
-:attr:`~factory_console.domain.run_state.RunState.absent` versus ``unknown``; and
-``readable``, whether the file could be trusted at all. The last two are read
-TOGETHER — an empty ``known_ticket_ids`` means "the file lists nobody" only when
-``readable`` is true — because a file that could not be parsed must never resolve
-``absent`` for every ticket and lock the project read-only (T80). A FIFTH flag,
-``unreadable``, narrows the ``readable=False`` case to the one that must fail
+:attr:`~factory_console.domain.run_state.RunState.absent` versus ``unknown``;
+``unclassifiable``, per id, WHAT the file said that could not be classified (T80
+amendment 4); and ``readable``,
+whether the file could be trusted at all. ``readable`` and ``known_ticket_ids`` are
+read TOGETHER — an empty ``known_ticket_ids`` means "the file lists nobody" only
+when ``readable`` is true — because a file that could not be parsed must never
+resolve ``absent`` for every ticket and lock the project read-only (T80). A SIXTH
+flag, ``unreadable``, narrows the ``readable=False`` case to the one that must fail
 CLOSED: the file's bytes could not be read at all (T80 amendment 2).
 """
 
@@ -55,13 +57,30 @@ class JsonRunState(BaseModel):
 
     ``states`` maps ticket id -> :class:`RunState` for every entry whose factory
     status is in the alias table; ``unrecognised`` collects, de-duplicated and in
-    first-seen order, the raw status strings that were NOT (their tickets map to
-    :attr:`RunState.unknown`). ``known_ticket_ids`` names every id that had SOME
+    first-seen order, the raw status strings that were NOT (their tickets resolve the
+    refusing :attr:`RunState.unreadable` — T80 amendment 4; they used to resolve the
+    mutable ``unknown``). ``known_ticket_ids`` names every id that had SOME
     entry in the document's ``tickets`` object, whether or not that entry's
     status was usable — it is what lets a caller tell "this id has an entry with
-    a status we can't classify" (:attr:`RunState.unknown`) apart from "this id
-    has no entry at all" (:attr:`RunState.absent`), a distinction ``states``
-    alone cannot make since both cases are absent from it.
+    a status we can't classify" (:attr:`RunState.unreadable` since T80 amendment 4)
+    apart from "this id has no entry at all" (:attr:`RunState.absent`), a
+    distinction ``states`` alone cannot make since both cases are absent from it.
+
+    ``unclassifiable`` names the FIRST of those two per id: for every id in
+    ``known_ticket_ids`` that is not in ``states``, a short description of WHAT the file
+    said about it that could not be classified — ``"status 'in_review'"``, ``"an entry
+    with no status"``, ``"an entry that is not an object"``. Like ``unrecognised`` it is
+    a parse artifact, not a verdict: it records what was read, and says nothing about
+    what any gate should do with it.
+
+    It is a description rather than the raw value because the value is not always a
+    string, so there is no raw form to carry: a schema drift to ``{"T42": "merged"}``
+    puts a ``str`` where the object belongs, and ``{"status": 7}`` puts an ``int`` where
+    the status does. It is keyed per id — rather than left to ``unrecognised``, which is
+    de-duplicated across the whole file — because ``unrecognised`` cannot say which
+    value belonged to which ticket, and "which ticket" is the question a caller
+    resolving ONE id is asking. The two are both required and neither replaces the
+    other: ``unrecognised`` describes the file, ``unclassifiable`` describes an entry.
 
     ``readable`` is ``False`` for a file that could not be parsed at all — or
     whose ``tickets`` key is missing or is not an object. That degraded case
@@ -88,6 +107,7 @@ class JsonRunState(BaseModel):
     states: dict[str, RunState] = {}
     unrecognised: list[str] = []
     known_ticket_ids: frozenset[str] = frozenset()
+    unclassifiable: dict[str, str] = {}
     readable: bool = True
     unreadable: bool = False
 

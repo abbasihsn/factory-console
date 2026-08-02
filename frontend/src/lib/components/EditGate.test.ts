@@ -74,10 +74,14 @@ describe('EditGate', () => {
 	});
 
 	// T80 amendment 2: `unreadable` is in NEITHER server allowlist, so both writes are
-	// refused — and the cause is on the operator's side (the source's permissions), not
-	// a lane's. Blaming a lane here sends them looking for a lane that does not exist
-	// while the actual fix is a chmod. Asserted as the two behaviours the banner owes:
-	// which writes are disabled, and why.
+	// refused — and the cause is on the operator's side (the source), not a lane's.
+	// Blaming a lane here sends them looking for a lane that does not exist. Asserted as
+	// the two behaviours the banner owes: which writes are disabled, and why.
+	//
+	// Amendment 4 gave the state a second cause (a source read fine whose entry for this
+	// ticket could not be interpreted), so the banner must not name a fix — it has only
+	// the enum member and would be wrong half the time. The reason it gives is therefore
+	// asserted below as covering both, and the specific value lives in the server's 409.
 	it('says both writes are disabled for unreadable', () => {
 		render(EditGate, { props: { runState: 'unreadable' } });
 
@@ -90,6 +94,10 @@ describe('EditGate', () => {
 
 		const text = screen.getByRole('note').textContent?.replace(/\s+/g, ' ') ?? '';
 		expect(text).toContain('run-state source could not be read');
+		// ...and the other cause too (amendment 4) — the banner cannot tell them apart,
+		// so it must name both rather than sending half the cases to chmod a file that
+		// reads perfectly well.
+		expect(text).toContain('cannot interpret');
 		expect(text).not.toContain('a factory lane owns a ticket');
 		// It must not offer the delete the way `absent` does — the server refuses it.
 		expect(text).not.toContain('You can still delete it.');

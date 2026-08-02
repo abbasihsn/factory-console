@@ -36,10 +36,15 @@ from factory_console.file_adapter.run_state import (
     find_run_state_dir,
     find_run_state_source,
     probe_ticket_state_from_source,
+    probe_ticket_state_with_reason,
     read_json_run_state,
     run_state_resolver,
 )
-from factory_console.file_adapter.write_gate import DELETABLE_STATES, MUTABLE_STATES
+from factory_console.file_adapter.write_gate import (
+    DELETABLE_STATES,
+    MUTABLE_STATES,
+    TicketNotMutable,
+)
 
 # The committed factory-shaped fixture, resolved relative to this file so the
 # suite is path-independent.
@@ -259,7 +264,17 @@ def test_the_fixture_is_not_read_as_the_directory_form() -> None:
     assert probe_ticket_state_from_source(source, "T01") is RunState.merged
 
 
-def test_an_unknown_status_yields_unknown_and_is_reported(tmp_path: Path) -> None:
+def test_an_unknown_status_refuses_and_is_reported(tmp_path: Path) -> None:
+    # SUPERSEDED by T80 amendment 4 — this used to assert `unknown` (mutable), and the
+    # reasoning that made that look right is kept because it is half true: a status the
+    # console cannot classify IS a named gap, and collecting it into `unrecognised` IS
+    # how a factory that gained a tenth FAC_STATES member becomes visible instead of
+    # vanishing into a repo full of `unknown`. What was wrong was acting on it: naming
+    # the gap in a log line and then handing the write gate a MUTABLE state ignores it
+    # at the only point that matters. `in_orbit` is the factory claiming something about
+    # T02 in a vocabulary this console does not speak, and a claim we could not read is
+    # not silence — so the refusal and the report are BOTH required, which is why this
+    # test still asserts `unrecognised` unchanged.
     path = _place_json(
         tmp_path,
         json.dumps(
@@ -280,8 +295,46 @@ def test_an_unknown_status_yields_unknown_and_is_reported(tmp_path: Path) -> Non
         "a tenth factory status must be reported as a named gap (once), not "
         "silently dropped into a repo full of unknown"
     )
+    # De-duplicated for the FILE, but recorded per TICKET — the refusal has to name the
+    # value for one id, and `unrecognised` cannot say which value belonged to whom.
+    assert parsed.unclassifiable == {"T02": "status 'in_orbit'", "T03": "status 'in_orbit'"}
+
     source = RunStateSource(kind="json", path=path)
-    assert probe_ticket_state_from_source(source, "T02") is RunState.unknown
+    assert probe_ticket_state_from_source(source, "T02") is RunState.unreadable
+    assert probe_ticket_state_from_source(source, "T02") not in MUTABLE_STATES, (
+        "an entry naming this ticket under a status the console cannot classify must "
+        "refuse: the status we failed to read could have been `merged`"
+    )
+    # The sibling that DID classify is untouched — the refusal is per entry, never
+    # per file, or one tenth state would lock a whole project read-only.
+    assert probe_ticket_state_from_source(source, "T01") is RunState.merged
+
+
+def test_the_unclassifiable_refusal_names_the_value_it_could_not_read(tmp_path: Path) -> None:
+    # T80 amendment 4, step 1: "the refusal names the unrecognised value — an operator
+    # needs *the run-state says `in_review`, which this console does not know*, not
+    # *not tracked*". The two `unreadable` causes share a state (same authorization
+    # answer) and must NOT share prose (different remedy): one is fixed by chmod, this
+    # one by a console that knows the status the factory now writes.
+    path = _place_json(
+        tmp_path,
+        json.dumps({"version": 1, "tickets": {"T01": {"status": "in_review"}}}),
+    )
+    source = RunStateSource(kind="json", path=path)
+
+    state, unclassifiable = probe_ticket_state_with_reason(source, "T01")
+    assert state is RunState.unreadable
+    assert unclassifiable == "status 'in_review'"
+
+    refusal = TicketNotMutable("T01", state, source_path=path, unclassifiable=unclassifiable)
+    assert "in_review" in refusal.message
+    assert "could not be read" not in refusal.message, (
+        "the file read fine; pointing the operator at permissions is the wrong fix"
+    )
+
+    # An id the source does not name at all has no value to report, and an id in a
+    # source that could not be read has none either — both keep the generic prose.
+    assert probe_ticket_state_with_reason(source, "T99-no-entry")[1] is None
 
 
 def test_a_hyphenated_status_is_not_munged_into_an_underscored_member(tmp_path: Path) -> None:
@@ -373,19 +426,37 @@ def test_an_entry_without_a_usable_status_is_skipped_but_its_siblings_survive(
 
     parsed = read_json_run_state(path)
     assert parsed.states == {"T01": RunState.merged}
+    # Only a STRING status outside the alias table is a named gap in the factory's
+    # vocabulary; a missing or non-string status is a malformed entry, not a tenth
+    # state, so it must not pollute the list an operator reads as "your console is a
+    # version behind". Both still refuse — see below.
     assert parsed.unrecognised == []
     # T80: a skipped entry still HAD an entry, so its id must land in
     # ``known_ticket_ids`` — that is the only thing separating "listed under
-    # something we could not classify" (unknown, mutable) from "not listed at all"
-    # (absent, refused 409).
+    # something we could not classify" from "not listed at all" (absent).
     assert parsed.known_ticket_ids == frozenset({"T01", "T02", "T03", "T04"})
+    # T80 amendment 4: and WHAT could not be classified, per id, so the refusal can
+    # name it. Each phrase describes the actual shape found, because the offending
+    # value is not always a string — `{"T02": "merged"}` puts a `str` where the object
+    # belongs, `{"status": 7}` an `int` where the status does.
+    assert parsed.unclassifiable == {
+        "T02": "an entry that is not an object",
+        "T03": "an entry with no status",
+        "T04": "an entry whose status is not a string (int)",
+    }
 
-    # ...and it must resolve that way end to end, not merely be recorded. Moving the
-    # ``known_ticket_ids.add`` below the ``continue`` would flip these three real
-    # tickets from editable to 409 with no other test failing.
+    # SUPERSEDED by T80 amendment 4 — these three asserted the mutable `unknown`. The
+    # old reasoning was that a skipped entry is indistinguishable from silence once its
+    # status is gone; what it missed is that the ENTRY is the claim, and this file names
+    # T02/T03/T04 whether or not the console can read what it says about them. The
+    # regression this still guards is the same one, in the same direction: moving the
+    # ``known_ticket_ids.add`` below the ``continue`` would flip these three from a
+    # refusal to `absent` — a different 409 for edit, but a PERMITTED delete, since
+    # `absent` is deletable and `unreadable` is not.
     source = RunStateSource(kind="json", path=path)
     for ticket_id in ("T02", "T03", "T04"):
-        assert probe_ticket_state_from_source(source, ticket_id) is RunState.unknown
+        assert probe_ticket_state_from_source(source, ticket_id) is RunState.unreadable
+        assert probe_ticket_state_from_source(source, ticket_id) not in DELETABLE_STATES
     assert probe_ticket_state_from_source(source, "T99-no-entry-at-all") is RunState.absent
 
 

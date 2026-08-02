@@ -109,21 +109,27 @@ describe('RunStateBadge', () => {
 	});
 
 	// T80 amendment 2: `unreadable` is distinct from BOTH of its unnamed siblings —
-	// the source is there and could not be read, so the console refuses every write
-	// to the ticket until that is fixed. The tooltip carries the fix, and the pill is
-	// deliberately not slate: this is the only one of the three an operator must act
-	// on.
+	// the information is unavailable, so the console refuses every write to the ticket
+	// until that is fixed. The pill is deliberately not slate: this is the only one of
+	// the three an operator must act on.
+	//
+	// The tooltip used to end "(check its permissions)". Amendment 4 gave this state a
+	// SECOND cause — a source read perfectly well that says something about this ticket
+	// the console cannot interpret — and a badge has only the enum member, so it cannot
+	// tell which. Naming permissions would be the wrong fix half the time; the server's
+	// 409 is what carries the specific cause and names the offending value.
 	it('renders the unreadable variant, distinctly from unknown and absent', () => {
 		const { container } = render(RunStateBadge, { props: { runState: 'unreadable' } });
 
 		const pill = screen.getByText('Unreadable');
 		expect(pill.getAttribute('title')).toBe(
-			'The run-state source could not be read (check its permissions) — writes are refused'
+			'The run-state source could not be read, or says something about this ticket this console does not understand — writes are refused'
 		);
+		expect(pill.getAttribute('title')).not.toContain('permissions');
 		expect(container.querySelector('span')).toMatchInlineSnapshot(`
 			<span
 			  class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-red-50 text-red-800 ring-1 ring-red-300"
-			  title="The run-state source could not be read (check its permissions) — writes are refused"
+			  title="The run-state source could not be read, or says something about this ticket this console does not understand — writes are refused"
 			>
 			  Unreadable
 			</span>

@@ -375,3 +375,52 @@ left open.
 - a vacuous source → still mutable (Amendment 1); a wholly unreadable source → refuses (Amendment 2);
   a higher-precedence unreadable directory → refuses (Amendment 3); ELOOP → refuses;
 - CPython 3.13's non-raising `Path.exists()`/`is_dir()` (gh-113978) is not assumed anywhere.
+
+### The audit (Amendment 4, step 4) — every resolution path, re-verdicted under the RESTATED invariant
+
+Required by step 4: *"list every resolution path in `run_state.py` with its verdict under the restated
+invariant, including the ones already correct. If a seventh case exists, it is found now, by
+enumeration, and not by a seventh review round."* Amendment 3's audit asked "could it have been
+**read**?"; this one asks the wider question, "was the information **available** — read AND
+interpretable?", which is why two rows move.
+
+| # | Path | Verdict under the restated invariant |
+|---|---|---|
+| 1 | `_node_exists` / `_is_directory` / `_is_regular_file` — the errno split | **CHECKED.** Unchanged by the restatement: it is purely a read-failure boundary, and `_ABSENT_ERRNOS` already admits only the three errnos that mean "definitively not there". |
+| 2 | `find_run_state_source` — discovery | **CHECKED.** A candidate that could not be probed becomes the source and refuses. Nothing is *interpreted* at discovery — only a node type is observed — so the widened clause adds no case here. |
+| 3 | `find_run_state_dir` | **CHECKED, no production caller.** Unchanged. |
+| 4 | `_directory_lists_any_ticket` — vacuity | **CHECKED.** Three-way `bool \| None`; "could not enumerate" never reads as "lists nobody". |
+| 5 | `_marker_state` — the precedence walk | **CHECKED.** A marker directory name IS the state, so a marker either names a state this console has or is not seen at all — the interpretation step the JSON form has does not exist here. But see row 12: *not seeing it* is its own defect. |
+| 6 | `probe_ticket_state` | **CHECKED, and still NO PRODUCTION CALLER** (Amendment 3's open item 3, undecided). |
+| 7 | `read_json_run_state` — document-level failures | **RESIDUAL, RATIFIED AND NARROWED.** A vanished file and a document that could not be parsed keep the mutable `unknown`. This is the boundary of the restatement, and it holds for a reason rather than by omission: a document that resolved into nothing names **no ticket**, so it makes no claim about the id being asked about — it is silence, not an uninterpretable claim. Amendment 3's open item 2 asks whether the half-written-file window should move it anyway; still a human decision, still open. |
+| 8 | `_resolve_json_state` (was `resolve_json`) — per-entry failures | **DEFECT, FIXED THIS ROUND.** The `known_ticket_ids` arm resolved the mutable `unknown` for an entry naming this ticket under an unclassifiable status. It now resolves `unreadable`, and the refusal names the value via `JsonRunState.unclassifiable`. This is the case the amendment was written for. |
+| 9 | `run_state_resolver` → `resolve_directory` | **CHECKED.** Canary settled once, vanished re-check on the no-marker path, `enumeration_failed` carried into the closure. |
+| 10 | `write_gate._ensure_state_allowed` | **CHECKED.** One resolution site, two allowlists, `unreadable` in neither. Now resolves through `probe_ticket_state_with_reason` — the same single read, so the state and the value the refusal names come from the same bytes. |
+| 11 | `RealFileAdapter._safe_run_state` (`real.py`) | **CHECKED, read-only.** `PathTraversal` → `unknown` feeds badges only; the write gate never routes through it. |
+| 12 | `_MARKER_PRECEDENCE` — the marker directory's closed state vocabulary | **DEFECT, NOT FIXED — this is the seventh case, and it needs a decision.** See below. |
+
+### The seventh case, found by this enumeration: the directory form has the same hole, one level up
+
+`_MARKER_PRECEDENCE` is a closed 4-tuple, and **both** the vacuity scan and the marker walk iterate
+only it. A state subdirectory this console has no name for — `.factory/run-state/in_review/` — is
+never opened, never probed and never logged. That is the *directory form's* version of exactly what
+row 8 fixes: the factory said something about this ticket in a vocabulary this console does not know.
+Two outcomes, both fail-open, both reachable from the same tenth-`FAC_STATES` scenario the amendment
+opens with:
+
+- markers exist **only** under unrecognised state directories → `_directory_lists_any_ticket` answers
+  `False` → the source reads as **vacuous** → *every* ticket resolves the mutable `unknown`, i.e. the
+  write gate is disabled project-wide;
+- some tickets have known-state markers and this one is named only under `in_review/` → it resolves
+  **`absent`**, which is in `DELETABLE_STATES` → the console **deletes** a ticket a lane owns.
+
+It is **not** auto-fixed here, for the reason this ticket has established three times: it is a
+gate-policy question, and unlike row 8 it is not the case the amendment ratified. It also has a real
+over-refusal risk that needs deciding rather than guessing — a stray directory under the run-state
+dir must not turn a whole project read-only, and the honest per-id rule ("an unrecognised state
+directory that names this ticket refuses, even when a known marker also names it, because the unknown
+state's precedence is unknown") changes what `merged/<id>` alone is allowed to answer.
+
+**The decision needed:** does an unrecognised state *directory* refuse the ids it names (and, if it is
+the only populated one, stop the source reading as vacuous)? If yes, it is amendment 5 and it closes
+the class on the directory side too.

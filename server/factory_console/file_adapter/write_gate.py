@@ -1,18 +1,21 @@
 """The single write-path chokepoint: is a ticket mutable in its run-state?
 
 The core v2 safety invariant is that a ticket may be edited ONLY when its factory
-run-state is ``todo`` or ``unknown``. Read ``unknown`` as "no answer this console
-can trust", which is BROADER than "no source on disk": it also covers a source
-that vanished before it could be read, one whose content could not be parsed, a
-source that lists nobody, and a source that lists the ticket under a
-status outside
-:data:`~factory_console.file_adapter.run_state.FACTORY_STATUS_ALIASES` (see
-:func:`~factory_console.file_adapter.run_state.run_state_resolver` for the
-three-way split). Every other state — ``in-flight``/``ready``/``merged`` from the directory form,
+run-state is ``todo`` or ``unknown``. Read ``unknown`` as "NOTHING WAS SAID", which is
+BROADER than "no source on disk" — it also covers a source that vanished before it
+could be read, one whose content could not be parsed, and a source that lists nobody —
+but which T80 amendment 4 narrowed to exactly that: a source that lists THIS ticket
+under a status outside
+:data:`~factory_console.file_adapter.run_state.FACTORY_STATUS_ALIASES` is no longer
+``unknown`` but the refusing ``unreadable``, because something WAS said and this console
+could not interpret it (see
+:func:`~factory_console.file_adapter.run_state._resolve_json_state` for the four-way
+split). Every other state — ``in-flight``/``ready``/``merged`` from the directory form,
 ``in_progress``/``in_part``/``in_submilestone``/``flagged``/``failed``/
 ``needs_human`` from the factory's ``run-state.json``, ``absent`` (a run-state
-source resolved and does not list the ticket at all), and ``unreadable`` (a
-run-state source is THERE and could not be read at all) — is read-only, matching
+source resolved and does not list the ticket at all), and ``unreadable`` (the
+information is UNAVAILABLE: a run-state source is THERE and could not be read at all,
+or it lists this ticket under an entry this console cannot interpret) — is read-only, matching
 how ``/factory-reconcile-plan`` treats them (see ``ARCHITECTURE.md`` "Factory
 run-state directory (read-only)"). :func:`_ensure_state_allowed` is the one
 resolution-and-refusal site every gated write passes before touching disk —
@@ -34,7 +37,9 @@ cannot license a delete the way "the source does not track it" can (T80 amendmen
 ticket.
 
 This module REUSES the read-only, source-aware prober
-(:func:`~factory_console.file_adapter.run_state.probe_ticket_state_from_source`)
+(:func:`~factory_console.file_adapter.run_state.probe_ticket_state_with_reason`, the
+reason-carrying form of ``probe_ticket_state_from_source`` — same single read, same
+resolution, plus the description a refusal needs to name what the source said)
 to resolve the state — it never re-implements run-state detection and never
 writes to the run-state directory (it does no filesystem I/O of its own at all).
 It reads through ``project.runStateSource``, not ``project.runStateDir``: a
@@ -49,14 +54,16 @@ from pathlib import Path
 
 from factory_console.domain import Project, RunState
 from factory_console.errors import FactoryConsoleError
-from factory_console.file_adapter.run_state import probe_ticket_state_from_source
+from factory_console.file_adapter.run_state import probe_ticket_state_with_reason
 
 # The ONLY editable predicate: a ticket is mutable exactly when its resolved
-# run-state is ``todo`` or ``unknown`` — the latter meaning "no source to ask, or
-# no answer from it this console can trust", NOT merely "no run-state source on
-# disk" (see the module docstring). Every other state is read-only. Single source
-# of truth for the write-authorization decision — see ARCHITECTURE.md "Factory
-# run-state directory (read-only)".
+# run-state is ``todo`` or ``unknown`` — the latter meaning "NOTHING WAS SAID": no
+# source to ask, one that vanished, or one that names nobody. Broader than "no
+# run-state source on disk", and since T80 amendment 4 no longer covering a source
+# that DID say something about this ticket that could not be interpreted, which is
+# ``unreadable`` and refuses (see the module docstring). Every other state is
+# read-only. Single source of truth for the write-authorization decision — see
+# ARCHITECTURE.md "Factory run-state directory (read-only)".
 MUTABLE_STATES = (RunState.todo, RunState.unknown)
 
 # The DELETE-path allowlist: everything editable, PLUS ``absent``. Deliberately a
@@ -101,20 +108,62 @@ class TicketNotMutable(FactoryConsoleError):
     put the ticket in — :attr:`RunState.absent` and :attr:`RunState.unreadable`. In
     both, an operator seeing the refusal needs to know WHICH file was consulted, since
     the answer is about "the file you are not looking at" (T80 step 4 mandates naming
-    it for ``absent``; amendment 2 extends that to ``unreadable``). The two messages
+    it for ``absent``; amendment 2 extends that to ``unreadable``). The messages
     are deliberately different, because the problems and their fixes are: ``absent``
     is "the source was read and does not list this ticket" (seed it, or delete it),
-    while ``unreadable`` is "the source is there and could not be read" (fix its
-    permissions) — and unlike ``absent``, ``unreadable`` refuses the delete too, so
-    the message must not offer it. Every other state keeps the generic message;
-    ``details`` is identical in shape
-    either way, so a client that switches on ``runState`` never has to parse prose.
+    while ``unreadable`` is "the information is unavailable" — and unlike ``absent``,
+    ``unreadable`` refuses the delete too, so its message must not offer it.
+
+    ``unclassifiable`` splits ``unreadable``'s message in two, for the same reason the
+    state itself is split from ``absent``: a refusal has to name a fix the operator can
+    act on. When it is set, the source was read fine and ONE ENTRY in it could not be
+    interpreted, and it carries the description of what the file said (``status
+    'in_review'``) — T80 amendment 4 requires the refusal to name the unrecognised
+    value, because "the run-state says ``in_review``, which this console does not know"
+    sends an operator to upgrade the console while "could not be read" sends them to
+    chmod a path that is already readable. It is ``None`` for the other route to
+    ``unreadable`` (bytes that could not be read at all), where there is no value to
+    name. Every other state keeps the generic message; ``details`` is identical in shape
+    in all four cases, so a client that switches on ``runState`` never has to parse prose
+    — and note that ``details`` therefore does NOT distinguish the two ``unreadable``
+    causes, which is deliberate: they are the same authorization answer, and only the
+    remedy differs.
     """
 
     def __init__(
-        self, ticket_id: str, run_state: RunState, *, source_path: Path | None = None
+        self,
+        ticket_id: str,
+        run_state: RunState,
+        *,
+        source_path: Path | None = None,
+        unclassifiable: str | None = None,
     ) -> None:
-        if run_state is RunState.unreadable and source_path is not None:
+        if run_state is RunState.unreadable and source_path is not None and unclassifiable:
+            # The SECOND route to ``unreadable``, and it must not borrow the first one's
+            # prose: the file was read perfectly well, and what could not be interpreted
+            # is one entry in it (T80 amendment 4). Telling this operator the source
+            # "could not be read" sends them to chmod a path whose permissions are fine,
+            # when the real fix is a console that knows the status the factory is now
+            # writing. ``unclassifiable`` is the description of what the file actually
+            # said — ``status 'in_review'`` — because the amendment requires the refusal
+            # to NAME the value rather than say "not tracked".
+            #
+            # The PHRASING is owned here, not by the domain: :class:`JsonRunState`
+            # records what it read (``an entry with no status``) and passes no judgement
+            # on it, and this layer is what turns that into a refusal an operator reads.
+            # Keep it that way — a description that arrives pre-worded as a refusal
+            # would put the write gate's vocabulary inside the parser.
+            #
+            # Guarded on TRUTHINESS rather than ``is not None`` deliberately: a blank
+            # description would render "lists T01 under , which ..." — a malformed
+            # sentence naming nothing — so an empty value degrades to the generic
+            # "could not be read" message below instead of to broken prose.
+            message = (
+                f"The run-state at {source_path} lists {ticket_id} under "
+                f"{unclassifiable}, which this console cannot interpret, so it will "
+                f"not write to {ticket_id}"
+            )
+        elif run_state is RunState.unreadable and source_path is not None:
             # "will not write to it": unlike the ``absent`` branch below, BOTH writes
             # are refused here, so this message must not point at delete as a way out.
             # It names the source and the failure MODE (could not be read) rather than
@@ -151,7 +200,7 @@ def ensure_mutable(project: Project, ticket_id: str) -> RunState:
     """Return ``ticket_id``'s :class:`RunState` iff the ticket is editable.
 
     Resolves the state via the read-only, source-aware prober
-    (:func:`~factory_console.file_adapter.run_state.probe_ticket_state_from_source`
+    (:func:`~factory_console.file_adapter.run_state.probe_ticket_state_with_reason`
     over ``project.runStateSource``) and enforces the write invariant: a ``todo``/
     ``unknown`` ticket is mutable and its state is returned; any other state is
     read-only.
@@ -209,9 +258,20 @@ def _ensure_state_allowed(
     resolution path and ONE error construction, so the edit and delete gates can
     differ only in their allowlist and never drift in how they resolve or how they
     refuse.
+
+    It resolves through
+    :func:`~factory_console.file_adapter.run_state.probe_ticket_state_with_reason`
+    rather than the plain
+    :func:`~factory_console.file_adapter.run_state.probe_ticket_state_from_source`
+    because a refusal has to be able to NAME what the source said (T80 amendment 4).
+    That is one read, not two — the reason falls out of the same parse as the state —
+    so the permitting path pays nothing for it and the refusing path cannot report a
+    value from different bytes than the ones it refused on.
     """
-    run_state = probe_ticket_state_from_source(project.runStateSource, ticket_id)
+    run_state, unclassifiable = probe_ticket_state_with_reason(project.runStateSource, ticket_id)
     if run_state not in allowed:
         source_path = project.runStateSource.path if project.runStateSource else None
-        raise TicketNotMutable(ticket_id, run_state, source_path=source_path)
+        raise TicketNotMutable(
+            ticket_id, run_state, source_path=source_path, unclassifiable=unclassifiable
+        )
     return run_state

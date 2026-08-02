@@ -69,17 +69,23 @@
 		failed: 'The lane failed — the ticket did not get built',
 		needs_human: 'Blocked: the factory cannot proceed without a human decision',
 		// NOT just "no source": the server also answers `unknown` when a source
-		// vanished, when its content could not be parsed, and when it lists this
-		// ticket under a status this console does not recognise. Naming only the
+		// vanished and when its whole document could not be parsed. Naming only the
 		// first case would tell an operator with a corrupt run-state.json that they
 		// have no run-state at all — hiding the degradation the state exists to report.
+		// It no longer covers an entry that names this ticket under a status the
+		// console cannot classify: that is `unreadable` since T80 amendment 4.
 		unknown: 'No run-state source for this project, or its source could not be understood',
 		absent: 'A run-state source exists but does not list this ticket',
 		// The tooltip has to carry the FIX, because this is the only state whose cause
-		// is on the operator's side: the source is there, the console cannot open it,
-		// and every write is refused until that changes.
+		// is on the operator's side and every write is refused until it changes. Since
+		// amendment 4 there are TWO causes with two different fixes — the source could
+		// not be opened, or it was read and says something about this ticket the
+		// console cannot interpret — so the tooltip names both rather than sending
+		// half of the cases to chmod a file that reads fine. The server's 409 is what
+		// says WHICH one and names the offending value; a badge tooltip is static
+		// prose over a single enum member and cannot.
 		unreadable:
-			'The run-state source could not be read (check its permissions) — writes are refused'
+			'The run-state source could not be read, or says something about this ticket this console does not understand — writes are refused'
 	};
 </script>
 

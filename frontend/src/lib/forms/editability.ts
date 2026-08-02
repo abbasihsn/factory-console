@@ -25,8 +25,10 @@ import type { RunState } from '$lib/api';
  * run-state.json's `'in_progress'`/`'in_part'`/`'in_submilestone'`/`'flagged'`/
  * `'failed'`/`'needs_human'`, `'absent'` (a resolved run-state source that
  * simply does not list the ticket — distinct from `'unknown'`, which stays
- * editable), and `'unreadable'` (a run-state source that is THERE and could not be
- * read at all, which unlike `'absent'` is refused by {@link isDeletable} too).
+ * editable), and `'unreadable'` (the information is UNAVAILABLE: a run-state source
+ * that is THERE and could not be read at all, or one that was read and lists this
+ * ticket under an entry the console cannot interpret — which unlike `'absent'` is
+ * refused by {@link isDeletable} too).
  * Being an ALLOWLIST is the point: a state the factory adds is
  * read-only here the moment it appears in the generated type, with no code
  * change and no window where the UI offers an edit the server refuses. A test

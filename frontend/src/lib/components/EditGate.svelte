@@ -37,14 +37,24 @@
 		     could not be read at all — so the lane-ownership sentence would send the
 		     operator looking for a lane that does not exist. Each mirrors the server's
 		     `TicketNotMutable` wording for the same state, and `unreadable` must point at
-		     the SOURCE's permissions rather than the ticket's tracking status, because
-		     that is where the fix is. -->
+		     the SOURCE rather than the ticket's tracking status, because that is where
+		     the fix is.
+
+		     `unreadable` has TWO causes since amendment 4 — the source could not be
+		     opened, or it was read and what it says about this ticket could not be
+		     interpreted — and this banner cannot tell them apart, having only the enum
+		     member. So it must not assert "fix the permissions": for the second cause
+		     that is the wrong fix, and sends the operator to chmod a file that reads
+		     perfectly well. The server's 409 carries the specific cause and names the
+		     offending value; the banner's job is only to explain why the buttons beside
+		     it are inert. -->
 		{#if runState === 'absent'}
 			the project's run-state source does not list this ticket, so the console will not edit it. You
 			can still delete it.
 		{:else if runState === 'unreadable'}
-			the project's run-state source could not be read, so the console refuses every write to this
-			ticket until that source's permissions are fixed.
+			the project's run-state source could not be read, or says something about this ticket that
+			this console cannot interpret, so the console refuses every write to this ticket until that is
+			resolved.
 		{:else}
 			a factory lane owns a ticket once it leaves <span class="font-mono">todo</span>.
 		{/if}

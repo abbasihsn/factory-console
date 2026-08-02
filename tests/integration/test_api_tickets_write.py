@@ -477,6 +477,45 @@ async def test_edit_on_a_ticket_the_json_source_does_not_list_is_absent_409(
     assert _snapshot(root) == before
 
 
+async def test_a_status_this_console_cannot_classify_refuses_both_writes_end_to_end(
+    tmp_path: Path,
+) -> None:
+    # T80 amendment 4 through the real app, and the amendment's own worked example:
+    # the factory gains a tenth FAC_STATES member (`in_review`), this console does not
+    # know the name, and CAD-131 is a ticket a lane is actively reviewing. Pre-amendment
+    # the unrecognised status resolved the mutable `unknown` and this PUT SUCCEEDED —
+    # the console editing a ticket the factory was working on, which is the fail-open
+    # the ticket exists to close, arriving through the one door left open.
+    #
+    # Asserted end to end rather than at the resolver because the whole point is the
+    # gate's answer: the state that reaches `MUTABLE_STATES`, the 409 an operator
+    # actually sees, and (unlike `absent`) the DELETE being refused too.
+    app, root = _real_app(tmp_path)
+    run_state_json = root / ".factory" / "run-state.json"
+    run_state_json.write_text(
+        '{"version": 1, "tickets": {"CAD-131": {"status": "in_review", "pr_url": null}}}',
+        encoding="utf-8",
+    )
+    before = _snapshot(root)
+    async with _client(app) as client:
+        edited = await client.put("/api/v1/tickets/CAD-131", json=_edit_body(), headers=AUTH)
+        deleted = await client.delete("/api/v1/tickets/CAD-131", headers=AUTH)
+
+    for resp in (edited, deleted):
+        assert resp.status_code == 409
+        error = resp.json()["error"]
+        assert error["code"] == "ticket_not_mutable"
+        assert error["details"] == {"ticketId": "CAD-131", "runState": "unreadable"}
+        # The refusal NAMES the value and the file (amendment 4, step 1): "not tracked"
+        # would send an operator hunting a missing entry that is right there, and the
+        # `unreadable` sibling's "check its permissions" would send them to chmod a
+        # file that reads perfectly well. The fix here is a console that knows the
+        # status the factory now writes.
+        assert "in_review" in error["message"]
+        assert str(run_state_json) in error["message"]
+    assert _snapshot(root) == before
+
+
 async def test_a_created_ticket_can_be_deleted_but_not_edited_end_to_end(
     tmp_path: Path,
 ) -> None:

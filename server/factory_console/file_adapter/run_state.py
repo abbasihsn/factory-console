@@ -51,19 +51,28 @@ _MARKER_PRECEDENCE = ("merged", "ready", "in-flight", "todo")
 
 # The factory's nine ``FAC_STATES`` mapped to console states, explicitly and
 # exhaustively. This is the ONE place a factory status name is interpreted: a
-# status absent from this table is NOT munged into a member, it becomes
-# ``unknown`` and is recorded in ``JsonRunState.unrecognised``.
+# status absent from this table is NOT munged into a member. It is recorded in
+# ``JsonRunState.unrecognised`` (the value, once, for the whole file) and in
+# ``JsonRunState.unclassifiable`` (per ticket id), and the ticket it names resolves
+# the REFUSING :attr:`RunState.unreadable`.
 #
-# READ THAT LAST CLAUSE NARROWLY. ``unrecognised`` is written here and consumed by
-# NOTHING outside this module's tests, so a tenth factory state surfaces only as a
-# ``warning`` log line — while the ticket it describes resolves the MUTABLE
-# ``unknown`` and the write gate GRANTS the edit. An entry that names THIS ticket
-# under a status this console cannot classify is "the source claims, and we could
-# not see what", which T80's resolution invariant says must REFUSE; it is routed to
-# ``unknown`` by ``run_state_resolver``'s ``known_ticket_ids`` arm instead. That is a
-# deliberate, tested decision (``test_run_state_source.py`` pins it) and a gate-policy
-# question, not an oversight — but do not read this comment as saying the gap is
-# visible anywhere an operator or the gate would act on it.
+# That refusal is T80 amendment 4, and it overturns what this comment said before:
+# the unrecognised value used to be routed to the MUTABLE ``unknown``, so a tenth
+# factory state surfaced only as a ``warning`` log line while the write gate GRANTED
+# the edit. The old answer looked reasonable because ``unrecognised`` was described
+# as keeping the gap "visible" — but naming a gap in a log line and then ignoring it
+# at the only point that acts on it is not visibility. An entry that names THIS
+# ticket under a status this console cannot classify is "the source claims, and we
+# could not see what", which the RESOLUTION INVARIANT (restated by amendment 4:
+# refuse whenever the information needed is UNAVAILABLE, whether unread or read and
+# uninterpretable) requires be refused. The concrete failure it closes: the factory
+# adds ``in_review``, this console does not know it, and a ticket a lane is actively
+# reviewing reads as editable.
+#
+# ``unrecognised`` is still collected, and that is not redundant with the refusal —
+# amendment 4 requires BOTH ("a fix that refuses while dropping the name has traded
+# one silence for another"), because the refusal tells an operator about one ticket
+# while the collected value tells them their console is a version behind the factory.
 #
 # Three names (``todo``, ``ready``, ``merged``) are shared with the
 # directory form; the other six exist only here. Note ``in_progress`` maps to
@@ -579,9 +588,11 @@ def read_json_run_state(path: Path) -> JsonRunState:
 
     Reads ``.tickets`` — ``{TICKET_ID: {"status": str, "pr_url": str|null}}`` —
     and maps each ``status`` through :data:`FACTORY_STATUS_ALIASES`. A status the
-    table does not name maps to :attr:`RunState.unknown` AND is collected into
-    ``unrecognised`` (de-duplicated, first-seen order): a tenth factory state must
-    be visible as a named gap, never silently dropped. Every id that had SOME
+    table does not name is collected into ``unrecognised`` (de-duplicated, first-seen
+    order) — a tenth factory state must be visible as a named gap, never silently
+    dropped — and the ticket it names resolves the REFUSING :attr:`RunState.unreadable`
+    (T80 amendment 4; it used to resolve the mutable ``unknown``, which let a status
+    this console does not know read as editable). Every id that had SOME
     entry in ``tickets`` — mapped or not — is recorded in ``known_ticket_ids``, so
     a caller can tell that apart from an id with no entry at all. ``known_ticket_ids``
     is empty when ``tickets`` was an empty object — a readable file that lists nobody,
@@ -610,11 +621,24 @@ def read_json_run_state(path: Path) -> JsonRunState:
     nothing is there to be hiding anything — so it keeps the mutable ``unknown``,
     and so do the content failures above, whose bytes were read successfully and
     merely made no sense. Each case is logged
-    at ``warning`` so the degradation leaves a trace. Individual entries that are
-    not objects, or that carry a non-string ``status``, are skipped the same way
-    without discarding the entries that are fine — but their id still lands in
-    ``known_ticket_ids``, so they resolve ``unknown`` (an entry we could not
-    classify), not ``absent`` (no entry at all).
+    at ``warning`` so the degradation leaves a trace.
+
+    Individual entries that are not objects, or that carry a non-string ``status``, are
+    skipped the same way without discarding the entries that are fine — but their id
+    still lands in ``known_ticket_ids`` AND in ``unclassifiable``, so they resolve the
+    refusing ``unreadable`` (this file said something about this ticket and we could not
+    interpret it), never ``unknown`` (nothing was said) and never ``absent`` (no entry at
+    all). Those two shapes are not hypothetical: the factory writes this file from
+    another process, so a schema drift to ``{"T42": "merged"}`` — the status as the
+    value rather than as a key of an object — reaches here as an ordinary parse.
+
+    Note the asymmetry with the DOCUMENT-level content failures above, which keep the
+    mutable ``unknown``: an unparseable document names no ticket, so it cannot be said
+    to claim anything about the one being asked about, while an entry that names THIS
+    id is a claim this console could not read. That boundary is where the restated
+    invariant's "read and could not be interpreted" bites, and it is deliberate rather
+    than an inconsistency — but see the ticket's open item 2, which asks whether the
+    document-level half should move too.
     """
     try:
         raw = path.read_text(encoding="utf-8")
@@ -669,15 +693,35 @@ def read_json_run_state(path: Path) -> JsonRunState:
     states: dict[str, RunState] = {}
     unrecognised: list[str] = []
     known_ticket_ids: set[str] = set()
+    # Per id, WHAT could not be classified — the phrase the refusal names (T80
+    # amendment 4). Every id that lands here also lands in ``known_ticket_ids`` and
+    # NOT in ``states``, which is the equivalence ``_resolve_json_state`` relies on:
+    # it selects the refusal by ``known_ticket_ids`` membership, and looks the
+    # description up here only to phrase it.
+    unclassifiable: dict[str, str] = {}
     for ticket_id, entry in tickets.items():
         known_ticket_ids.add(ticket_id)
-        status = entry.get("status") if isinstance(entry, dict) else None
+        if not isinstance(entry, dict):
+            # Schema drift: ``{"T42": "merged"}``, the status as the VALUE rather than
+            # as a key of an object. The status may well be readable to a human, but
+            # this console has no contract that says where to find it, so it is not
+            # interpreted — guessing here would be exactly the string munging the
+            # alias table exists to prevent. ``%r`` (like every other externally
+            # sourced value logged in this module), never ``%s``: this key is
+            # arbitrary text from a file the console does not own, and the log
+            # formatter is one record per line — an unescaped newline in it would
+            # forge log records (e.g. a fake write-audit line).
+            _LOGGER.warning("run-state: %s entry %r is not an object", path, ticket_id)
+            unclassifiable[ticket_id] = "an entry that is not an object"
+            continue
+        status = entry.get("status")
         if not isinstance(status, str):
-            # ``%r`` (like the status below), never ``%s``: this key is arbitrary
-            # text from a file the console does not own, and the log formatter is
-            # one record per line — an unescaped newline in it would forge log
-            # records (e.g. a fake write-audit line).
             _LOGGER.warning("run-state: %s entry %r has no string status", path, ticket_id)
+            unclassifiable[ticket_id] = (
+                "an entry with no status"
+                if status is None
+                else f"an entry whose status is not a string ({type(status).__name__})"
+            )
             continue
         state = FACTORY_STATUS_ALIASES.get(status)
         if state is None:
@@ -688,11 +732,104 @@ def read_json_run_state(path: Path) -> JsonRunState:
                 path,
                 status,
             )
+            unclassifiable[ticket_id] = f"status {status!r}"
             continue
         states[ticket_id] = state
     return JsonRunState(
-        states=states, unrecognised=unrecognised, known_ticket_ids=frozenset(known_ticket_ids)
+        states=states,
+        unrecognised=unrecognised,
+        known_ticket_ids=frozenset(known_ticket_ids),
+        unclassifiable=unclassifiable,
     )
+
+
+def _resolve_json_state(parsed: JsonRunState, ticket_id: str) -> RunState:
+    """The JSON form's per-ticket answer, given ONE parse of the file.
+
+    Pure and total: it consults only ``parsed``, so the single-ticket
+    (:func:`probe_ticket_state_with_reason`) and whole-manifest
+    (:func:`run_state_resolver`) callers reach the same answer from the same fields
+    and cannot drift. The four arms, in order, are the four things a JSON source can
+    have said about an id:
+
+    1. Its bytes could not be read at all -> :attr:`RunState.unreadable`, refused by
+       both gates (T80 amendment 2). Nothing was parsed, so no later arm can apply.
+    2. It named a status this console maps -> that state.
+    3. It said NOTHING this console can attribute to anybody — the file vanished, its
+       content could not be parsed, or its ``tickets`` object resolved and is EMPTY —
+       -> the mutable :attr:`RunState.unknown`. ``known_ticket_ids`` is empty iff
+       ``tickets`` was empty, so the vacuity test is exactly "the file resolved and
+       names no ticket at all", and a source that names nobody claims nothing about
+       anybody.
+    4. It LISTS this id and its entry could not be interpreted -> :attr:`RunState.unreadable`
+       again (T80 amendment 4). This is the arm that changed: it used to answer the
+       mutable ``unknown``, which let a status this console does not know — a tenth
+       ``FAC_STATES`` member such as ``in_review`` — read as editable. The restated
+       RESOLUTION INVARIANT is that a resolution refuses whenever the information it
+       needed is UNAVAILABLE, whether because it could not be READ or because it was
+       read and could not be INTERPRETED; "looked, saw, did not understand" is not
+       silence, and only silence may return a mutable state. ``unknown`` is now
+       exactly "nothing was said".
+
+    Otherwise the file resolved, lists somebody, and does not list this id ->
+    :attr:`RunState.absent`, which is refused an edit but stays deletable.
+
+    Arms 1 and 4 share :attr:`RunState.unreadable` deliberately rather than splitting a
+    fourth unnamed state off: amendment 4 widened the INVARIANT's wording, not the state
+    set, and both arms mean "this console has no answer it may act on". They are told
+    apart where the difference is actionable — in the refusal's prose, via
+    :attr:`JsonRunState.unclassifiable` (see :func:`probe_ticket_state_with_reason`),
+    because "fix the file's permissions" and "your console does not know this status"
+    are different instructions to an operator.
+    """
+    if parsed.unreadable:
+        return RunState.unreadable
+    if ticket_id in parsed.states:
+        return parsed.states[ticket_id]
+    if not parsed.readable or not parsed.known_ticket_ids:
+        return RunState.unknown
+    if ticket_id in parsed.known_ticket_ids:
+        return RunState.unreadable
+    return RunState.absent
+
+
+def probe_ticket_state_with_reason(
+    source: RunStateSource | None, ticket_id: str
+) -> tuple[RunState, str | None]:
+    """:func:`probe_ticket_state_from_source`, plus WHY when the reason is nameable.
+
+    Returns ``(state, unclassifiable)``. The second element is set only when a JSON
+    source LISTS ``ticket_id`` under an entry this console could not interpret, and it
+    is the operator-facing description of what the file said (``"status 'in_review'"``,
+    ``"an entry with no status"``) — see :attr:`JsonRunState.unclassifiable`. It is
+    ``None`` everywhere else, including for the OTHER route to
+    :attr:`RunState.unreadable`, a source whose bytes could not be read at all: there
+    is no value to name there, because nothing was parsed.
+
+    This exists so
+    :class:`~factory_console.file_adapter.write_gate.TicketNotMutable` can NAME the
+    unrecognised value, which T80 amendment 4 requires ("an operator needs *the
+    run-state says `in_review`, which this console does not know*, not *not
+    tracked*"). It is a separate entry point rather than a widened
+    :func:`probe_ticket_state_from_source` because only the write gate needs the
+    reason; the read projections want the state alone.
+
+    It reads the source ONCE — the same single parse
+    :func:`probe_ticket_state_from_source` performs — by asking
+    :func:`_resolve_json_state` for the state instead of re-deriving it, so the state
+    and the reason are guaranteed to describe the same bytes and the refusal path costs
+    no extra I/O and emits no duplicate warning. A directory source has no per-entry
+    value to misread (a marker either names the id or does not), so it falls through to
+    the ordinary resolver with no reason.
+
+    Raises:
+        PathTraversal: exactly as :func:`probe_ticket_state_from_source` — only on the
+            directory path, and only when that directory is actually probed.
+    """
+    if source is not None and source.kind == "json":
+        parsed = read_json_run_state(source.path)
+        return _resolve_json_state(parsed, ticket_id), parsed.unclassifiable.get(ticket_id)
+    return probe_ticket_state_from_source(source, ticket_id), None
 
 
 def probe_ticket_state_from_source(source: RunStateSource | None, ticket_id: str) -> RunState:
@@ -703,15 +840,18 @@ def probe_ticket_state_from_source(source: RunStateSource | None, ticket_id: str
     through the same call:
 
     - ``source is None`` -> :attr:`RunState.unknown` — there is no source to ask.
-    - ``kind == "json"`` -> the ticket's entry in the parsed file when one maps
-      to a known state; :attr:`RunState.unknown` when the file vanished or its
-      content could not be understood, when its ``tickets`` object parsed fine and
-      is EMPTY (a vacuous source lists nobody, so it claims nothing about anybody),
-      OR when the id has an entry whose status this console does not recognise;
-      :attr:`RunState.absent` when the file parsed fine, lists at least one
-      ticket, and simply has no entry for THIS id — the source resolved and
-      answered "not listed"; :attr:`RunState.unreadable` when the file is there and
-      its bytes could not be read at all.
+    - ``kind == "json"`` -> the four arms of :func:`_resolve_json_state`: the ticket's
+      entry in the parsed file when one maps to a known state; :attr:`RunState.unknown`
+      when the file vanished or its content could not be understood, or when its
+      ``tickets`` object parsed fine and is EMPTY (a vacuous source lists nobody, so it
+      claims nothing about anybody); :attr:`RunState.absent` when the file parsed fine,
+      lists at least one ticket, and simply has no entry for THIS id — the source
+      resolved and answered "not listed"; and :attr:`RunState.unreadable` for the two
+      ways the answer is UNAVAILABLE — the file is there and its bytes could not be read
+      at all, or it DOES list this id under an entry this console cannot interpret (an
+      unrecognised status, a non-string status, an entry that is not an object). That
+      last case used to answer the mutable ``unknown``; T80 amendment 4 refuses it, and
+      :func:`probe_ticket_state_with_reason` is how the refusal names the value.
     - ``kind == "directory"`` -> the marker precedence :func:`probe_ticket_state`
       reads (via the shared :func:`_marker_state`): :attr:`RunState.absent` when the
       directory lists other tickets but no marker names this id,
@@ -741,7 +881,7 @@ def probe_ticket_state_from_source(source: RunStateSource | None, ticket_id: str
             the per-ticket closure (see the NOTE in :func:`run_state_resolver`), which
             validates the id first and therefore DOES raise. The JSON path joins no
             path, so it looks an unsafe id up as an ordinary key and answers
-            ``unknown``/``absent`` like any other unrecognised id, never raising.
+            ``unknown``/``absent`` like any id the file does not list, never raising.
     """
     return run_state_resolver(source)(ticket_id)
 
@@ -759,7 +899,12 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
 
     BOTH source-level questions — "can this source be read at all?" and "does it list
     anybody?" — are settled once here, for both forms, and only the PER-TICKET question
-    is left to the closure. That is what keeps the two kinds symmetric in log volume:
+    is left to the closure. For the JSON form that separation is total: one
+    :func:`read_json_run_state` answers both, and the closure is
+    :func:`_resolve_json_state` over that one parse — a pure function of the parsed
+    result, which is also what :func:`probe_ticket_state_with_reason` calls, so the
+    batch and single-ticket JSON answers are the same code and not merely the same
+    intent. That keeps the two kinds symmetric in log volume:
     the JSON form reports an unreadable file once because it parses once, so the
     directory form must not report an unreadable directory once per ticket — a
     200-ticket list request against a run-state directory the console cannot stat would
@@ -782,31 +927,7 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
         return lambda _ticket_id: RunState.unknown
     if source.kind == "json":
         parsed = read_json_run_state(source.path)
-
-        # The file is there and its bytes could not be read: every ticket resolves the
-        # refusing ``unreadable``, settled once here exactly like ``readable`` and
-        # vacuity. A constant closure is honest — nothing was parsed, so there is no
-        # per-ticket question left to ask — and it is the JSON twin of the directory
-        # form's unreadable-source closure below, which the two forms must not drift
-        # apart on.
-        if parsed.unreadable:
-            return lambda _ticket_id: RunState.unreadable
-
-        # A ``tickets`` object that parsed fine and is EMPTY is a vacuous source: it
-        # lists nobody, so it makes no claim about anybody. Settled once here (like
-        # ``readable``) rather than re-derived per ticket. ``known_ticket_ids`` is
-        # empty iff ``tickets`` was empty, so this is exactly "the file resolved and
-        # names no ticket at all".
-        vacuous = not parsed.known_ticket_ids
-
-        def resolve_json(ticket_id: str) -> RunState:
-            if ticket_id in parsed.states:
-                return parsed.states[ticket_id]
-            if not parsed.readable or vacuous or ticket_id in parsed.known_ticket_ids:
-                return RunState.unknown
-            return RunState.absent
-
-        return resolve_json
+        return lambda ticket_id: _resolve_json_state(parsed, ticket_id)
 
     try:
         # The directory check alone is not enough: it stats the directory ENTRY from
