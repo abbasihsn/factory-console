@@ -198,6 +198,13 @@ class RealFileAdapter:
         :func:`~factory_console.file_adapter.write_gate.ensure_mutable` (though
         :func:`~factory_console.file_adapter.write_gate.ensure_deletable` permits it,
         so an ``absent`` ticket can still be deleted).
+
+        A third unnamed state can come back:
+        :attr:`~factory_console.domain.run_state.RunState.unreadable`, when the source
+        is THERE and its bytes or entries could not be read at all. It is the only one
+        of the three that BOTH gates refuse — "I could not look" cannot license a write
+        the way "I looked and it does not list you" licenses a delete (T80 amendment 2)
+        — so a caller must not read it as either ``unknown`` or ``absent``.
         """
         return probe_ticket_state_from_source(project.runStateSource, ticket_id)
 

@@ -65,10 +65,18 @@ class FileAdapter(Protocol):
         for a conforming implementation: a source that names nobody exercises no
         authority over anybody, and answering ``absent`` there makes every write 409
         and turns an empty-but-valid run-state into a project-wide read-only lockout
-        (T80 amendment, gap 1). The two states are NOT interchangeable at the write
+        (T80 amendment, gap 1). ``unreadable`` is the THIRD unnamed answer and the
+        only one that fails closed: the source is THERE and its bytes or entries could
+        not be read at all (``EACCES`` and friends), so nothing was learned about this
+        id. A conforming implementation must not fold it into either of the other two
+        — "I could not look" is not "I looked and there is nothing to find", and the
+        entry saying a lane owns this ticket may be exactly what could not be read
+        (T80 amendment 2).
+
+        The three states are NOT interchangeable at the write
         gate — ``unknown`` is mutable, ``absent`` is refused 409 for an edit (though
         :func:`~factory_console.file_adapter.write_gate.ensure_deletable` permits a
-        delete).
+        delete), and ``unreadable`` is refused 409 by BOTH gates.
         """
         ...
 

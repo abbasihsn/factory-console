@@ -154,7 +154,7 @@ def test_an_unreadable_dir_refuses_writes_and_is_distinct_from_absent(tmp_path: 
     # uid): "I could not look", not "there is nothing to find". It may be hiding a
     # `merged` marker, so it must not resolve the mutable `unknown` — that granted a
     # write precisely because the check could not run.
-    # ``Path.exists()`` only swallows ENOENT/ENOTDIR/EBADF/ELOOP, so on EACCES it
+    # ``_node_exists`` swallows only ENOENT/ENOTDIR/EBADF/ELOOP, so on EACCES it
     # RAISES — without the OSError guard in probe_ticket_state this escapes the
     # read-only prober and 500s every list/read/write request for the project.
     run_state_dir = tmp_path / "run-state"
@@ -173,6 +173,51 @@ def test_an_unreadable_dir_refuses_writes_and_is_distinct_from_absent(tmp_path: 
     # source proves nothing about whether the factory tracks this ticket.
     assert state not in write_gate.MUTABLE_STATES
     assert state not in write_gate.DELETABLE_STATES
+
+
+def test_an_eacces_probe_refuses_the_write_whatever_the_interpreter_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The interpreter-independent twin of the chmod test above, and the reason
+    # `run_state` owns `_node_exists`/`_is_directory` instead of calling
+    # `Path.exists()`/`Path.is_dir()`. Through CPython 3.12 those re-raise EACCES; from
+    # 3.13 (gh-113978) they delegate to `os.path.*` and answer False for EVERY OSError.
+    # `pyproject.toml` allows both (`requires-python = ">=3.11"`, no upper bound), so on
+    # 3.13 the raise this module's whole `unreadable` detection rests on would silently
+    # stop happening and an unsearchable run-state directory would resolve a MUTABLE
+    # state — the fail-open T80 amendment 2 exists to close, reopened by an interpreter
+    # upgrade rather than by a code change.
+    #
+    # Faking the EACCES at `Path.stat` (rather than with chmod) pins the module's OWN
+    # errno rule: this runs as root, on every interpreter, and fails the moment someone
+    # swaps the helpers back for the pathlib predicates.
+    run_state_dir = tmp_path / "run-state"
+    (run_state_dir / "todo").mkdir(parents=True)
+
+    def deny(self: Path, *args: object, **kwargs: object) -> os.stat_result:
+        raise PermissionError(13, "Permission denied", str(self))
+
+    monkeypatch.setattr(Path, "stat", deny)
+
+    assert probe_ticket_state(run_state_dir, "CAD-118") is RunState.unreadable
+    resolve = run_state_resolver(RunStateSource(kind="directory", path=run_state_dir))
+    assert resolve("CAD-118") is RunState.unreadable
+    # The behaviour that matters: refused by BOTH gates, not merely "not todo".
+    assert RunState.unreadable not in write_gate.MUTABLE_STATES
+    assert RunState.unreadable not in write_gate.DELETABLE_STATES
+
+
+def test_a_missing_marker_is_still_absent_not_unreadable(tmp_path: Path) -> None:
+    # The guard against over-correcting the test above: ENOENT must keep answering "no
+    # marker here" rather than joining EACCES in the refusing `unreadable`, or every
+    # ordinary unlisted ticket would be refused. Asserts `_ABSENT_ERRNOS` is doing its
+    # half of the split, on the same source shape.
+    run_state_dir = tmp_path / "run-state"
+    (run_state_dir / "todo").mkdir(parents=True)
+    (run_state_dir / "todo" / "CAD-1").touch()
+
+    assert probe_ticket_state(run_state_dir, "CAD-1") is RunState.todo
+    assert probe_ticket_state(run_state_dir, "CAD-999") is RunState.absent
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")

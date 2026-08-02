@@ -23,9 +23,11 @@ import type { RunState } from '$lib/api';
  * read-only because a factory lane owns the ticket once it leaves `todo` — the
  * marker directory's `'in-flight'`/`'ready'`/`'merged'`, the factory
  * run-state.json's `'in_progress'`/`'in_part'`/`'in_submilestone'`/`'flagged'`/
- * `'failed'`/`'needs_human'`, and `'absent'` (a resolved run-state source that
+ * `'failed'`/`'needs_human'`, `'absent'` (a resolved run-state source that
  * simply does not list the ticket — distinct from `'unknown'`, which stays
- * editable). Being an ALLOWLIST is the point: a state the factory adds is
+ * editable), and `'unreadable'` (a run-state source that is THERE and could not be
+ * read at all, which unlike `'absent'` is refused by {@link isDeletable} too).
+ * Being an ALLOWLIST is the point: a state the factory adds is
  * read-only here the moment it appears in the generated type, with no code
  * change and no window where the UI offers an edit the server refuses. A test
  * pins that for each read-only state.
@@ -46,6 +48,12 @@ export function isEditable(runState: RunState): boolean {
  * just created resolves `'absent'` the moment the project has a populated run-state
  * source. Deleting a ticket the run-state does not track cannot orphan a run-state
  * entry, so nothing the factory owns is at risk.
+ *
+ * The widening stops at `'absent'`. `'unreadable'` — a run-state source that is there
+ * and could not be read — is refused here too, mirroring the server's
+ * `DELETABLE_STATES`, because it proves nothing about whether the factory tracks the
+ * ticket: the entry saying a lane owns it may be exactly what could not be read
+ * (T80 amendment 2).
  *
  * Still an ALLOWLIST, for the same reason `isEditable` is: a state the factory adds
  * is undeletable here the moment it appears in the generated type.

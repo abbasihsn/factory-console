@@ -25,6 +25,14 @@ permits :attr:`~factory_console.domain.run_state.RunState.absent` — otherwise 
 ungated ``create_ticket`` could mint a ticket no implementation would ever delete
 (T80 amendment, gap 2). An implementation that gates delete like edit is not a
 conforming ``FileWriter``.
+
+The widening stops there. :attr:`~factory_console.domain.run_state.RunState.unreadable`
+— a run-state source that is THERE and could not be read at all — is in NEITHER
+allowlist, so BOTH ``edit_ticket`` and ``delete_ticket`` refuse it. That asymmetry
+with ``absent`` is the whole reason the two are distinct states: ``absent`` licenses
+the delete because the source WAS read and provably does not track the ticket, while
+an unreadable source proves nothing (T80 amendment 2). An implementation that lets
+``unreadable`` through either gate is not conforming.
 """
 
 from __future__ import annotations
@@ -80,7 +88,9 @@ class FileWriter(Protocol):
 
         Gated on :data:`~factory_console.file_adapter.write_gate.MUTABLE_STATES`
         (``todo``/``unknown``): a ticket a resolved run-state source does not list
-        (``absent``) is REFUSED here, unlike in :meth:`delete_ticket`.
+        (``absent``) is REFUSED here, unlike in :meth:`delete_ticket`, and so is one
+        whose source could not be read at all (``unreadable``) — which
+        :meth:`delete_ticket` refuses too.
         """
         ...
 
@@ -97,6 +107,10 @@ class FileWriter(Protocol):
         deliberately wider than edit: ``create_ticket`` is ungated, so a ticket the
         console just minted resolves ``absent`` in any project with a populated
         run-state source, and refusing the delete would leave it unrecoverable
-        through the very UI that created it (T80 amendment, gap 2).
+        through the very UI that created it (T80 amendment, gap 2). It is wider by
+        exactly ONE state: ``unreadable`` is refused here as well as in
+        :meth:`edit_ticket`, because a source that could not be read cannot license a
+        delete the way one that was read and does not list the ticket can
+        (T80 amendment 2).
         """
         ...

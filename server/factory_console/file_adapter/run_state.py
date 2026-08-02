@@ -25,9 +25,11 @@ asserts this module contains no filesystem-mutating call.
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import re
+import stat
 from collections.abc import Callable
 from pathlib import Path
 
@@ -80,6 +82,65 @@ FACTORY_STATUS_ALIASES: dict[str, RunState] = {
 RUN_STATE_RELATIVE_LOCATIONS: tuple[Path, ...] = tuple(
     relative for kind, relative in RUN_STATE_SOURCE_LOCATIONS if kind == "directory"
 )
+
+
+# The errno set that means "this node definitively is not there" — the same one
+# CPython's ``pathlib._ignore_error`` uses. Everything else (``EACCES`` above all)
+# means "it may well be there and I could not look", which is the distinction T80's
+# second amendment turns on.
+_ABSENT_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP})
+
+
+def _node_exists(path: Path) -> bool:
+    """``True`` if ``path`` exists, ``False`` if it definitively does not, else RAISE.
+
+    Semantically :meth:`Path.exists` — symlinks followed, a marker present as a file
+    OR a directory both count — but with the errno split made HERE instead of inherited
+    from the interpreter, which is what makes it a contract rather than an accident.
+
+    :meth:`Path.exists` cannot carry that split portably. Through CPython 3.12 it
+    ignores only ``_IGNORED_ERRNOS`` (``ENOENT``/``ENOTDIR``/``EBADF``/``ELOOP``) and
+    RE-RAISES ``EACCES``; from CPython 3.13 (gh-113978) it delegates to ``os.path.*``
+    and swallows EVERY ``OSError``, answering ``False``. ``pyproject.toml`` declares
+    ``requires-python = ">=3.11"`` with no upper bound, so both behaviours are inside
+    the supported range — and on 3.13 the raise this module's entire ``unreadable``
+    detection is built on would simply stop happening. A run-state directory the console
+    cannot search would then read as "no marker here" and resolve the MUTABLE ``unknown``
+    (or ``absent``, which still permits a delete) instead of the refusing
+    :attr:`RunState.unreadable`: the write would be granted precisely BECAUSE the check
+    could not run, which is the fail-open T80's second amendment exists to close. A
+    silent interpreter upgrade must not be able to reopen it.
+
+    ``ValueError`` answers ``False`` for parity with :meth:`Path.exists`, which treats a
+    non-encodable path as absent rather than as an error.
+    """
+    try:
+        path.stat()
+    except OSError as exc:
+        if exc.errno in _ABSENT_ERRNOS:
+            return False
+        raise
+    except ValueError:
+        return False
+    return True
+
+
+def _is_directory(path: Path) -> bool:
+    """``True`` if ``path`` is a directory, ``False`` if it is definitively not, else RAISE.
+
+    :meth:`Path.is_dir` with the same errno split :func:`_node_exists` makes, and for
+    the same reason — see its docstring. A path that exists but is not a directory
+    answers ``False`` without raising, exactly as :meth:`Path.is_dir` does, so only "I
+    could not look" propagates.
+    """
+    try:
+        return stat.S_ISDIR(path.stat().st_mode)
+    except OSError as exc:
+        if exc.errno in _ABSENT_ERRNOS:
+            return False
+        raise
+    except ValueError:
+        return False
 
 
 def find_run_state_source(project_root: Path) -> RunStateSource | None:
@@ -249,11 +310,11 @@ def _marker_state(run_state_dir: Path, ticket_id: str) -> RunState | None:
     :func:`probe_ticket_state` and :func:`run_state_resolver`'s directory closure
     share ONE implementation of "what does this directory say about this id?" while
     each settles the SOURCE-level questions (readable, vacuous) in the way that suits
-    it. ``.exists()`` covers a marker present as either a file or a directory, and
-    needs only ``+x`` on the state subdirectory, so this still answers on a directory
+    it. :func:`_node_exists` covers a marker present as either a file or a directory,
+    and needs only ``+x`` on the state subdirectory, so this still answers on a directory
     :func:`_directory_lists_any_ticket` could not enumerate.
 
-    An unreadable state subdirectory does NOT abort the walk. ``Path.exists()`` needs
+    An unreadable state subdirectory does NOT abort the walk. :func:`_node_exists` needs
     ``+x`` on the state subdirectory and RAISES ``EACCES`` without it, and ``merged``
     is probed first — so aborting on the first error meant that a single non-searchable
     ``merged/`` (mode ``0600``, or created by the factory under a different uid) made
@@ -300,7 +361,7 @@ def _marker_state(run_state_dir: Path, ticket_id: str) -> RunState | None:
     unreadable: list[str] = []
     for state in _MARKER_PRECEDENCE:
         try:
-            if (run_state_dir / state / ticket_id).exists():
+            if _node_exists(run_state_dir / state / ticket_id):
                 if unreadable:
                     _LOGGER.warning(
                         "run-state: %s state director%s %s could not be read; %r resolves "
@@ -384,8 +445,11 @@ def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
       as a permissions problem, not as "this ticket is not tracked".
 
       The ``OSError`` guard around the marker loop is what turns that into a
-      decision rather than a crash: ``Path.exists()`` only swallows ``ENOENT``/
-      ``ENOTDIR``/``EBADF``/``ELOOP``, so on ``EACCES`` it RAISES. Without the guard
+      decision rather than a crash: :func:`_node_exists` swallows only
+      :data:`_ABSENT_ERRNOS` (``ENOENT``/``ENOTDIR``/``EBADF``/``ELOOP``), so on
+      ``EACCES`` it RAISES — a rule this module states itself rather than inheriting
+      from :meth:`Path.exists`, whose errno handling changed in CPython 3.13 (see
+      :func:`_node_exists`). Without the guard
       a permission-restricted run-state directory would escape this read-only prober
       as an unmapped 500 on every list/read/write request — the one outcome the
       "NEVER raises for a source-level problem" rule exists to prevent. Only
@@ -406,7 +470,7 @@ def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
         if marker is not None:
             return marker
 
-        readable = run_state_dir.is_dir()
+        readable = _is_directory(run_state_dir)
         # Settled AFTER the marker loop so the common (marker found) path never pays
         # for it: only an id the directory does not name has to ask whether the
         # directory names anybody.
@@ -660,7 +724,13 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
     listings on the list/deps/graph projection — the exact per-ticket re-scan this
     function exists to avoid. :func:`probe_ticket_state` keeps its own equivalent
     guards for direct single-ticket callers, and both reach the per-id answer through
-    the same :func:`_marker_state`, so the two forms cannot answer differently.
+    the same :func:`_marker_state`, so the two forms cannot answer differently FOR A
+    SOURCE THAT IS NOT MUTATING UNDERNEATH THE REQUEST. That qualifier is load-bearing,
+    not a hedge: vacuity is settled ONCE here while :func:`probe_ticket_state` re-derives
+    it per call, so a marker set that CHANGES under a live resolver is not observed and
+    the two forms then diverge in both directions. See the note inside
+    ``resolve_directory`` below for the exact residual and for why it cannot reach the
+    write gate.
     """
     if source is None:
         return lambda _ticket_id: RunState.unknown
@@ -693,24 +763,24 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
         return resolve_json
 
     try:
-        # ``is_dir()`` alone is not enough: it stats the directory ENTRY from the
-        # parent, which still succeeds for a directory the console has no search
+        # The directory check alone is not enough: it stats the directory ENTRY from
+        # the parent, which still succeeds for a directory the console has no search
         # permission on. Stat one path INSIDE it — the same shape the marker loop
         # probes — so an EACCES on the run-state directory ITSELF surfaces here, once,
         # instead of once per ticket. This settles only the whole-directory question:
         # a directory that is readable while one of its state subdirectories is not
         # cannot be decided here (see ``reported_unreadable`` below for why that case
         # must stay per ticket, and how its warning is still emitted only once).
-        directory_present = source.path.is_dir()
+        directory_present = _is_directory(source.path)
         if directory_present:
             # Called for the OSError, not the answer — bind it so this does not read
             # as a no-op line someone deletes.
-            _ = (source.path / _MARKER_PRECEDENCE[0]).exists()
+            _ = _node_exists(source.path / _MARKER_PRECEDENCE[0])
     except OSError:
         # PRESENT but unreadable, and the two halves of the ``try`` say so in the same
-        # way: ``Path.is_dir()`` swallows ``ENOENT``/``ENOTDIR``/``EBADF``/``ELOOP``
+        # way: ``_is_directory`` swallows only ``_ABSENT_ERRNOS``
         # (a directory that is not there answers ``False``, it does not raise), and the
-        # canary only runs once ``is_dir()`` has already said the directory IS there.
+        # canary only runs once it has already said the directory IS there.
         # So an ``OSError`` from either can only mean "it exists and I could not look"
         # — never "it vanished" — which is the split T80's second amendment turns on:
         # this resolves the refusing ``unreadable`` for every ticket, while the
@@ -821,7 +891,7 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
             # long-lived resolver is ``RealFileAdapter._projection_for``'s, and it feeds
             # the read-only list/deps/graph badges — where a stale badge for the length
             # of one request is cosmetic, and the next request re-reads.
-            still_a_directory = source.path.is_dir()
+            still_a_directory = _is_directory(source.path)
         except OSError:
             if not reported_unreadable:
                 reported_unreadable = True

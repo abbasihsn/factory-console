@@ -32,13 +32,19 @@
 		     than assert both. -->
 		This ticket's run-state is <span class="font-mono">{runState}</span>, so
 		{#if deletable}editing is disabled{:else}editing and deleting are disabled{/if} —
-		<!-- `absent` needs its OWN reason (T80): no lane owns such a ticket, the
-		     resolved run-state source simply never names it, so the lane-ownership
-		     sentence would send the operator looking for a lane that does not exist.
-		     Mirrors the server's `TicketNotMutable` wording for the same state. -->
+		<!-- `absent` and `unreadable` each need their OWN reason (T80 + amendment 2): no
+		     lane owns such a ticket — the resolved run-state source never names it, or
+		     could not be read at all — so the lane-ownership sentence would send the
+		     operator looking for a lane that does not exist. Each mirrors the server's
+		     `TicketNotMutable` wording for the same state, and `unreadable` must point at
+		     the SOURCE's permissions rather than the ticket's tracking status, because
+		     that is where the fix is. -->
 		{#if runState === 'absent'}
 			the project's run-state source does not list this ticket, so the console will not edit it. You
 			can still delete it.
+		{:else if runState === 'unreadable'}
+			the project's run-state source could not be read, so the console refuses every write to this
+			ticket until that source's permissions are fixed.
 		{:else}
 			a factory lane owns a ticket once it leaves <span class="font-mono">todo</span>.
 		{/if}

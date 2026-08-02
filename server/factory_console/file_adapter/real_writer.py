@@ -111,7 +111,11 @@ class RealFileWriter:
         :meth:`delete_ticket` is the deliberate exception — it gates on
         :func:`~factory_console.file_adapter.write_gate.ensure_deletable`, which
         permits ``absent``, so what create mints can always be un-created (T80's
-        amendment, gap 2). The split is called out here because this docstring once
+        amendment, gap 2) — with one exception, since ``ensure_deletable`` still
+        refuses :attr:`~factory_console.domain.run_state.RunState.unreadable`: in a
+        project whose source is there and cannot be READ, a freshly created ticket can
+        be neither edited nor deleted until that source's permissions are fixed
+        (T80 amendment 2). The split is called out here because this docstring once
         claimed the mutable ``unknown`` for every project. Raises
         :class:`~factory_console.file_adapter.path_safety.PathTraversal` for an
         unsafe id and
@@ -171,7 +175,11 @@ class RealFileWriter:
         :meth:`create_ticket` just minted into a project with a populated run-state
         source can be removed again (T80's amendment, gap 2). Every other read-only
         state is refused here exactly as it is for an edit, and an edit of that same
-        ``absent`` ticket stays refused.
+        ``absent`` ticket stays refused. The widening is exactly one state wide:
+        :attr:`~factory_console.domain.run_state.RunState.unreadable` is refused here
+        too, because a source that could not be READ proves nothing about whether the
+        factory tracks this ticket, while ``absent`` proves it does not
+        (T80 amendment 2).
         """
         write_gate.ensure_deletable(project, ticket_id)
         planned = write_render.render_delete(project, ticket_id)  # validates id + existence
