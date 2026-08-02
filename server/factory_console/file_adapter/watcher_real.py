@@ -153,7 +153,12 @@ class _ChangeEventHandler(FileSystemEventHandler):
 
 
 class RealFileWatcher:
-    """Production ``FileWatcher``: a watchdog ``Observer`` over the two v1 subtrees.
+    """Production ``FileWatcher``: a watchdog ``Observer`` over what v1 observes.
+
+    That is the two planning/run-state SUBTREES plus the run-state JSON FILE — see
+    the module docstring for the exact set and for why the file is reached through a
+    non-recursive watch on its parent. Deliberately not restated here: a count kept
+    in two places is what let the JSON source go unwatched (T91) in the first place.
 
     Opt-in, single-process, and read-only — constructed and :meth:`start`-ed only
     when the backend enables live updates. Satisfies the ``FileWatcher`` Protocol
@@ -232,11 +237,27 @@ class RealFileWatcher:
         # is also not a json-only root, so the handler leaves its other entries
         # alone. Only these parents are scheduled non-recursively: they exist to
         # see ONE file, and recursing would drag all of ``.factory`` in for no gain.
+        #
+        # "Already covered" therefore has to consult the RECURSION FLAG, not just
+        # containment: only a RECURSIVE root observes its descendants. A
+        # non-recursive root covers the path itself and nothing below it, so it
+        # discharges a later JSON parent only when it IS that parent — hence the
+        # explicit ``root == parent``, which containment alone would also satisfy
+        # (``Path.is_relative_to`` is true of a path against itself) but which must
+        # not be reached THROUGH the descendant branch. Treating a non-recursive
+        # root as covering its descendants would skip a nested JSON parent as
+        # "already watched" by a watch that cannot see into it, and skip it out of
+        # ``json_only_roots`` too — a run-state source scheduled nowhere and
+        # filtered nowhere, which is silently no live updates: precisely the
+        # failure T91 exists to fix, reintroduced one directory deeper.
         scheduled: list[tuple[Path, bool]] = [(root, True) for root in roots]
         json_only_roots: set[str] = set()
         for relative in RUN_STATE_JSON_RELATIVE_LOCATIONS:
             parent = self._project_root / relative.parent
-            if any(parent.is_relative_to(root) for root, _ in scheduled):
+            if any(
+                root == parent or (recursive and parent.is_relative_to(root))
+                for root, recursive in scheduled
+            ):
                 continue
             scheduled.append((parent, False))
             json_only_roots.add(relative.parent.as_posix())
