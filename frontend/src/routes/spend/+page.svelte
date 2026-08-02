@@ -6,7 +6,12 @@
 	const spend = $derived(data.spend);
 
 	// `byTicket`/`byModel`/`byLevel`/`skipped` are optional in the generated schema
-	// (they carry server-side defaults), so each is read through `?? []`.
+	// because they carry NO schema default: `openapi-typescript` marks a property that
+	// HAS a default non-optional (the rule `models.ts` documents on `TicketCreate`'s
+	// `provides`), which is why `totals`/`attribution`/`skippedOmitted`/`source.read`
+	// are all required despite defaulting. So the server may omit these four keys
+	// outright and each is read through `?? []`; the defaulted fields are read directly,
+	// without a guard.
 	const byTicket = $derived(spend.byTicket ?? []);
 	const byModel = $derived(spend.byModel ?? []);
 	const byLevel = $derived(spend.byLevel ?? []);
@@ -58,7 +63,10 @@
 		return value > 0 && value < 0.005 ? '<$0.01' : money.format(value);
 	}
 
-	function tokens(value: number): string {
+	// Named for what it does, not for one of the things it counts: the same
+	// thousands-separated formatting serves token totals, ledger entry counts and
+	// skipped-line counts alike.
+	function formatCount(value: number): string {
 		return count.format(value);
 	}
 </script>
@@ -131,16 +139,20 @@
 				     complete total. The whole-file case is not reachable here — it has its
 				     own branch above. -->
 				<p data-testid="partial-total" class="text-sm font-medium text-amber-700">
-					Partial total — {tokens(skippedCount)}
-					{skippedCount === 1 ? 'ledger line' : 'ledger lines'} could not be read and are excluded from
-					this figure.
+					Partial total — {formatCount(skippedCount)}
+					{skippedCount === 1
+						? 'ledger line could not be read and is'
+						: 'ledger lines could not be read and are'} excluded from this figure.
 				</p>
 			{/if}
 			<p class="text-sm text-muted">
-				{tokens(spend.totals.entries)} ledger {spend.totals.entries === 1 ? 'entry' : 'entries'}
-				· {tokens(spend.totals.tokens.total)} tokens ({tokens(spend.totals.tokens.input)} in,
-				{tokens(spend.totals.tokens.output)} out, {tokens(spend.totals.tokens.cacheRead)} cache read,
-				{tokens(spend.totals.tokens.cacheCreation)} cache creation)
+				{formatCount(spend.totals.entries)} ledger {spend.totals.entries === 1
+					? 'entry'
+					: 'entries'}
+				· {formatCount(spend.totals.tokens.total)} tokens ({formatCount(spend.totals.tokens.input)} in,
+				{formatCount(spend.totals.tokens.output)} out,
+				{formatCount(spend.totals.tokens.cacheRead)} cache read,
+				{formatCount(spend.totals.tokens.cacheCreation)} cache creation)
 			</p>
 		</section>
 
@@ -172,7 +184,7 @@
 							<tr>
 								<td class="px-4 py-2 font-mono text-text">{row.ticketId}</td>
 								<td class="px-4 py-2 text-right text-text">{usd(row.attributedCostUsd)}</td>
-								<td class="px-4 py-2 text-right text-text">{tokens(row.entries)}</td>
+								<td class="px-4 py-2 text-right text-text">{formatCount(row.entries)}</td>
 								<td class="px-4 py-2 font-mono text-muted">{(row.models ?? []).join(', ')}</td>
 							</tr>
 						{/each}
@@ -203,7 +215,7 @@
 								     has not heard of must be visible as itself, never bucketed. -->
 								<td class="px-4 py-2 font-mono text-text">{row.model}</td>
 								<td class="px-4 py-2 text-right text-text">{usd(row.costUsd)}</td>
-								<td class="px-4 py-2 text-right text-text">{tokens(row.tokens.total)}</td>
+								<td class="px-4 py-2 text-right text-text">{formatCount(row.tokens.total)}</td>
 							</tr>
 						{/each}
 					</tbody>
@@ -231,7 +243,7 @@
 							<tr>
 								<td class="px-4 py-2 font-mono text-text">{row.level}</td>
 								<td class="px-4 py-2 text-right text-text">{usd(row.costUsd)}</td>
-								<td class="px-4 py-2 text-right text-text">{tokens(row.entries)}</td>
+								<td class="px-4 py-2 text-right text-text">{formatCount(row.entries)}</td>
 							</tr>
 						{/each}
 					</tbody>
