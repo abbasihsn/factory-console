@@ -867,9 +867,12 @@ def test_a_state_directory_that_will_not_open_is_reported_once_per_resolver(
     # The degradation above has to leave ONE trace, the same discipline every other
     # settled-once answer in this module obeys: an unrecognised state directory that
     # would not open refuses every id in the source, and an operator needs to read WHICH
-    # problem they have. The message must not borrow the enumeration one's prose — this
-    # run-state dir listed perfectly well, so "could not be enumerated" would send them
-    # to chmod the wrong path — and a 200-ticket projection must emit one line, not 200,
+    # problem they have and WHICH directory has it. The message must not borrow the
+    # enumeration one's prose — this run-state dir listed perfectly well, so "could not be
+    # enumerated" would send them to chmod the wrong path — it must NAME the subdirectory
+    # it could not search (criterion 3, amendment 1 change 3), and it must say
+    # *unsearchable* rather than *unrecognised*, since one is fixed with `chmod` and the
+    # other with a console upgrade — and a 200-ticket projection must emit one line, not 200,
     # or the write-audit records are drowned exactly when the console is degraded.
     # Asserted on ONE resolver reused across ids, which is the only shape that can
     # observe the `reported_unprobeable` latch at all — and the latch matters MORE since
@@ -898,6 +901,13 @@ def test_a_state_directory_that_will_not_open_is_reported_once_per_resolver(
     # resolver's latch collapses its seven to one, and the prober — which has no resolver
     # to latch on — accounts for the other.
     assert len(could_not_look_in) == 2
+    # Both name the directory the operator has to chmod — a refusal that says only "one
+    # of these could not be read" sends them to the run-state dir, which reads fine.
+    assert all("'in_review'" in r.getMessage() for r in could_not_look_in)
+    # And they must NOT say "does not know", the scan's phrase for a name this console
+    # cannot map: `in_review` may well be a state this console knows perfectly once the
+    # directory opens, and the two spellings buy different fixes.
+    assert not any("does not know" in r.getMessage() for r in could_not_look_in)
     # And it is the OTHER message that must not appear: this directory enumerated fine.
     assert not [r for r in caplog.records if "could not be enumerated" in r.getMessage()]
 
