@@ -108,3 +108,61 @@ Added to §Verification, same discipline — assert behaviour and resulting stat
 - create-then-**delete** in a project with a populated source → **succeeds**;
 - create-then-**edit** the same ticket → still **refused**, proving the edit gate did not widen;
 - `isEditable('absent') === false` unchanged.
+
+---
+
+## Amendment 2, 2026-08-02 — an unreadable source must not grant write access
+
+T80's third review round (the first to run after **DL-062** unblocked the nested reviewer) left one
+high finding open, correctly identifying it as a gate-policy decision rather than a mechanical fix:
+
+> An unreadable run-state source fails **OPEN** to the mutable `unknown` at the write gate — **`main`
+> failed closed with a 500.** `run_state.py:675`
+
+**This is a regression in safety posture relative to `main`, not a design choice**, and it is the
+**third instance of one conflation.** `unknown` has been carrying three different meanings:
+
+| Situation | What it means | Correct answer |
+|---|---|---|
+| No run-state source at all | nothing claims anything about this ticket | **mutable** — the ticket's original, deliberate rule |
+| A source that lists nobody | a source that names nobody says nothing about anybody | **mutable** — Amendment 1, gap 1 |
+| **A source that cannot be READ** | **something claims, and we could not see what** | **REFUSE** |
+
+The first two are "I looked and there is nothing to find." The third is **"I could not look"** — and
+this program has settled that distinction repeatedly, always the same way:
+
+- **INV-42** — a check that could not be **executed** is `fail`, never `passed`;
+- `verification-policy.ts` — a command that fails policy becomes `human_verification_required`,
+  never a silent skip;
+- `sessions.ts` — an `unverifiable` stop **refuses** to release a worktree, because *"unverifiable is
+  not stopped"*;
+- **DL-058** — *absence of a record is not absence of a process.*
+
+**An unreadable source is `unverifiable`, and unverifiable fails closed.** Granting write access
+because a permission error prevented us from checking is the one direction this program has never
+allowed anywhere else.
+
+### Fix
+
+At the point where the source is resolved but its contents cannot be read (EACCES and friends),
+return a state the write gate **refuses**, distinct from both `unknown` and `absent`, and report it as
+such: the operator needs to know the answer is *"the run-state at `<path>` could not be read"*, not
+*"this ticket is not tracked"*. Those are different problems with different fixes.
+
+**Do not reach this by removing `unknown → mutable`.** That rule is load-bearing for a project the
+factory has never touched, and Amendment 1 restated it deliberately. The change is to stop routing
+the unreadable case through it.
+
+### Verification
+
+- an unreadable run-state directory (chmod 000, or a source whose read raises OSError) → the write
+  gate **refuses**, and the error names the **source path**;
+- **the refusal is distinguishable from `absent`** — asserted on the resulting state, not on message
+  text, so a reader can tell "could not read" from "not listed";
+- a project with **no** source at all → still **mutable** (the original rule, and the regression guard
+  for this amendment);
+- a **vacuous** source → still **mutable** (Amendment 1, gap 1, unchanged);
+- a source listing another ticket, probed for this one → still **absent**, still refused (the original
+  rule, unchanged);
+- `main`'s prior behaviour is not restored literally: it returned a **500**, which is a crash rather
+  than a decision. The correct answer is a deliberate refusal at the gate, not an unhandled error.
