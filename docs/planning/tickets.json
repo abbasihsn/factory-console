@@ -1134,9 +1134,14 @@
       "depends_on": [
         "T78"
       ],
-      "provides": "Per-ticket run records from run-state + results + receipts + last-stop, with a sources block and a per-record unavailable list so a null field is attributable.",
+      "provides": "SUPERSEDED 2026-08-01 by T88+T89+T90 after four lane runs absorbed 33 review fixes without converging; a 2400-turn ceiling hit the 90-minute wall clock first, so turns were never the binding constraint. Work preserved on rescue/T81-regressed-c11052f.",
       "path": "docs/planning/tickets/v2.1/T81-runs-endpoint.md",
-      "status": "todo"
+      "status": "superseded",
+      "superseded_by": [
+        "T88",
+        "T89",
+        "T90"
+      ]
     },
     {
       "id": "T82",
@@ -1156,7 +1161,7 @@
       "track": "frontend",
       "milestone": "v2.1",
       "depends_on": [
-        "T81"
+        "T90"
       ],
       "provides": "Route listing every ticket with run-state, PR link and lane outcome; SourcesBanner rendering the no-run-data case explicitly instead of an empty table.",
       "path": "docs/planning/tickets/v2.1/T83-runs-view.md",
@@ -1198,6 +1203,68 @@
       ],
       "provides": "architecture.md corrected on the run-state source and state vocabulary; usage.md gains runs, spend and the changed editability rule; README reflects the new views.",
       "path": "docs/planning/tickets/v2.1/T86-v2.1-docs.md",
+      "status": "todo"
+    },
+    {
+      "id": "T88",
+      "title": "Read the factory's lane artifacts beside run-state",
+      "track": "backend",
+      "milestone": "v2.1",
+      "depends_on": [
+        "T78"
+      ],
+      "provides": "file_adapter/runs.py reads lane results, receipts and last-stop artifacts as typed records, tolerant of every absent or malformed file, writing nothing.",
+      "path": "docs/planning/tickets/v2.1/T88-runs-reader.md",
+      "status": "todo"
+    },
+    {
+      "id": "T89",
+      "title": "The run record: one typed record per manifest ticket",
+      "track": "backend",
+      "milestone": "v2.1",
+      "depends_on": [
+        "T88"
+      ],
+      "provides": "domain/run_record.py and services/run_service.py compose one run record per manifest ticket, with every absent source named rather than silently blank.",
+      "path": "docs/planning/tickets/v2.1/T89-run-record-domain.md",
+      "status": "todo"
+    },
+    {
+      "id": "T90",
+      "title": "GET /api/v1/runs",
+      "track": "backend",
+      "milestone": "v2.1",
+      "depends_on": [
+        "T89"
+      ],
+      "provides": "GET /api/v1/runs returns one run record per manifest ticket, read-only.",
+      "path": "docs/planning/tickets/v2.1/T90-runs-endpoint.md",
+      "status": "todo"
+    },
+    {
+      "id": "T91",
+      "title": "Watch the JSON run-state source, so live updates are not silently dead",
+      "track": "backend",
+      "milestone": "v2.1",
+      "depends_on": [
+        "T78"
+      ],
+      "provides": "RealFileWatcher observes the resolved run-state source whatever its kind, so a run-state change on a JSON-sourced project fires an SSE event instead of nothing. Audit-fix ticket from DL-061 finding F1 (blocking, end-to-end-behaviour, T40+T78).",
+      "path": "docs/planning/tickets/v2.1/T91-watch-the-json-run-state-source.md",
+      "status": "todo",
+      "audit_finding": "F1",
+      "audit_date": "2026-08-01"
+    },
+    {
+      "id": "T92",
+      "title": "An unrecognised state directory is unavailable information too",
+      "track": "backend",
+      "milestone": "v2.1",
+      "depends_on": [
+        "T80"
+      ],
+      "provides": "The directory run-state form refuses, PER ID, the ids named under a state subdirectory this console has no name for — even when a recognised marker also names them, because the unknown state's precedence is unknown. A source populated only under unrecognised names is populated, not vacuous, so the vacuity scan counts markers under every subdirectory. An unrecognised directory naming no ids changes nothing: over-refusal is the failure mode the per-id narrowness exists to prevent. Closes the seventh and last instance of T80's fail-open class, found by T80's Amendment 4 step-4 enumeration rather than by a seventh review round.",
+      "path": "docs/planning/tickets/v2.1/T92-unrecognised-state-directory.md",
       "status": "todo"
     }
   ]

@@ -1,15 +1,8 @@
 # Pre-commit hooks for factory-console.
 #
-# HANDOFF NOTE: the real filename is `.pre-commit-config.yaml`. That exact
-# basename is protected in this build environment, so the config ships as
-# `.pre-commit-config.yaml.proposed`. After merge a maintainer runs:
-#   git mv .pre-commit-config.yaml.proposed .pre-commit-config.yaml
-#   pre-commit install
-# Until then, verify locally with:
-#   pre-commit run --all-files --config .pre-commit-config.yaml.proposed
-#
 # Reuses the ruff config in pyproject.toml (T02) and the eslint/prettier configs
-# under frontend/ (T03). CI re-runs these same hooks for parity.
+# under frontend/ (T03). CI and `make lint` both run `pre-commit run --all-files`,
+# which reads `.pre-commit-config.yaml` — one hook set, one lint gate.
 
 # tests/fixtures/ holds deliberately malformed test data (bad JSON, a raw
 # un-backticked <script> payload, extensionless run-state markers). The generic

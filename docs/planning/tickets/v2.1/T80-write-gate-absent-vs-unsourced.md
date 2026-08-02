@@ -424,3 +424,38 @@ state's precedence is unknown") changes what `merged/<id>` alone is allowed to a
 **The decision needed:** does an unrecognised state *directory* refuse the ids it names (and, if it is
 the only populated one, stop the source reading as vacuous)? If yes, it is amendment 5 and it closes
 the class on the directory side too.
+
+---
+
+## The seventh case is SPLIT to T92 — this ticket's scope is now closed
+
+**Decided 2026-08-02, after the fifth review round reached this tier's iteration cap.**
+
+The enumeration required by Amendment 4 step 4 did exactly what it was written to do: it found the
+seventh case **by rule**, in row 12 of its own audit table, rather than by a seventh review round.
+That is the outcome the step was for, and it means this ticket's method worked.
+
+**What follows from it is a split, not an Amendment 5.** T80 has taken nine lane runs and closed six
+instances of one conflation across four amendments. Its fifth review round ended `capped`. That is
+the T81 shape (DL-058), and DL-060's rule applies:
+
+> A ticket that has grown past what one review round can cover does not converge by being given
+> another round.
+
+Every previous amendment **grew** this ticket. This decision **shrinks** it — to the six cases it has
+closed and proved, with 830 backend and 381 frontend tests green. The seventh moves to **T92**, whose
+whole diff a reviewer can hold at once, and which carries the gate-policy decision this ticket
+correctly refused to make on its own.
+
+**The finding does not escape by being split.** T92 carries milestone `v2.1` and `depends_on: [T80]`,
+so §12.2 clause 4 ("no unresolved blocking finding") and the frontier both hold it in front of the
+Version. Splitting a finding out of a PR must never be the move that lets it through, and this is the
+test of whether it was: T92 must merge before v2.1 does.
+
+### Also open, and deliberately not blocking this ticket
+
+Four lower-severity findings recorded `open` by round 5, none of them in this ticket's class:
+`read_json_run_state`'s `MemoryError` gap, ungated `create` against an unreadable source,
+`probe_ticket_state`'s 130 lines with no production caller (Amendment 3, open item 3), and
+`docs/usage.md` staleness — which **T86 owns by this ticket's own step 6**, and which round 5 correctly
+reverted its own fix for once the repo rule was noticed.
