@@ -1,10 +1,28 @@
 name: CI
 
 on:
-  # CI runs only on merges to main. The App Factory already runs build + tests on
-  # every PR (its QA) before cutting it, so we don't pay GitHub for a second copy.
+  # CI runs on merges to main. The App Factory already runs build + tests on every
+  # PR (its QA) before cutting it, so we don't pay GitHub for a second copy of
+  # ticket-PR CI.
+  #
+  # VERSION BRANCHES ARE THE EXCEPTION, and not for convenience. FINAL §12.2's
+  # first eligibility clause is "final full CI green AT THE EXACT SHA" of the
+  # Version HEAD — a property of a commit, not of a branch, because the Version's
+  # HEAD moves and a green run against a superseded SHA describes code that is no
+  # longer what would merge (§11.4, SPIKE-13: two runs, opposite conclusions, one
+  # commit). Without a run on the version branch that clause cannot be satisfied
+  # by anything, so the Version flow is not merely unverified — it is unrunnable.
+  #
+  # This is also the shape DL-053 recorded: a lane passed every gate it could run
+  # and still broke the repository's own gate, because the lane could not see what
+  # CI checks. The factory's QA is not a substitute for the repository's CI at the
+  # commit that would merge.
   push:
-    branches: [main]
+    branches: [main, 'version/**']
+  # So a Version's final CI can be re-run against an exact SHA on demand, rather
+  # than by pushing an empty commit to move HEAD — which would invalidate the run
+  # it was trying to produce.
+  workflow_dispatch:
 
 # One in-flight run per ref; a new push cancels the stale run.
 concurrency:

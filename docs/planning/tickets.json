@@ -1268,6 +1268,48 @@
       "status": "todo"
     },
     {
+      "id": "T93",
+      "title": "Ledger discovery must use the same errno split the run-state reader made normative",
+      "track": "backend",
+      "milestone": "v2.2",
+      "depends_on": [
+        "T79"
+      ],
+      "provides": "T79's ledger discovery probes a `.factory` artifact with a raw `Path.is_file()`, while T80 made the discovery rule normative and implemented it via the module's own errno split. Two readers of the same tree therefore disagree about an unprobeable path.",
+      "path": "docs/planning/tickets/v2.2/T93-ledger-discovery-must-use-the-same-errno-split-the-run.md",
+      "status": "todo",
+      "audit_finding": "duplicated-or-contradictory-implementation",
+      "audit_date": "2026-08-02"
+    },
+    {
+      "id": "T94",
+      "title": "User and contributor docs still state the pre-T78 run-state contract",
+      "track": "docs",
+      "milestone": "v2.2",
+      "depends_on": [
+        "T80"
+      ],
+      "provides": "The user- and contributor-facing docs still describe edit and delete sharing one `todo`/`unknown` gate, `unknown` meaning 'no run-state directory', and a four-value state vocabulary. T80 updated `README.md` and `docs/planning/ARCHITECTURE.md` for exactly those changes and left these behind.",
+      "path": "docs/planning/tickets/v2.2/T94-user-and-contributor-docs-still-state-the-pre-t78-run-s.md",
+      "status": "todo",
+      "audit_finding": "architecture-drift",
+      "audit_date": "2026-08-02"
+    },
+    {
+      "id": "T95",
+      "title": "The ledger artifact is read but never watched",
+      "track": "backend",
+      "milestone": "v2.2",
+      "depends_on": [
+        "T91"
+      ],
+      "provides": "T91 landed as the fix for 'a factory artifact the console reads is not watched, so live updates are silently dead', and scoped itself to run-state. T79 added a reader for a NEW factory artifact in the same range that the watcher does not schedule, and no Ticket covers it. The audit found the incompleteness of its own fix.",
+      "path": "docs/planning/tickets/v2.2/T95-the-ledger-artifact-is-read-but-never-watched.md",
+      "status": "todo",
+      "audit_finding": "end-to-end-behaviour",
+      "audit_date": "2026-08-02"
+    },
+    {
       "id": "T96",
       "title": "The wrong-cause error and the degrading guard, everywhere else",
       "track": "backend",

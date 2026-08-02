@@ -93,6 +93,7 @@ Base: `http://127.0.0.1:<port>/api/v1`. JSON camelCase, ISO-8601, errors as `{ e
 - `GET /api/v1/search?q=&limit=` → `{ items: SearchHit[], total }` — full-text over id/title/`provides`/body (distinct from the `tickets?q=` id+title filter); blank `q` → empty; `limit` 1–200, default 50.
 - `GET /api/v1/roadmap` → `Roadmap | { present: false }` — the full rendered body (`bodyMarkdown` + `bodyHtml`) plus structured `milestones[]`, or the `{ present: false }` envelope when the project has no roadmap.
 - `GET /api/v1/graph` → `TicketGraph` (`{ nodes, edges }`) — the whole-project run-state-coloured dependency DAG; one node per ticket, one edge per resolved `dependsOn` (self-loops and dangling ids omitted).
+- `GET /api/v1/spend` → `SpendResponse` (`{ source, attribution, totals, byTicket, byModel, byLevel, skipped, skippedOmitted }`) — the factory's ledger aggregated by ticket, model and agent level; `attribution` names the cost-splitting rule (`full-to-each-id`, so per-ticket figures are *attributed* cost and may exceed `totals.costUsd`), and `source.found`/`source.read` tell no ledger from an unread one from a measured zero.
 - `GET /api/v1/health` → `{ ok, version, projectRoot }`.
 - `GET /api/v1/openapi.json` — auto-generated schema; SPA regenerates TS types from it.
 
