@@ -74,6 +74,11 @@ _FORBIDDEN_ATTR_CALLS = frozenset(
 )
 # open() mode characters that request writing/creation/truncation.
 _FORBIDDEN_OPEN_MODE_CHARS = frozenset("wax+")
+# Every character an open MODE string may contain. Used to tell a mode from a path
+# without knowing which argument position the mode sits in — see
+# :func:`_mode_requests_mutation`. A mode is drawn only from this alphabet, while any
+# realistic path literal carries a separator, a dot or a letter outside it.
+_OPEN_MODE_CHARS = frozenset("rwxabt+U")
 # ``os.open`` flag names that request writing/creation/truncation. ``os.open`` takes
 # an integer flag mask, not a mode string, so the character check above cannot see it:
 # a read-only module opening by descriptor (as ``file_adapter.runs`` does, to gate on
@@ -87,13 +92,6 @@ _FORBIDDEN_OPEN_FLAGS = frozenset(
 # matches neither the forbidden-attribute set nor the plain ``open`` name, so it used
 # to be invisible to every branch of this guard.
 _OPEN_ATTR_NAMES = frozenset({"open", "fdopen"})
-# Receivers whose ``open``/``fdopen`` takes the path or descriptor FIRST and the mode
-# SECOND (``os.fdopen(fd, "w")``, ``gzip.open(p, "wb")``), unlike the bound
-# ``Path.open(mode)``, which is already carrying its path. ``os`` is included so
-# ``os.open(path, flags)`` reads its argument 0 as the PATH it is: index 0 there is not
-# a mode, and treating it as one made any literal path containing ``w``, ``a``, ``x`` or
-# ``+`` — ``.factory/...`` among them — a false READ-ONLY violation on a plain read.
-_MODE_SECOND_OPEN_RECEIVERS = frozenset({"os", "io", "gzip", "bz2", "lzma", "codecs"})
 
 # The literal header every read-only module must carry.
 READ_ONLY_HEADER = "# READ-ONLY: this module MUST NOT write, create, or delete. Enforced by tests."
@@ -106,21 +104,49 @@ def _module_source(module: ModuleType) -> str:
     return Path(source_file).read_text()
 
 
-def _open_mode_arg(call: ast.Call, *, positional_index: int) -> ast.expr | None:
+def _open_mode_arg(call: ast.Call, *, bound: bool) -> ast.expr | None:
     """Return the ``mode`` argument node of an ``open(...)`` call, if given.
 
-    ``positional_index`` differs by call form and must be passed explicitly: the
-    builtin is ``open(file, mode)`` (index 1) while ``Path.open(mode)`` is already
-    bound to its path (index 0). Reading index 1 for both would take ``buffering``
-    for the mode of a ``Path.open`` call, which is never a string constant — so the
-    mode check would silently never fire.
+    WHERE the mode sits differs by call form, and it is DERIVED rather than guessed
+    from the receiver's name. Three rules, in this order:
+
+    1. an explicit ``mode=`` keyword is the mode, whatever the positional args hold.
+       It comes first because ``open(path, mode="a")`` has a positional argument that
+       is NOT the mode, and reading position 0 there would inspect the path;
+    2. otherwise, a SECOND positional argument that is a string constant is the mode.
+       In every real form — ``open(f, "w")``, ``gzip.open(p, "wb")``,
+       ``os.fdopen(fd, "rb")``, ``tarfile.open(p, "w")`` — argument 1 being a string
+       IS the mode; the one competing form, the bound ``Path.open(mode, buffering)``,
+       has an int there and never a string;
+    3. otherwise, and ONLY for a ``bound`` call, the first positional argument — the
+       bound ``Path.open(mode)``, which is already carrying its path.
+
+    ``bound`` says whether this was an ATTRIBUTE call (``path.open(...)``) rather than
+    a bare name (``open(...)``), and rule 3 needs it. Argument 0 of a bare ``open`` is
+    the FILE, always and by definition, so applying rule 3 to it reads a path as a
+    mode — and a path may well be mode-shaped, since ``open("wax")`` names a file. The
+    bound form is the only one where argument 0 can be a mode at all.
+
+    The receiver used to pick the index off a closed whitelist of six modules, which
+    was wrong in both directions: an unlisted receiver (``tarfile.open(path, "w")``, or
+    ``os`` imported under an alias) fell back to index 0 and its real mode was never
+    inspected, while a bound ``open`` on any unlisted receiver read a literal PATH as a
+    mode. Deriving the position from the ARGUMENTS removes the guess without inheriting
+    either failure.
     """
-    if len(call.args) > positional_index:
-        return call.args[positional_index]
     for keyword in call.keywords:
         if keyword.arg == "mode":
             return keyword.value
+    if len(call.args) >= 2 and _is_string_constant(call.args[1]):
+        return call.args[1]
+    if bound and call.args:
+        return call.args[0]
     return None
+
+
+def _is_string_constant(node: ast.expr) -> bool:
+    """Is ``node`` a literal string? The test that tells a mode from a buffering int."""
+    return isinstance(node, ast.Constant) and isinstance(node.value, str)
 
 
 def _mode_requests_mutation(mode: ast.expr | None) -> TypeGuard[ast.Constant]:
@@ -132,10 +158,18 @@ def _mode_requests_mutation(mode: ast.expr | None) -> TypeGuard[ast.Constant]:
     two call sites then need a blanket ``# type: ignore[attr-defined]`` each — which
     would equally swallow a genuine attribute typo in the very guard that pins a
     security property.
+
+    The string must be MODE-SHAPED — drawn wholly from :data:`_OPEN_MODE_CHARS` — and
+    not merely contain a forbidden character. That is a second line of defense behind
+    :func:`_open_mode_arg`'s choice of argument: a path reaching here is declined on
+    its separators and dots rather than accepted on the ``a`` in ``.factory``, which is
+    the false READ-ONLY violation a plain contains-check produced on a plain read.
     """
     return (
         isinstance(mode, ast.Constant)
         and isinstance(mode.value, str)
+        and bool(mode.value)
+        and set(mode.value) <= _OPEN_MODE_CHARS
         and bool(set(mode.value) & _FORBIDDEN_OPEN_MODE_CHARS)
     )
 
@@ -188,33 +222,41 @@ def assert_module_is_read_only(module: ModuleType) -> None:
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        if isinstance(func, ast.Attribute) and func.attr in _FORBIDDEN_ATTR_CALLS:
-            violations.append(f"{func.attr}() at line {node.lineno}")
-        elif isinstance(func, ast.Attribute) and func.attr in _OPEN_ATTR_NAMES:
-            # ``path.open(...)`` / ``os.open(...)`` / ``os.fdopen(...)``, the BOUND
-            # forms. Checked as well as the builtin below, not instead of it:
-            # ``file_adapter.runs`` reads through ``os.open`` + ``os.fdopen`` rather than
-            # ``read_bytes`` so it can bound the read, and an attribute call named
-            # ``open`` matches neither ``_FORBIDDEN_ATTR_CALLS`` nor the ``ast.Name``
-            # branch — so a later edit to ``path.open("w")`` in a READ-ONLY module used
-            # to pass this guard green.
+        # Both spellings of every name, because an import decides which one appears and
+        # neither is any less a mutation. ``shutil.rmtree(p)`` is an ``ast.Attribute``
+        # while ``from shutil import rmtree`` + ``rmtree(p)`` is an ``ast.Name``, and
+        # matching only the first meant the whole forbidden set — 26 names, most of them
+        # added by the very commit that widened it — was one import statement away from
+        # contributing nothing. ``_forbidden_open_flags`` below already recognises both
+        # spellings of a flag; these branches make the call names agree with it. Every
+        # listed name is receiver-free by construction (see ``_FORBIDDEN_ATTR_CALLS``),
+        # which is precisely what makes matching it as a bare name safe.
+        name = (
+            func.attr
+            if isinstance(func, ast.Attribute)
+            else func.id
+            if isinstance(func, ast.Name)
+            else None
+        )
+        if name is None:
+            continue
+        if name in _FORBIDDEN_ATTR_CALLS:
+            violations.append(f"{name}() at line {node.lineno}")
+        elif name in _OPEN_ATTR_NAMES:
+            # ``path.open(...)`` / ``os.open(...)`` / ``os.fdopen(...)`` and their bare
+            # forms. ``file_adapter.runs`` reads through ``os.open`` + ``os.fdopen``
+            # rather than ``read_bytes`` so it can bound the read, and an attribute call
+            # named ``open`` matches ``_FORBIDDEN_ATTR_CALLS`` not at all — so a later
+            # edit to ``path.open("w")`` in a READ-ONLY module used to pass this guard
+            # green.
             #
-            # WHERE the mode sits depends on the receiver, so it is looked up rather
-            # than assumed: ``Path.open(mode)`` is already bound to its path (index 0),
-            # while ``os.fdopen(fd, mode)`` and ``gzip.open(path, mode)`` put it second.
-            # Assuming index 0 for all of them read ``os.open``'s PATH as a mode string,
-            # which fails a plain read whose path literal happens to contain ``w``,
-            # ``a``, ``x`` or ``+``, and skipped the mode of every wrapper that puts it
-            # second.
-            receiver = func.value.id if isinstance(func.value, ast.Name) else None
-            index = 1 if receiver in _MODE_SECOND_OPEN_RECEIVERS else 0
-            mode = _open_mode_arg(node, positional_index=index)
+            # WHERE the mode sits depends on the call form (``Path.open(mode)`` is
+            # already bound to its path; ``os.fdopen(fd, mode)`` and
+            # ``gzip.open(path, mode)`` put it second), and the receiver's name is not a
+            # reliable way to tell — see :func:`_open_mode_arg`.
+            mode = _open_mode_arg(node, bound=isinstance(func, ast.Attribute))
             if _mode_requests_mutation(mode):
-                violations.append(f"{func.attr}(mode={mode.value!r}) at line {node.lineno}")
-        elif isinstance(func, ast.Name) and func.id == "open":
-            mode = _open_mode_arg(node, positional_index=1)
-            if _mode_requests_mutation(mode):
-                violations.append(f"open(mode={mode.value!r}) at line {node.lineno}")
+                violations.append(f"{name}(mode={mode.value!r}) at line {node.lineno}")
 
     # Flags are collected over the WHOLE module rather than per call — see
     # :func:`_forbidden_open_flags` for why a per-call walk could not see the mask

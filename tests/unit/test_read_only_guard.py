@@ -77,6 +77,29 @@ def test_the_guard_fires_on_a_mutating_attribute_call(tmp_path, call: str) -> No
 @pytest.mark.parametrize(
     "call",
     [
+        pytest.param("rmtree(path)", id="from-shutil-import-rmtree"),
+        pytest.param("move(path, other)", id="from-shutil-import-move"),
+        pytest.param("remove(path)", id="from-os-import-remove"),
+        pytest.param("makedirs(path)", id="from-os-import-makedirs"),
+        pytest.param("symlink(other, path)", id="from-os-import-symlink"),
+        pytest.param("chmod(path, 0o600)", id="from-os-import-chmod"),
+        pytest.param("copytree(other, path)", id="from-shutil-import-copytree"),
+    ],
+)
+def test_the_guard_fires_on_a_mutating_call_imported_by_name(tmp_path, call: str) -> None:
+    # The spelling an ``from shutil import rmtree`` gives: an ``ast.Name`` call, which
+    # the forbidden-attribute set used to be matched against never. The whole set was
+    # therefore one import statement away from contributing nothing, and every name the
+    # widening added — ``rmtree`` and ``move`` among them — was uncovered in this form.
+    module = _module_from_source(tmp_path, f"def f(path, other):\n    {call}\n")
+
+    with pytest.raises(AssertionError, match="must be read-only"):
+        assert_module_is_read_only(module)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
         pytest.param('open(path, "w")', id="builtin-positional"),
         pytest.param('open(path, mode="a")', id="builtin-keyword"),
         pytest.param('open(path, "r+")', id="builtin-update"),
@@ -96,11 +119,22 @@ def test_the_guard_fires_on_a_mutating_attribute_call(tmp_path, call: str) -> No
         # the path instead and never inspected the real mode.
         pytest.param('gzip.open(path, "wb")', id="gzip-open-write"),
         pytest.param('io.open(path, "w")', id="io-open-write"),
+        # Receivers the mode-position whitelist did not list. It defaulted anything
+        # unlisted to argument 0, which on these is the path or the descriptor — so the
+        # real mode at argument 1 was never inspected and a write open passed green.
+        pytest.param('tarfile.open(path, "w")', id="tarfile-open-write"),
+        pytest.param('_os.fdopen(fd, "wb")', id="aliased-os-fdopen-write"),
+        pytest.param('zipfile.ZipFile.open(path, "w")', id="dotted-receiver-open-write"),
+        # The bare-name spelling of the wrappers, for the same reason the mutating calls
+        # above are checked in both spellings.
+        pytest.param('fdopen(fd, "wb")', id="from-os-import-fdopen-write"),
     ],
 )
 def test_the_guard_fires_on_a_mutating_open(tmp_path, call: str) -> None:
     module = _module_from_source(
-        tmp_path, f"def f(path, fd, os, io, gzip):\n    with {call} as h:\n        h\n"
+        tmp_path,
+        "def f(path, fd, os, _os, io, gzip, tarfile, zipfile):\n"
+        f"    with {call} as h:\n        h\n",
     )
 
     with pytest.raises(AssertionError, match="must be read-only"):
@@ -189,6 +223,36 @@ def test_the_guard_fires_on_a_mutating_os_open_flag(tmp_path, call: str) -> None
         # A non-filesystem ``copy``: bare ``copy`` is deliberately out of the forbidden
         # set because ``dict.copy()``/``model_copy()`` would fire on a read.
         pytest.param("def f(data):\n    return data.copy()\n", id="dict-copy"),
+        # The other half of dropping the receiver whitelist: an UNLISTED receiver must
+        # not have its path literal read as a mode either. A mode is recognised by its
+        # shape — drawn wholly from the mode alphabet — so a path is declined at
+        # whichever argument it is offered at, without anyone naming the receiver.
+        pytest.param(
+            'def f(tarfile):\n    return tarfile.open(".factory/last-stop.json")\n',
+            id="unlisted-receiver-open-path-literal-containing-mode-chars",
+        ),
+        pytest.param(
+            'def f(archive):\n    return archive.open("a/w+x.json", "rb")\n',
+            id="unlisted-receiver-open-read-mode-second",
+        ),
+        # The residual the mode-SHAPE check alone does not settle: a path drawn wholly
+        # from the mode alphabet. Argument 1 is a string, so it is the mode and argument
+        # 0 is never offered — which is why the position is derived from the arguments
+        # rather than each of them being tried in turn.
+        pytest.param(
+            'def f(gzip):\n    return gzip.open("w", "r")\n',
+            id="path-literal-that-is-itself-mode-shaped",
+        ),
+        # And its bound counterpart, where argument 1 is the buffering int rather than a
+        # mode, so argument 0 is correctly read as the mode and is read-only.
+        pytest.param(
+            'def f(path):\n    return path.open("rb", 8192)\n',
+            id="bound-open-with-buffering",
+        ),
+        # Argument 0 of a BARE ``open`` is the file, always — so a filename that happens
+        # to be spelled out of mode characters is still a filename, and reading it as a
+        # mode would fail a plain read.
+        pytest.param('def f():\n    return open("wax")\n', id="builtin-open-mode-shaped-filename"),
     ],
 )
 def test_the_guard_stays_silent_on_a_read_only_call(tmp_path, source: str) -> None:

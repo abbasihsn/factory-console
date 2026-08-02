@@ -335,6 +335,62 @@ def test_a_permission_denied_fstat_is_unreadable_never_absent(
     assert read_result(tmp_path, TICKET_ID).reason == "unreadable"
 
 
+def test_an_io_error_at_the_read_itself_is_unreadable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The split one step later again: the open and the fstat both succeeded and the
+    # failure is on the held DESCRIPTOR. It has its own try block, and the module's
+    # comment there records that ``absent`` was deliberately DELETED from it — an
+    # unlinked file keeps reading through the descriptor — so a refactor that restored
+    # an ``absent`` clause here would report "the factory never ran" for a failing disk.
+    _write_artifact(tmp_path, _result_relative(), '{"status":"ready"}')
+
+    class _FailingRead:
+        """Stands in for the wrapper without opening one — the reader owns the fd."""
+
+        def __enter__(self) -> "_FailingRead":
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def read(self, *_args: object) -> bytes:
+            raise OSError(5, "Input/output error")
+
+    def _failing_fdopen(*_args: object, **_kwargs: object) -> "_FailingRead":
+        return _FailingRead()
+
+    monkeypatch.setattr(os, "fdopen", _failing_fdopen)
+
+    result = read_result(tmp_path, TICKET_ID)
+
+    assert result.reason == "unreadable"
+    assert result.data is None
+
+
+def test_a_failing_close_does_not_replace_the_answer_already_computed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The one hole the module's own docstring names in its NEVER-raises contract:
+    # ``close(2)`` reports deferred errors (EIO on NFS and some FUSE mounts), and a
+    # raise from the ``finally`` REPLACES the ArtifactRead the branches above already
+    # computed. The escaping OSError is not a FactoryConsoleError, so the edge layer has
+    # no handler and it surfaces as an unmapped 500 — on a read that SUCCEEDED.
+    _write_artifact(tmp_path, _result_relative(), '{"status":"ready"}')
+    real_close = os.close
+
+    def _failing_close(descriptor: int) -> None:
+        real_close(descriptor)
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(os, "close", _failing_close)
+
+    result = read_result(tmp_path, TICKET_ID)
+
+    assert result.reason is None, "a failed close cannot change an answer already decided"
+    assert result.data == {"status": "ready"}
+
+
 def test_an_artifact_that_vanishes_before_the_open_is_absent(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -787,6 +843,72 @@ def test_the_refusal_uses_the_uniform_invalid_ticket_id_contract() -> None:
     assert exc.code == "invalid_ticket_id"
     assert exc.status == 400
     assert runs_module.PathTraversal is RunStatePathTraversal
+
+
+@pytest.mark.parametrize("reader", [read_result, read_receipt], ids=["result", "receipt"])
+def test_a_pattern_violating_id_is_refused_in_the_same_words_everywhere(tmp_path: Path, reader):
+    # The point of routing a pattern violation through ``from_pattern_violation``: the
+    # same id rejected by this reader, by the run-state probe and at the HTTP boundary
+    # has to produce a word-identical envelope. Only the shared classmethod makes that
+    # true, and nothing else asserted the MESSAGE — every other path-safety test here
+    # stops at the exception type, which the generic reason would satisfy just as well.
+    from factory_console.file_adapter.run_state import probe_ticket_state
+
+    (tmp_path / RESULTS_RELATIVE_DIR).mkdir(parents=True)
+    (tmp_path / RECEIPTS_RELATIVE_DIR).mkdir(parents=True)
+
+    with pytest.raises(PathTraversal) as from_reader:
+        reader(tmp_path, "foo/bar")
+    with pytest.raises(PathTraversal) as from_probe:
+        probe_ticket_state(tmp_path, "foo/bar")
+
+    assert from_reader.value.message == PathTraversal.from_pattern_violation("foo/bar").message
+    assert from_reader.value.message == from_probe.value.message
+    assert from_reader.value.details == {"ticketId": "foo/bar"}
+
+
+@pytest.mark.parametrize("bad_id", [".", ".."], ids=["dot", "dotdot"])
+@pytest.mark.parametrize("reader", [read_result, read_receipt], ids=["result", "receipt"])
+def test_a_bare_dot_id_keeps_the_generic_reason_because_it_matches_the_pattern(
+    tmp_path: Path, reader, bad_id: str
+) -> None:
+    # The other half of the deliberate two-message split. ``.`` and ``..`` SATISFY
+    # TICKET_ID_PATTERN, so telling an operator the id "must match ^[A-Za-z0-9_.-]+$"
+    # would send them to fix an id that is already well-formed.
+    (tmp_path / RESULTS_RELATIVE_DIR).mkdir(parents=True)
+    (tmp_path / RECEIPTS_RELATIVE_DIR).mkdir(parents=True)
+
+    with pytest.raises(PathTraversal) as refused:
+        reader(tmp_path, bad_id)
+
+    assert refused.value.message != PathTraversal.from_pattern_violation(bad_id).message
+
+
+@pytest.mark.parametrize(
+    ("reader", "relative_dir"),
+    [(read_result, RESULTS_RELATIVE_DIR), (read_receipt, RECEIPTS_RELATIVE_DIR)],
+    ids=["result", "receipt"],
+)
+def test_an_escaping_path_is_refused_in_the_words_its_shared_owner_defines(
+    tmp_path: Path, reader, relative_dir: Path
+) -> None:
+    # The containment refusal's message has a single owner too, for the same reason:
+    # it was a private constant copied per module with only a comment asserting the
+    # copies stayed word-identical.
+    project_root = tmp_path / "project"
+    (project_root / ".factory").mkdir(parents=True)
+    outside = tmp_path / "outside" / relative_dir.name
+    outside.mkdir(parents=True)
+    try:
+        (project_root / relative_dir).symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("platform does not support symlinks")
+    (outside / f"{TICKET_ID}.json").write_text('{"status":"ready"}', encoding="utf-8")
+
+    with pytest.raises(PathTraversal) as refused:
+        reader(project_root, TICKET_ID)
+
+    assert refused.value.message == PathTraversal.from_root_escape(TICKET_ID).message
 
 
 def test_read_last_stop_takes_no_ticket_id_so_it_cannot_traverse(tmp_path: Path) -> None:
