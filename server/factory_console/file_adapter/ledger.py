@@ -9,6 +9,12 @@ running, which shapes the whole reader:
   is NOT a zero bill. That question is answered by a ``Path | None``, separately
   from :func:`read_ledger`, whose :class:`LedgerRead` may honestly hold zero
   entries for an EMPTY ledger. The two facts never share a value.
+  There is a THIRD answer, and callers must handle it: when the node cannot be
+  probed at all, the function RAISES ``OSError`` rather than collapsing "I could
+  not look" into the ``None`` that means "definitively not there". A caller that
+  leaves it uncaught turns an unsearchable ``.factory/`` into an unmapped 500;
+  one that catches it reports the bill as UNKNOWN (found, unread) — which is what
+  ``api/v1/spend.py`` does. What it must never do is report ``$0.00``.
 - :func:`read_ledger` parses line by line and never lets one bad line cost the
   file. A line that is not JSON, or is JSON that does not validate, is recorded
   in ``skipped`` with its line number and reason, and the read continues.
@@ -25,9 +31,11 @@ asserts this module contains no filesystem-mutating call.
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import re
+import stat
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -71,21 +79,55 @@ _REDACTIONS: tuple[re.Pattern[str], ...] = (
 )
 _REDACTED = '"session_id":"<redacted>"'
 
+# The errnos that mean the node is definitively NOT THERE, as opposed to "I could
+# not look". Kept identical to ``run_state.py``'s set of the same name, since both
+# encode the same claim about the same syscall. ``ELOOP`` is deliberately absent: a
+# symlink loop is a path that cannot be resolved, not a path known to be missing.
+_ABSENT_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR, errno.EBADF})
+
 
 def find_ledger_path(project_root: Path) -> Path | None:
-    """Return the project's ledger file, or ``None`` if it has none.
+    """Return the project's ledger file, ``None`` if it has none, else RAISE.
 
     ``None`` means "this project has no ledger" and MUST NOT be turned into an
     empty :class:`LedgerRead` by the caller: no ledger is an unknown bill, an
     empty ledger is a measured zero. Callers check this first and only call
     :func:`read_ledger` on a non-``None`` result.
 
-    The node type is checked (:meth:`Path.is_file`), not mere existence, so a
-    directory named ``ledger.jsonl`` resolves to ``None`` instead of to a path
-    that cannot be read.
+    The node type is checked, not mere existence, so a directory named
+    ``ledger.jsonl`` resolves to ``None`` instead of to a path that cannot be read.
+
+    "I could not look" is the THIRD answer, and it propagates as an ``OSError``
+    rather than collapsing into ``None``. :meth:`Path.is_file` cannot carry that
+    distinction portably — through CPython 3.12 it re-raises ``EACCES``, and from
+    3.13 (gh-113978) it swallows every ``OSError`` and answers ``False`` — and
+    ``pyproject.toml`` declares ``requires-python = ">=3.11"`` with no upper bound,
+    so both are inside the supported range. Left to the interpreter, an unsearchable
+    ``.factory/`` would report "this project has no ledger" on a new Python and
+    crash the caller on an old one, from the same code. Since ``None`` here is what
+    a caller renders as "$0.00, no ledger", that fail-open would be a false
+    statement about real money arriving by way of an interpreter upgrade. So the
+    split is made HERE, matching ``run_state.py``'s ``_is_regular_file``, which owns
+    the same contract for the same reason.
     """
     candidate = project_root / LEDGER_RELATIVE_PATH
-    return candidate if candidate.is_file() else None
+    try:
+        return candidate if stat.S_ISREG(candidate.stat().st_mode) else None
+    except OSError as error:
+        if error.errno in _ABSENT_ERRNOS:
+            return None
+        # The one failure in this module that leaves it as an exception, so it is
+        # also the one that would otherwise leave no trace: its caller answers
+        # "the bill is unknown" with HTTP 200, and an operator asking why would
+        # find a log naming the cause for the ``unreadable`` and ``file_too_large``
+        # cases below and nothing at all for this one. ``%r`` on the cause, per the
+        # rule at :func:`read_ledger` — the errno is the whole diagnostic here.
+        _LOGGER.warning("ledger: %s could not be probed: %r", candidate, error)
+        raise
+    except ValueError:
+        # Parity with :meth:`Path.is_file`, which reads a non-encodable path as
+        # absent rather than as a failure to look.
+        return None
 
 
 def read_ledger(path: Path) -> LedgerRead:
@@ -135,7 +177,7 @@ def read_ledger(path: Path) -> LedgerRead:
     try:
         raw = path.read_bytes()
     except OSError as error:
-        _LOGGER.warning("ledger: %s could not be read: %s", path, error)
+        _LOGGER.warning("ledger: %s could not be read: %r", path, error)
         return _whole_file_skip(path, "unreadable", "ledger file could not be read")
     # Decode with replacement rather than strictly: a byte-level corruption in one
     # line must cost that line (it will not be JSON) instead of the whole file,
