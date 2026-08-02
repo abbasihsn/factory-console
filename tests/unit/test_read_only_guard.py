@@ -60,12 +60,23 @@ def _module_from_source(tmp_path, source: str) -> types.ModuleType:
         pytest.param("shutil.copyfile(other, path)", id="shutil-copyfile"),
         pytest.param("shutil.copytree(other, path)", id="shutil-copytree"),
         pytest.param("shutil.copyfileobj(other, path)", id="shutil-copyfileobj"),
+        pytest.param("shutil.copy2(other, path)", id="shutil-copy2"),
         # Creation and metadata mutation: no bytes written, but each alters something
         # under the observed project, which the READ-ONLY header forbids just as much.
         pytest.param("os.symlink(other, path)", id="symlink"),
+        pytest.param("os.link(other, path)", id="link"),
         pytest.param("os.mkfifo(path)", id="mkfifo"),
+        pytest.param("os.mknod(path)", id="mknod"),
         pytest.param("os.truncate(path, 0)", id="truncate"),
         pytest.param("os.chmod(path, 0o600)", id="chmod"),
+        pytest.param("os.chown(path, 0, 0)", id="chown"),
+        pytest.param("os.utime(path)", id="utime"),
+        # The rename/remove pairs' plural spellings. They were added to the forbidden
+        # set alongside their singulars but, unlike them, never exercised — and an
+        # untested name in this set is indistinguishable from an absent one, because
+        # the guard's failure mode is silence.
+        pytest.param("os.renames(path, other)", id="renames"),
+        pytest.param("os.removedirs(path)", id="removedirs"),
         # The PATHLIB spelling of ``os.symlink``/``os.link``. This codebase is
         # pathlib-first, so it is the spelling a read-only module would actually reach
         # for — and it was the one the set did not cover.
@@ -104,8 +115,15 @@ def test_the_guard_fires_on_a_mutating_attribute_call(tmp_path, call: str) -> No
         pytest.param("fchown(fd, 0, 0)", id="from-os-import-fchown"),
         pytest.param('writev(fd, [b"x"])', id="from-os-import-writev"),
         pytest.param("copyfileobj(other, path)", id="from-shutil-import-copyfileobj"),
+        pytest.param("copy2(other, path)", id="from-shutil-import-copy2"),
         pytest.param("symlink_to(other)", id="from-pathlib-import-symlink_to"),
         pytest.param("hardlink_to(other)", id="from-pathlib-import-hardlink_to"),
+        pytest.param("link(other, path)", id="from-os-import-link"),
+        pytest.param("mknod(path)", id="from-os-import-mknod"),
+        pytest.param("chown(path, 0, 0)", id="from-os-import-chown"),
+        pytest.param("utime(path)", id="from-os-import-utime"),
+        pytest.param("renames(path, other)", id="from-os-import-renames"),
+        pytest.param("removedirs(path)", id="from-os-import-removedirs"),
     ],
 )
 def test_the_guard_fires_on_a_mutating_call_imported_by_name(tmp_path, call: str) -> None:

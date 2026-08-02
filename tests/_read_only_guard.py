@@ -193,14 +193,22 @@ def _mode_requests_mutation(mode: ast.expr | None) -> TypeGuard[ast.Constant]:
     :func:`_open_mode_arg`'s choice of argument: a path reaching here is declined on
     its separators and dots rather than accepted on the ``a`` in ``.factory``, which is
     the false READ-ONLY violation a plain contains-check produced on a plain read.
+
+    That shape test is DELEGATED to :func:`_is_mode_shaped_constant` rather than
+    restated here. The two were spelled out independently — four identical clauses,
+    then one extra — in a module whose whole reason for existing is that "a copied rule
+    ... drifts back apart": a later change to what counts as mode-shaped would have had
+    to land in both or this guard and the numeric-mask check would silently stop
+    agreeing about which argument is the mode.
     """
-    return (
-        isinstance(mode, ast.Constant)
-        and isinstance(mode.value, str)
-        and bool(mode.value)
-        and set(mode.value) <= _OPEN_MODE_CHARS
-        and bool(set(mode.value) & _FORBIDDEN_OPEN_MODE_CHARS)
-    )
+    # Narrowed in the POSITIVE branch, not by an early `if not ...: return False`.
+    # :class:`TypeGuard` (unlike PEP 742's ``TypeIs``) narrows only where the guard
+    # answered True, so the negative-early-return spelling leaves ``mode`` as
+    # ``ast.expr | None`` on the line that reads ``.value`` — an unchecked attribute
+    # access on a base class that does not define it.
+    if _is_mode_shaped_constant(mode):
+        return bool(set(mode.value) & _FORBIDDEN_OPEN_MODE_CHARS)
+    return False
 
 
 def _opens_with_an_opaque_flag_mask(call: ast.Call) -> bool:
@@ -268,13 +276,19 @@ def _opens_with_an_opaque_flag_mask(call: ast.Call) -> bool:
     return _is_opaque_int_constant(call.args[1])
 
 
-def _is_mode_shaped_constant(node: ast.expr) -> bool:
+def _is_mode_shaped_constant(node: ast.expr | None) -> TypeGuard[ast.Constant]:
     """Is ``node`` a string literal that could be an open MODE rather than a path?
 
     A mode is drawn wholly from :data:`_OPEN_MODE_CHARS`; any realistic path literal
-    carries a separator, a dot, or a letter outside that alphabet. Shared by the
-    numeric-mask check so "this argument is the mode, not the path" is decided ONE way
-    — the same rule :func:`_mode_requests_mutation` applies.
+    carries a separator, a dot, or a letter outside that alphabet. The SINGLE owner of
+    "this argument is the mode, not the path", so the numeric-mask check
+    (:func:`_opens_with_an_opaque_flag_mask`) and the mode check
+    (:func:`_mode_requests_mutation`) decide it ONE way and cannot drift apart.
+
+    ``None`` is accepted (and answered ``False``) so :func:`_mode_requests_mutation` can
+    hand its optional argument straight through; :class:`TypeGuard` so the narrowing
+    survives the call and a guarded caller may read ``.value`` without a blanket
+    ``# type: ignore``.
     """
     return (
         isinstance(node, ast.Constant)
@@ -346,9 +360,12 @@ def assert_module_is_read_only(module: ModuleType) -> None:
         # Both spellings of every name, because an import decides which one appears and
         # neither is any less a mutation. ``shutil.rmtree(p)`` is an ``ast.Attribute``
         # while ``from shutil import rmtree`` + ``rmtree(p)`` is an ``ast.Name``, and
-        # matching only the first meant the whole forbidden set — 26 names, most of them
-        # added by the very commit that widened it — was one import statement away from
-        # contributing nothing. ``_forbidden_open_flags`` below already recognises both
+        # matching only the first meant the whole forbidden set — most of it added by the
+        # very commit that widened it — was one import statement away from contributing
+        # nothing. The set's SIZE is deliberately not quoted here: an earlier revision
+        # said "26 names" and was already wrong by seven the day it was written, which is
+        # the same stale-count drift the module docstring refuses to reintroduce for the
+        # adopter list. ``_forbidden_open_flags`` below already recognises both
         # spellings of a flag; these branches make the call names agree with it. Every
         # listed name is receiver-free by construction (see ``_FORBIDDEN_ATTR_CALLS``),
         # which is precisely what makes matching it as a bare name safe.

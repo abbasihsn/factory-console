@@ -932,6 +932,45 @@ def test_a_well_formed_id_against_a_symlinked_factory_is_never_an_invalid_ticket
     assert escaped.path == (outside / f"{TICKET_ID}.json").resolve()
 
 
+def test_a_symlinked_factory_answers_unreadable_from_all_three_readers(tmp_path: Path) -> None:
+    # Amendment 1's condition, in the shape it was actually reported: ``.factory``
+    # ITSELF is the symlink, not one of its children. The two tests above cover the
+    # neighbouring shapes — a symlinked ``.factory/results`` for the id readers, a
+    # symlinked ``.factory`` for last-stop alone — so the one thing neither of them
+    # states is the amendment's own claim: ONE condition, observed by all THREE
+    # readers, gets ONE answer. Today the whole candidate resolves in a single call so
+    # every shape lands on the same branch, which is exactly why this needs pinning: a
+    # future reader that treats a symlinked ANCESTOR differently from a symlinked leaf
+    # would reopen the inconsistency with every existing test still green.
+    outside = tmp_path / "elsewhere"
+    (outside / "results").mkdir(parents=True)
+    (outside / "receipts").mkdir(parents=True)
+    (outside / "results" / f"{TICKET_ID}.json").write_text('{"leaked":true}', encoding="utf-8")
+    (outside / "receipts" / f"{TICKET_ID}.json").write_text('{"leaked":true}', encoding="utf-8")
+    (outside / "last-stop.json").write_text('{"leaked":true}', encoding="utf-8")
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    try:
+        (project_root / ".factory").symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("platform does not support symlinks")
+
+    answers = {
+        "result": read_result(project_root, TICKET_ID),
+        "receipt": read_receipt(project_root, TICKET_ID),
+        "last_stop": read_last_stop(project_root),
+    }
+
+    assert {name: answer.reason for name, answer in answers.items()} == {
+        "result": "unreadable",
+        "receipt": "unreadable",
+        "last_stop": "unreadable",
+    }, "one condition, one answer, whichever reader observed it"
+    assert all(answer.data is None for answer in answers.values()), (
+        "out-of-project content is never returned as this project's artifact"
+    )
+
+
 def test_read_last_stop_takes_no_ticket_id_so_it_cannot_traverse(tmp_path: Path) -> None:
     # No id, no traversal surface, and therefore no PathTraversal path at all —
     # the call is total for every project root.

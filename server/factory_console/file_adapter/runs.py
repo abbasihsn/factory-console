@@ -185,10 +185,18 @@ def _reportable_path(candidate: Path) -> Path:
     Every outcome that reaches :func:`_read_json_artifact` reports the RESOLVED path,
     so the refusal branches must too or ``ArtifactRead.path`` means one thing on most
     answers and another on two of them — and a caller keying artifacts by it gets two
-    keys for one file whenever the project root is relative or symlinked. These
-    branches are reached precisely because a resolution failed, so resolution is
-    attempted once more and falls back to :meth:`Path.absolute` (which performs no
-    filesystem lookup and so cannot fail the same way) rather than to the bare join.
+    keys for one file whenever the project root is relative or symlinked.
+
+    BOTH refusal conditions arrive here, and they are not the same, so neither may be
+    assumed. The path (or the root) could not be resolved AT ALL — in which case the
+    retry below fails again and falls back to :meth:`Path.absolute`, which performs no
+    filesystem lookup and so cannot fail the same way, rather than to the bare join.
+    Or the path resolved and provably LEFT the root, in which case the retry succeeds
+    and this reports the escape target — deliberately, per Amendment 1: a refusal names
+    the path that could not be used, and the out-of-root target is that path.
+    ``tests/unit/test_runs.py`` pins it. Do not "simplify" this to an unconditional
+    :meth:`Path.absolute` on the reading that resolution has already failed — it has
+    not, on the second branch, and that would silently change what an escape reports.
     """
     resolved = resolve_or_none(candidate)
     if resolved is not None:

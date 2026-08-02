@@ -10,8 +10,8 @@ or the wrong shape entirely.
 
 :class:`ArtifactRead` exists so that "there is nothing to show" always arrives
 with the REASON attached. A bare ``None`` return would collapse "the factory has
-never run here", "this file is there and could not be opened", and "this file is
-there and is not JSON" into one value, and a UI above cannot render an honest
+never run here", "this path could not be read or could not be safely reached", and
+"this file is there and is not JSON" into one value, and a UI above cannot render an honest
 empty state from that — it would say "no result" for a lane whose result exists
 and could not be read. This is the same rule ``domain.ledger``'s
 :class:`~factory_console.domain.ledger.LedgerRead`/:class:`~factory_console.domain.ledger.SkippedLine`
@@ -47,11 +47,20 @@ ArtifactSkipReason = Literal["absent", "unreadable", "unparseable", "too_large"]
   run yet, so it is not a degradation — but it is still reported rather than
   returned as a bare ``None``, so no caller can mistake it for a file it failed
   to read.
-- ``unreadable`` — the file EXISTS and its bytes could not be read at all:
+- ``unreadable`` — nothing was read, and it was not because nothing is there. Two
+  routes reach it. Either the file EXISTS and its bytes could not be read at all —
   permission denied, an I/O error, or a directory sitting where the artifact
-  belongs. Deliberately distinct from ``unparseable``: nothing was ever examined,
-  so naming a syntax reason would send a human hunting for malformed JSON in a
-  file nothing could open.
+  belongs — OR the path could not be PROVEN to resolve inside the project root, so
+  the console refused to look at all (an unresolvable path or root, or a resolved
+  path that provably escaped: a symlinked ``.factory``). On the second route the
+  file's existence is not asserted, and MUST NOT be inferred: a project whose
+  ``.factory`` is a symlink out of the root answers ``unreadable`` for an artifact
+  that may equally not exist. The two share one reason deliberately — the reader
+  observed one condition, "there is something here I will not read through", and
+  :mod:`~factory_console.file_adapter.runs` answers it identically from every one
+  of its readers rather than letting the caller decide the name. Deliberately
+  distinct from ``unparseable``: nothing was ever examined, so naming a syntax
+  reason would send a human hunting for malformed JSON in a file nothing opened.
 - ``unparseable`` — the bytes WERE read and do not yield a JSON object: not valid
   JSON at all, or valid JSON whose top-level document is not a ``dict`` (a list,
   a bare string, ``null``). The file answered, unintelligibly.
