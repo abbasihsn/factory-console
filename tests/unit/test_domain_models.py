@@ -424,6 +424,7 @@ def test_run_state_members_are_exactly_these() -> None:
         "needs_human",
         "unknown",
         "absent",
+        "unreadable",
     ]
 
 
@@ -442,11 +443,15 @@ def test_run_state_values_mirror_the_name_their_source_uses() -> None:
     assert RunState.flagged.value == "flagged"
     assert RunState.failed.value == "failed"
     assert RunState.needs_human.value == "needs_human"
-    # Named by no source: no run-state source present, or it could not be read.
+    # Named by no source: no run-state source present, one that vanished, or one
+    # whose content could not be understood.
     assert RunState.unknown.value == "unknown"
     # Named by no source either — a source resolved and simply does not list
     # this ticket (T80).
     assert RunState.absent.value == "absent"
+    # Named by no source either — a source is THERE and could not be read at all,
+    # so neither "not listed" nor "nothing to find" is honest (T80 amendment 2).
+    assert RunState.unreadable.value == "unreadable"
 
 
 def test_run_state_is_a_str_subclass() -> None:

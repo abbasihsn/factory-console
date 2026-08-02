@@ -3,14 +3,16 @@
 The core v2 safety invariant is that a ticket may be edited ONLY when its factory
 run-state is ``todo`` or ``unknown``. Read ``unknown`` as "no answer this console
 can trust", which is BROADER than "no source on disk": it also covers a source
-that could not be read or parsed, and a source that lists the ticket under a
+that vanished before it could be read, one whose content could not be parsed, a
+source that lists nobody, and a source that lists the ticket under a
 status outside
 :data:`~factory_console.file_adapter.run_state.FACTORY_STATUS_ALIASES` (see
 :func:`~factory_console.file_adapter.run_state.run_state_resolver` for the
 three-way split). Every other state — ``in-flight``/``ready``/``merged`` from the directory form,
 ``in_progress``/``in_part``/``in_submilestone``/``flagged``/``failed``/
-``needs_human`` from the factory's ``run-state.json``, and ``absent`` (a run-state
-source resolved and does not list the ticket at all) — is read-only, matching
+``needs_human`` from the factory's ``run-state.json``, ``absent`` (a run-state
+source resolved and does not list the ticket at all), and ``unreadable`` (a
+run-state source is THERE and could not be read at all) — is read-only, matching
 how ``/factory-reconcile-plan`` treats them (see ``ARCHITECTURE.md`` "Factory
 run-state directory (read-only)"). :func:`_ensure_state_allowed` is the one
 resolution-and-refusal site every gated write passes before touching disk —
@@ -25,7 +27,11 @@ of mechanism: :func:`ensure_deletable` runs the same resolution and raises the s
 error, over :data:`DELETABLE_STATES` — :data:`MUTABLE_STATES` plus ``absent``. See
 that constant for why (T80's amendment: an ungated ``create`` must not mint a ticket
 the console cannot delete). ``absent`` stays out of :data:`MUTABLE_STATES`, so edit
-is unaffected.
+is unaffected. ``unreadable`` is in NEITHER allowlist — it is the one state both
+gates refuse without any recovery path here, because "I could not read the source"
+cannot license a delete the way "the source does not track it" can (T80 amendment
+2): the source we could not read may be the very thing that says a lane owns this
+ticket.
 
 This module REUSES the read-only, source-aware prober
 (:func:`~factory_console.file_adapter.run_state.probe_ticket_state_from_source`)
@@ -62,6 +68,13 @@ MUTABLE_STATES = (RunState.todo, RunState.unknown)
 # ticket unrecoverable through the very UI that created it. Deleting a ticket the
 # run-state does not track cannot orphan a run-state entry, so nothing the factory
 # owns is at risk (T80 amendment, gap 2).
+#
+# ``unreadable`` is deliberately NOT here, and that asymmetry with ``absent`` is why
+# the two are distinct states: ``absent`` licenses the delete because the source WAS
+# read and provably does not track the ticket, so removing it cannot orphan anything.
+# An unreadable source proves nothing — the entry saying a lane owns this ticket may
+# be exactly what could not be read — so delete fails closed alongside edit (T80
+# amendment 2). The recovery is to fix the source's permissions, not to widen this.
 DELETABLE_STATES = (*MUTABLE_STATES, RunState.absent)
 
 
@@ -83,20 +96,36 @@ class TicketNotMutable(FactoryConsoleError):
     error never discloses a path" — the path is already public on this API via
     ``GET /api/v1/project``'s ``runStateSource.path``.
 
-    ``source_path`` is optional and used ONLY to phrase a distinct message for
-    :attr:`RunState.absent`: unlike the other read-only states (which name a real
-    lifecycle a factory lane put the ticket in), ``absent`` means the resolved
-    run-state source was consulted and simply does not mention this ticket — an
-    operator seeing the refusal needs to know WHICH file was consulted, since the
-    answer is "the file you are not looking at" (T80 step 4 mandates naming it).
-    Every other state keeps the generic message; ``details`` is identical in shape
+    ``source_path`` is optional and used ONLY to phrase a distinct message for the
+    TWO states that are about the SOURCE rather than about a lifecycle a factory lane
+    put the ticket in — :attr:`RunState.absent` and :attr:`RunState.unreadable`. In
+    both, an operator seeing the refusal needs to know WHICH file was consulted, since
+    the answer is about "the file you are not looking at" (T80 step 4 mandates naming
+    it for ``absent``; amendment 2 extends that to ``unreadable``). The two messages
+    are deliberately different, because the problems and their fixes are: ``absent``
+    is "the source was read and does not list this ticket" (seed it, or delete it),
+    while ``unreadable`` is "the source is there and could not be read" (fix its
+    permissions) — and unlike ``absent``, ``unreadable`` refuses the delete too, so
+    the message must not offer it. Every other state keeps the generic message;
+    ``details`` is identical in shape
     either way, so a client that switches on ``runState`` never has to parse prose.
     """
 
     def __init__(
         self, ticket_id: str, run_state: RunState, *, source_path: Path | None = None
     ) -> None:
-        if run_state is RunState.absent and source_path is not None:
+        if run_state is RunState.unreadable and source_path is not None:
+            # "will not write to it": unlike the ``absent`` branch below, BOTH writes
+            # are refused here, so this message must not point at delete as a way out.
+            # It names the source and the failure MODE (could not be read) rather than
+            # the ticket's tracking status — an operator who reads "not known to the
+            # run-state" goes looking for a missing ticket entry, when the fix is a
+            # permission on the path named here.
+            message = (
+                f"The run-state at {source_path} could not be read, so the console "
+                f"will not write to {ticket_id}"
+            )
+        elif run_state is RunState.absent and source_path is not None:
             # "will not EDIT it", not "will not write it". This branch is reachable
             # only from :func:`ensure_mutable`, because ``absent`` is inside
             # :data:`DELETABLE_STATES` — so by construction a delete of this same
@@ -158,7 +187,9 @@ def ensure_deletable(project: Project, ticket_id: str) -> RunState:
     ``unknown``), and without this gate the console could create a
     ticket it could never remove. Edit remains refused for ``absent`` via
     :func:`ensure_mutable`; the two allowlists are separate precisely so widening
-    delete cannot widen edit.
+    delete cannot widen edit. The widening stops at ``absent``: a source that could
+    not be READ (:attr:`RunState.unreadable`) refuses the delete too, because it
+    proves nothing about whether the factory tracks this ticket.
 
     Raises:
         TicketNotMutable: if the resolved state is not in :data:`DELETABLE_STATES`

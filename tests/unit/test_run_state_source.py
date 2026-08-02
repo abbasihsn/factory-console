@@ -24,6 +24,7 @@ stays green UNMODIFIED — that is the compatibility claim.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -38,6 +39,7 @@ from factory_console.file_adapter.run_state import (
     read_json_run_state,
     run_state_resolver,
 )
+from factory_console.file_adapter.write_gate import DELETABLE_STATES, MUTABLE_STATES
 
 # The committed factory-shaped fixture, resolved relative to this file so the
 # suite is path-independent.
@@ -292,6 +294,26 @@ def test_a_malformed_file_yields_unknown_for_every_ticket_without_raising(
         assert probe_ticket_state_from_source(source, ticket_id) is RunState.unknown
 
 
+def test_non_utf8_bytes_stay_unknown_rather_than_unreadable(tmp_path: Path) -> None:
+    # The boundary of T80 amendment 2 on the JSON form, and the guard against
+    # over-widening it: these bytes WERE read, they simply are not text this console
+    # can decode. That is a CONTENT problem, exactly like the invalid JSON above, and
+    # content problems keep the mutable `unknown` — only a failure to read the bytes
+    # at all fails closed. A file the factory wrote in the wrong encoding must not
+    # turn the whole project read-only.
+    factory_dir = tmp_path / ".factory"
+    factory_dir.mkdir(parents=True)
+    path = factory_dir / "run-state.json"
+    path.write_bytes(b'{"version": 1, "tickets": {"T\xff1": {}}}')
+
+    parsed = read_json_run_state(path)
+    assert parsed.readable is False
+    assert parsed.unreadable is False
+
+    source = RunStateSource(kind="json", path=path)
+    assert probe_ticket_state_from_source(source, "T01") is RunState.unknown
+
+
 def test_an_entry_without_a_usable_status_is_skipped_but_its_siblings_survive(
     tmp_path: Path,
 ) -> None:
@@ -356,12 +378,54 @@ def test_a_single_entry_still_makes_other_ids_absent(tmp_path: Path) -> None:
     assert probe_ticket_state_from_source(source, "T02") is RunState.absent
 
 
-def test_an_unreadable_json_source_yields_unknown(tmp_path: Path) -> None:
+def test_a_vanished_json_source_yields_unknown(tmp_path: Path) -> None:
+    # A file that is NOT THERE — nothing exists to be hiding a `merged` entry, so this
+    # is indistinguishable from a project with no source at all and stays MUTABLE. The
+    # name matters: this is the vanished case, not the unreadable one below, and T80's
+    # second amendment turns on telling the two apart.
     missing = tmp_path / ".factory" / "run-state.json"
-    assert read_json_run_state(missing) == JsonRunState(readable=False), (
+    parsed = read_json_run_state(missing)
+    assert parsed == JsonRunState(readable=False), (
         "a file that vanished between discovery and read must degrade to unknown, "
         "not raise OSError out of the request"
     )
+    assert parsed.unreadable is False
+
+    source = RunStateSource(kind="json", path=missing)
+    for ticket_id in ("T01", "T99"):
+        assert probe_ticket_state_from_source(source, ticket_id) is RunState.unknown
+    assert run_state_resolver(source)("T01") is RunState.unknown
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+def test_a_json_source_that_cannot_be_read_yields_unreadable(tmp_path: Path) -> None:
+    # T80 amendment 2, the JSON form's half. The file EXISTS and its bytes cannot be
+    # read (chmod 000 — the factory wrote it under a different uid). "I could not
+    # look", never "there is nothing to find": it may be recording this ticket as
+    # `merged`, so every id resolves the refusing `unreadable` and BOTH write gates
+    # say no. Before this, the same EACCES resolved the mutable `unknown` and granted
+    # the write precisely because the check could not run.
+    path = _place_json(
+        tmp_path, json.dumps({"version": 1, "tickets": {"T01": {"status": "merged"}}})
+    )
+    path.chmod(0o000)
+    source = RunStateSource(kind="json", path=path)
+    try:
+        parsed = read_json_run_state(path)
+        probed = probe_ticket_state_from_source(source, "T01")
+        resolved = [run_state_resolver(source)(tid) for tid in ("T01", "T99")]
+    finally:
+        path.chmod(0o644)
+
+    assert parsed.readable is False
+    assert parsed.unreadable is True
+    # The single-ticket prober and the batch resolver must not answer differently.
+    assert probed is RunState.unreadable
+    assert resolved == [RunState.unreadable, RunState.unreadable]
+    # Distinguishable from `absent` on the STATE, and refused for edit AND delete.
+    assert probed is not RunState.absent
+    assert probed not in MUTABLE_STATES
+    assert probed not in DELETABLE_STATES
 
 
 # --------------------------------------------------------------------------- #

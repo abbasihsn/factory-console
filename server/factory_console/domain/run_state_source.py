@@ -18,7 +18,9 @@ not classify it" from "not listed" and so decides
 ``readable``, whether the file could be trusted at all. The last two are read
 TOGETHER — an empty ``known_ticket_ids`` means "the file lists nobody" only when
 ``readable`` is true — because a file that could not be parsed must never resolve
-``absent`` for every ticket and lock the project read-only (T80).
+``absent`` for every ticket and lock the project read-only (T80). A FIFTH flag,
+``unreadable``, narrows the ``readable=False`` case to the one that must fail
+CLOSED: the file's bytes could not be read at all (T80 amendment 2).
 """
 
 from __future__ import annotations
@@ -66,6 +68,19 @@ class JsonRunState(BaseModel):
     stays ``unknown`` for every ticket queried (not ``absent``): a run-state file
     the console cannot trust is a source-level problem ("I could not tell"), not
     grounds to refuse edits to every ticket in the project.
+
+    ``unreadable`` splits that degraded case in two, and only the FIRST of them
+    fails closed. It is ``True`` only when the file's BYTES could not be read (an
+    ``OSError`` that is not "the file is not there" — ``EACCES``, ``EIO``,
+    ``EISDIR``), which resolves :attr:`RunState.unreadable` for every ticket and is
+    refused by both write gates: a source that exists and will not be read may be
+    hiding a ``merged`` entry, and granting a write because a permission error
+    prevented the check is the one direction this console does not fail. It stays
+    ``False`` for a file that VANISHED (``ENOENT``/``ENOTDIR`` — nothing is there to
+    be unreadable, so it is indistinguishable from having no source) and for one
+    whose bytes WERE read and made no sense (non-UTF-8, invalid JSON, no ``tickets``
+    object): those are content problems and keep the mutable ``unknown``.
+    ``unreadable=True`` always implies ``readable=False``; the reverse does not hold.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -74,6 +89,7 @@ class JsonRunState(BaseModel):
     unrecognised: list[str] = []
     known_ticket_ids: frozenset[str] = frozenset()
     readable: bool = True
+    unreadable: bool = False
 
 
 # The run-state artifact locations, project-relative, in probe order (highest

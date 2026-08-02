@@ -1,8 +1,8 @@
 """Unit tests for the read-only factory run-state prober.
 
 Exercises :func:`find_run_state_dir` (fallback probe order) and
-:func:`probe_ticket_state` (marker precedence, the ``unknown``/``absent``
-defaults, and the defense-in-depth path-traversal guard), building run-state
+:func:`probe_ticket_state` (marker precedence, the ``unknown``/``absent``/
+``unreadable`` defaults, and the defense-in-depth path-traversal guard), building run-state
 trees on the fly under ``tmp_path``. A final GUARD test parses this module's
 target source and asserts the read-only invariant: it contains no
 filesystem-mutating call.
@@ -137,11 +137,23 @@ def test_a_vanished_dir_resolves_to_unknown_not_absent(tmp_path: Path) -> None:
     not_a_dir.write_text("not a directory", encoding="utf-8")
     assert probe_ticket_state(not_a_dir, "CAD-118") is RunState.unknown
 
+    # T80 amendment 2 draws its line HERE, and this is the side that stays mutable: a
+    # source that is not there is "I looked and there is nothing to find", the same as
+    # having no source at all. Only a source that IS there and refuses to be read ("I
+    # could not look") becomes the refusing `unreadable`. The batch form must agree,
+    # since it settles this question once at construction.
+    assert probe_ticket_state(tmp_path / "gone", "CAD-118") in write_gate.MUTABLE_STATES
+    resolve = run_state_resolver(RunStateSource(kind="directory", path=tmp_path / "gone"))
+    assert resolve("CAD-118") is RunState.unknown
+
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
-def test_an_unreadable_dir_resolves_to_unknown_not_absent(tmp_path: Path) -> None:
-    # The same "cannot be trusted -> unknown" rule for a directory that EXISTS but
-    # cannot be stat'ed (the factory created it mode-0700 under a different uid).
+def test_an_unreadable_dir_refuses_writes_and_is_distinct_from_absent(tmp_path: Path) -> None:
+    # T80 amendment 2, the OPPOSITE rule to the vanished directory above. This one
+    # EXISTS and cannot be stat'ed (the factory created it mode-0700 under a different
+    # uid): "I could not look", not "there is nothing to find". It may be hiding a
+    # `merged` marker, so it must not resolve the mutable `unknown` — that granted a
+    # write precisely because the check could not run.
     # ``Path.exists()`` only swallows ENOENT/ENOTDIR/EBADF/ELOOP, so on EACCES it
     # RAISES — without the OSError guard in probe_ticket_state this escapes the
     # read-only prober and 500s every list/read/write request for the project.
@@ -149,9 +161,18 @@ def test_an_unreadable_dir_resolves_to_unknown_not_absent(tmp_path: Path) -> Non
     (run_state_dir / "todo").mkdir(parents=True)
     run_state_dir.chmod(0o000)
     try:
-        assert probe_ticket_state(run_state_dir, "CAD-118") is RunState.unknown
+        state = probe_ticket_state(run_state_dir, "CAD-118")
     finally:
         run_state_dir.chmod(0o755)
+
+    assert state is RunState.unreadable
+    # Distinguishable from `absent` on the STATE, not on message text: an operator
+    # (and a client switching on runState) can tell "could not read" from "not listed".
+    assert state is not RunState.absent
+    # Refused for BOTH writes — unlike `absent`, which stays deletable, an unreadable
+    # source proves nothing about whether the factory tracks this ticket.
+    assert state not in write_gate.MUTABLE_STATES
+    assert state not in write_gate.DELETABLE_STATES
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
@@ -162,7 +183,8 @@ def test_an_unreadable_dir_is_reported_once_per_resolver_not_once_per_ticket(
     # unreadable file once. The directory form probes per ticket, so the SOURCE-level
     # readability question is settled once in run_state_resolver: a 200-ticket list
     # projection against an unstattable run-state dir must not emit 200 identical
-    # warnings. Every ticket must still answer the mutable `unknown`.
+    # warnings. Every ticket must answer the refusing `unreadable`, and the batch form
+    # must agree with the single-ticket probe above.
     run_state_dir = tmp_path / "run-state"
     (run_state_dir / "todo").mkdir(parents=True)
     run_state_dir.chmod(0o000)
@@ -173,7 +195,7 @@ def test_an_unreadable_dir_is_reported_once_per_resolver_not_once_per_ticket(
     finally:
         run_state_dir.chmod(0o755)
 
-    assert states == [RunState.unknown] * 20
+    assert states == [RunState.unreadable] * 20
     assert len([r for r in caplog.records if "run-state" in r.getMessage()]) == 1
 
 
@@ -226,16 +248,23 @@ def test_unenumerable_state_dirs_do_not_read_as_vacuous(
             # The marker is still readable by `exists()`, so the ticket a lane owns
             # must keep its read-only state rather than fall into the mutable set.
             merged_state = resolve("CAD-1")
-            # An id with no marker stays the mutable `unknown`: "I could not tell"
-            # never hardens into the refusing `absent`.
+            # An id with no marker is `unreadable`, not `unknown`: the marker it needs
+            # could be sitting in the very subdirectory that would not open, so "I
+            # could not tell" must not license a write (T80 amendment 2). It is not
+            # `absent` either — the source never said "not listed".
             unmarked_state = resolve("CAD-118")
             probed = probe_ticket_state(run_state_dir, "CAD-1")
+            unmarked_probed = probe_ticket_state(run_state_dir, "CAD-118")
     finally:
         for state in ("merged", "ready", "in-flight", "todo"):
             (run_state_dir / state).chmod(0o755)
 
     assert merged_state is RunState.merged
-    assert unmarked_state is RunState.unknown
+    assert unmarked_state is RunState.unreadable
+    assert unmarked_state not in write_gate.MUTABLE_STATES
+    assert unmarked_state not in write_gate.DELETABLE_STATES
+    # The single-ticket prober must agree here too, or one filesystem answers two ways.
+    assert unmarked_probed is RunState.unreadable
     # The single-ticket prober must agree with the batch form, as everywhere else.
     assert probed is RunState.merged
     # A degradation that widens the write gate has to leave a trace — unlike the
@@ -277,7 +306,7 @@ def test_a_non_searchable_state_dir_does_not_hide_a_readable_marker(tmp_path: Pa
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
-def test_an_unmarked_id_in_a_partly_unreadable_dir_resolves_unknown_and_is_reported_once(
+def test_an_unmarked_id_in_a_partly_unreadable_dir_is_refused_and_reported_once(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     # The resolver's own per-ticket `except OSError` — the branch neither sibling test
@@ -286,9 +315,10 @@ def test_an_unmarked_id_in_a_partly_unreadable_dir_resolves_unknown_and_is_repor
     # the directory and the canary are fine, `_directory_lists_any_ticket` succeeds and
     # says the source lists somebody, and only `_marker_state` fails — for an id with
     # no readable marker anywhere, so it exhausts the precedence walk and re-raises.
-    # Two things must hold, and nothing pinned either: the id degrades to the mutable
-    # `unknown` rather than hardening into the refusing `absent` (a partly unreadable
-    # source is "I could not tell"), and the warning is emitted ONCE per resolver even
+    # Two things must hold: the id resolves the refusing `unreadable` rather than
+    # either the mutable `unknown` (a partly unreadable source is "I could not look",
+    # and must not license a write — T80 amendment 2) or `absent` (the source never
+    # answered "not listed"), and the warning is emitted ONCE per resolver even
     # across many such ids — a 200-ticket projection must not emit 200 identical lines.
     run_state_dir = tmp_path / "run-state"
     for state in ("merged", "ready", "in-flight", "todo"):
@@ -307,12 +337,13 @@ def test_an_unmarked_id_in_a_partly_unreadable_dir_resolves_unknown_and_is_repor
     finally:
         (run_state_dir / "merged").chmod(0o755)
 
-    assert first is RunState.unknown
-    assert second is RunState.unknown
+    assert first is RunState.unreadable
+    assert second is RunState.unreadable
     # The gate consequence, asserted as behaviour rather than as wording: an id the
-    # console could not resolve stays writable, it does not become a 409.
-    assert first in write_gate.MUTABLE_STATES
-    assert first in write_gate.DELETABLE_STATES
+    # console could not resolve is refused BOTH writes. Before amendment 2 this was
+    # `unknown` and therefore editable — a write granted because the check failed.
+    assert first not in write_gate.MUTABLE_STATES
+    assert first not in write_gate.DELETABLE_STATES
     unreadable = [r for r in caplog.records if "could not be read (the directory" in r.getMessage()]
     assert len(unreadable) == 1
 

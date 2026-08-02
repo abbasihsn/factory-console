@@ -179,15 +179,18 @@ def _directory_lists_any_ticket(run_state_dir: Path) -> bool | None:
     or ``None`` for "I could not tell" — at least one state subdirectory exists but
     could not be enumerated. The three-way return is the point: collapsing ``None``
     into ``False`` would report an UNREADABLE source as a VACUOUS one, and the two
-    must not share an answer at the call sites below. A run-state directory whose
-    state subdirectories are traversable but not readable (mode ``0711``, or created
-    by the factory under a different uid) passes every ``exists()``/``is_dir()``
-    guard — those need only ``+x`` on the parent — while every ``iterdir()`` raises
-    ``EACCES``. Read as ``False``, that made :func:`run_state_resolver` short-circuit
-    to a constant mutable ``unknown`` for EVERY ticket, silently disabling the write
-    gate on a project whose markers say ``merged``/``in-flight``. Read as ``None``,
-    the caller falls back to probing the markers themselves, which ``exists()`` can
-    still do.
+    now resolve to opposite gate answers (the refusing :attr:`RunState.unreadable`
+    versus the mutable ``unknown``), so they must not share an answer at the call
+    sites below. A run-state directory whose state subdirectories are traversable but
+    not readable (mode ``0711``, or created by the factory under a different uid)
+    passes every ``exists()``/``is_dir()`` guard — those need only ``+x`` on the
+    parent — while every ``iterdir()`` raises ``EACCES``. Read as ``False``, that made
+    :func:`run_state_resolver` short-circuit to a constant mutable ``unknown`` for
+    EVERY ticket, silently disabling the write gate on a project whose markers say
+    ``merged``/``in-flight``. Read as ``None``, the caller falls back to probing the
+    markers themselves, which ``exists()`` can still do — so a ticket the directory
+    DOES name still resolves its real state, and only an id with no readable marker
+    is refused.
 
     This is the directory form's answer to "does this source list anybody at all?" —
     the question that separates :attr:`RunState.absent` ("the source lists others and
@@ -197,8 +200,9 @@ def _directory_lists_any_ticket(run_state_dir: Path) -> bool | None:
     nobody says nothing about anybody: every ticket must stay mutable, exactly as
     if there were no source at all. Without this, a freshly created (empty) run-state
     directory would resolve ``absent`` for every ticket and lock the whole project
-    read-only — the same project-wide lockout the unreadable/vanished guards exist
-    to prevent.
+    read-only — the same project-wide lockout the vanished guard exists to prevent.
+    An UNREADABLE source (``None``) is the one case where a project-wide refusal is
+    the right answer, which is precisely why it must not be reported as vacuity.
 
     Each state subdirectory is FILTERED only until its first TICKET marker
     (:func:`_is_ticket_marker_name`), so a populated run-state directory holding
@@ -254,11 +258,15 @@ def _marker_state(run_state_dir: Path, ticket_id: str) -> RunState | None:
     is probed first — so aborting on the first error meant that a single non-searchable
     ``merged/`` (mode ``0600``, or created by the factory under a different uid) made
     EVERY id raise before ``ready``/``in-flight``/``todo`` were ever probed. Both
-    callers map that to the MUTABLE ``unknown``, so one restricted directory silently
-    disabled the write gate for the whole project — including tickets whose markers sit
-    in perfectly readable state directories, the exact outcome
-    :func:`run_state_resolver`'s "it must stay per ticket" comment claims to avoid.
-    Each state is therefore probed independently and the first READABLE hit wins.
+    callers map that to the REFUSED ``unreadable``, so one restricted directory locked
+    the whole project read-only — including tickets whose markers sit in perfectly
+    readable state directories, the exact outcome :func:`run_state_resolver`'s "it must
+    stay per ticket" comment claims to avoid. (Before T80's second amendment the same
+    error mapped to the MUTABLE ``unknown``, so the failure ran the other way and
+    silently disabled the gate; the reason to probe each state independently is
+    unchanged either way — an answer this console can actually read beats a
+    source-level verdict.) Each state is therefore probed independently and the first
+    READABLE hit wins.
 
     Propagates ``OSError`` — the caller decides what an unreadable directory means —
     but only when the walk found nothing AND at least one state could not be read,
@@ -266,14 +274,14 @@ def _marker_state(run_state_dir: Path, ticket_id: str) -> RunState | None:
     could not tell". The original exception is re-raised, not a synthetic one, so the
     callers' existing ``except OSError`` handling is unchanged.
 
-    RESIDUAL, deliberate, and in TWO shapes — both fail-open, both logged so neither
-    is silent:
+    RESIDUAL, deliberate, and in TWO shapes — both logged so neither is silent, and
+    only the second still fails open:
 
     1. The walk finds nothing and a HIGHER-precedence directory was unreadable: the
-       answer is the mutable ``unknown``, which can mask a hidden ``merged`` marker.
-       That is the documented fail-open policy for an untrustworthy source (see
-       :func:`probe_ticket_state`); narrowing it is a gate-policy decision, not a bug
-       fix. Both callers log it.
+       answer is the refusing ``unreadable``, because a marker for this id may be
+       sitting in the directory that would not open. This is where T80's second
+       amendment landed — the answer used to be the mutable ``unknown``, which granted
+       a write on a ticket that could well be ``merged``. Both callers log it.
     2. The walk HITS at a lower precedence than an unreadable directory: the answer is
        that lower state, which may not be the ticket's real one. ``merged`` is probed
        first, so an unreadable ``merged/`` over a stale ``todo/<id>`` reports the
@@ -355,23 +363,30 @@ def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
       empty-but-valid run-state directory into a project-wide read-only lockout.
       A state subdirectory that exists but cannot be ENUMERATED is not read as
       empty: :func:`_directory_lists_any_ticket` answers ``None`` there, which is
-      logged and resolves ``unknown`` for an id with no marker — but only AFTER the
-      marker probe above, which needs just ``+x`` and so still returns the real
-      state for a ticket the directory does name.
+      logged and resolves :attr:`RunState.unreadable` for an id with no marker — but
+      only AFTER the marker probe above, which needs just ``+x`` and so still returns
+      the real state for a ticket the directory does name.
     - A ``run_state_dir`` that is no longer a directory when probed (it vanished or
-      was atomically replaced between discovery in ``load_project`` and this call),
-      or that cannot be read at all (e.g. the factory created it mode-0700 under a
-      different uid, so stat'ing a marker raises ``EACCES``) -> :attr:`RunState.unknown`,
-      NOT ``absent``. This mirrors the JSON form's ``readable=False`` rule in
-      :func:`read_json_run_state`: a source that cannot be trusted must never be read
-      as "definitively lists nothing", which here would turn a transient
-      disappearance into a project-wide read-only lockout (every ticket ``absent``,
-      so every write 409s) instead of the mutable ``unknown``.
+      was atomically replaced between discovery in ``load_project`` and this call)
+      -> :attr:`RunState.unknown`, NOT ``absent``. This mirrors the JSON form's
+      vanished-file rule in :func:`read_json_run_state`: a source that is not there
+      must never be read as "definitively lists nothing", which would turn a
+      transient disappearance into a project-wide read-only lockout (every ticket
+      ``absent``, so every write 409s) instead of the mutable ``unknown``.
+    - A ``run_state_dir`` that IS there and cannot be read at all (e.g. the factory
+      created it mode-0700 under a different uid, so stat'ing a marker raises
+      ``EACCES``) -> :attr:`RunState.unreadable`, which BOTH write gates refuse.
+      This is the one case that does not join ``unknown``: a vanished source and a
+      vacuous one are "I looked and there is nothing to find", while an unreadable
+      one is "I could not look", and it may be hiding a ``merged`` marker. Failing
+      open there would grant a write precisely BECAUSE the check could not run
+      (T80 amendment 2); the refusal names the source path so an operator reads it
+      as a permissions problem, not as "this ticket is not tracked".
 
-      The ``OSError`` guard around the marker loop is what makes that mirroring real
-      rather than partial: ``Path.exists()`` only swallows ``ENOENT``/``ENOTDIR``/
-      ``EBADF``/``ELOOP``, so on ``EACCES`` it RAISES. Without the guard a
-      permission-restricted run-state directory would escape this read-only prober
+      The ``OSError`` guard around the marker loop is what turns that into a
+      decision rather than a crash: ``Path.exists()`` only swallows ``ENOENT``/
+      ``ENOTDIR``/``EBADF``/``ELOOP``, so on ``EACCES`` it RAISES. Without the guard
+      a permission-restricted run-state directory would escape this read-only prober
       as an unmapped 500 on every list/read/write request — the one outcome the
       "NEVER raises for a source-level problem" rule exists to prevent. Only
       :class:`PathTraversal`, raised above before any filesystem access, still
@@ -397,9 +412,11 @@ def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
         # directory names anybody.
         lists_any_ticket = _directory_lists_any_ticket(run_state_dir) if readable else False
     except OSError:
-        # Something under here cannot be read (EACCES and friends). Same answer as a
-        # vanished directory below, for the same reason: an unreadable source is
-        # "I could not tell", never "the source lists nothing".
+        # Something under here EXISTS and cannot be read (EACCES and friends). NOT the
+        # same answer as a vanished directory below: that one is "there is nothing to
+        # find", this one is "I could not look", and only the second can be hiding a
+        # ``merged`` marker. So it resolves the refusing ``unreadable`` — a permission
+        # error must not be the reason a write is granted (T80 amendment 2).
         #
         # The message deliberately does not name WHICH node failed, and deliberately
         # does not say "every ticket" — matching the resolver's twin
@@ -409,14 +426,14 @@ def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
         # attributing an EACCES on the directory to "a state subdirectory" would send
         # an operator to chmod the wrong path; and ``_marker_state`` answers from any
         # state subdirectory it CAN read, so a ticket this directory names still
-        # resolves its real state rather than ``unknown``.
+        # resolves its real state rather than being refused.
         _LOGGER.warning(
             "run-state: %s could not be read (the directory itself or one of its state "
-            "subdirectories); %r resolves unknown",
+            "subdirectories); %r resolves unreadable and is refused a write",
             run_state_dir,
             ticket_id,
         )
-        return RunState.unknown
+        return RunState.unreadable
 
     if not readable:
         # The directory went away after discovery: "I could not tell" (mutable
@@ -428,18 +445,19 @@ def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
     if lists_any_ticket is None:
         # The state subdirectories exist but refuse enumeration, so whether this
         # source lists anybody is unknowable. Logged, unlike the vacuous case below:
-        # this IS a degradation, and it is the one that quietly widens the write gate
-        # (no marker + "could not tell" resolves to the mutable ``unknown``), so it
-        # must leave a trace an operator can find.
+        # this IS a degradation, and an id with no readable marker in a source we
+        # could not enumerate is the "I could not look" case, so it resolves the
+        # refusing ``unreadable`` rather than the mutable ``unknown`` — the marker
+        # this id needs may be sitting in the very subdirectory that would not open.
         # ``%r`` for the id, never ``%s`` — the module-wide convention for a value
         # that reaches a log record from outside (see ``read_json_run_state``), and
         # what the resolver's twin warnings already use.
         _LOGGER.warning(
-            "run-state: %s could not be enumerated; %r resolves unknown",
+            "run-state: %s could not be enumerated; %r resolves unreadable and is refused a write",
             run_state_dir,
             ticket_id,
         )
-        return RunState.unknown
+        return RunState.unreadable
     if not lists_any_ticket:
         # Vacuous source: it lists nobody, so it claims nothing about this id either.
         # Not logged — an empty run-state directory is an ordinary state for a project
@@ -467,11 +485,23 @@ def read_json_run_state(path: Path) -> JsonRunState:
 
     NEVER raises. A run-state file that cannot be trusted is a source-level
     problem, not a request failure — "I could not tell" is the honest answer — so
-    an unreadable file, unparseable JSON, a non-object document, an absent
-    ``tickets`` key, and a ``tickets`` that is not an object (e.g. a list) all
-    yield a :class:`JsonRunState` with ``readable=False``, i.e. :attr:`RunState.unknown`
+    a vanished file, non-UTF-8 bytes, unparseable JSON, a non-object document, an
+    absent ``tickets`` key, and a ``tickets`` that is not an object (e.g. a list)
+    all yield a :class:`JsonRunState` with ``readable=False``, i.e. :attr:`RunState.unknown`
     for every ticket queried, not :attr:`RunState.absent` — a file that cannot be
-    trusted must not be read as "definitively lists nothing". Each case is logged
+    trusted must not be read as "definitively lists nothing".
+
+    ONE failure is not in that list, and it is the one that fails CLOSED: a file
+    that EXISTS whose bytes could not be read (``OSError`` other than
+    ``ENOENT``/``ENOTDIR`` — permission denied, an I/O error) additionally sets
+    ``unreadable=True``, which :func:`run_state_resolver` turns into
+    :attr:`RunState.unreadable` for every ticket, refused by BOTH write gates. "I
+    could not look" is not "there is nothing to find": the file may name this ticket
+    ``merged``, and granting a write because a permission error prevented the check
+    would fail open (T80 amendment 2). A file that is simply GONE is not that case —
+    nothing is there to be hiding anything — so it keeps the mutable ``unknown``,
+    and so do the content failures above, whose bytes were read successfully and
+    merely made no sense. Each case is logged
     at ``warning`` so the degradation leaves a trace. Individual entries that are
     not objects, or that carry a non-string ``status``, are skipped the same way
     without discarding the entries that are fine — but their id still lands in
@@ -480,9 +510,33 @@ def read_json_run_state(path: Path) -> JsonRunState:
     """
     try:
         raw = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        _LOGGER.warning("run-state: %s could not be read; every ticket resolves unknown", path)
+    except (FileNotFoundError, NotADirectoryError):
+        # The file is NOT THERE — it vanished between discovery and this read, or a
+        # path component is not a directory, which amounts to the same thing. Nothing
+        # exists to be unreadable, so this is indistinguishable from a project with no
+        # source at all: the mutable ``unknown``, NOT ``unreadable``. Kept separate
+        # from the ``OSError`` below for exactly that reason, and mirroring the
+        # directory form's "vanished" rule (see :func:`probe_ticket_state`).
+        _LOGGER.warning("run-state: %s is no longer present; every ticket resolves unknown", path)
         return JsonRunState(readable=False)
+    except UnicodeDecodeError:
+        # The bytes WERE read; they are not UTF-8. A content problem, like invalid
+        # JSON below — the source answered, unintelligibly — so it keeps the mutable
+        # ``unknown`` rather than the refusing ``unreadable``.
+        _LOGGER.warning("run-state: %s is not valid UTF-8; every ticket resolves unknown", path)
+        return JsonRunState(readable=False)
+    except OSError:
+        # The file EXISTS and its bytes could not be read (EACCES, EIO, EISDIR). "I
+        # could not look", never "there is nothing to find": this resolves the
+        # refusing ``unreadable`` for every ticket, because a source we cannot read
+        # may be naming this ticket ``merged`` and granting the write because a
+        # permission error stopped us from checking is failing OPEN (T80 amendment 2).
+        _LOGGER.warning(
+            "run-state: %s could not be read; every ticket resolves unreadable and is "
+            "refused a write",
+            path,
+        )
+        return JsonRunState(readable=False, unreadable=True)
     try:
         document = json.loads(raw)
     except (ValueError, RecursionError, MemoryError):
@@ -542,19 +596,26 @@ def probe_ticket_state_from_source(source: RunStateSource | None, ticket_id: str
 
     - ``source is None`` -> :attr:`RunState.unknown` — there is no source to ask.
     - ``kind == "json"`` -> the ticket's entry in the parsed file when one maps
-      to a known state; :attr:`RunState.unknown` when the file could not be
-      trusted at all, when its ``tickets`` object parsed fine and is EMPTY (a
-      vacuous source lists nobody, so it claims nothing about anybody), OR when
-      the id has an entry whose status this console does not recognise;
+      to a known state; :attr:`RunState.unknown` when the file vanished or its
+      content could not be understood, when its ``tickets`` object parsed fine and
+      is EMPTY (a vacuous source lists nobody, so it claims nothing about anybody),
+      OR when the id has an entry whose status this console does not recognise;
       :attr:`RunState.absent` when the file parsed fine, lists at least one
       ticket, and simply has no entry for THIS id — the source resolved and
-      answered "not listed".
+      answered "not listed"; :attr:`RunState.unreadable` when the file is there and
+      its bytes could not be read at all.
     - ``kind == "directory"`` -> the marker precedence :func:`probe_ticket_state`
       reads (via the shared :func:`_marker_state`): :attr:`RunState.absent` when the
       directory lists other tickets but no marker names this id,
       :attr:`RunState.unknown` when it holds no marker for any id at all (the same
-      vacuous rule) or when its state subdirectories could not be enumerated to tell,
-      unchanged otherwise.
+      vacuous rule) or when it is no longer there, :attr:`RunState.unreadable` when
+      it exists and could not be read or enumerated and no marker for this id could
+      be found either, unchanged otherwise.
+
+    :attr:`RunState.unreadable` is the only one of the three unnamed states that
+    BOTH write gates refuse (T80 amendment 2): ``unknown`` and ``absent`` mean the
+    source was consulted, while ``unreadable`` means it was not, and a write must
+    never be granted because the check could not run.
 
     Resolving one ticket re-reads the source, matching ``ARCHITECTURE.md``
     "every request re-reads"; a caller resolving MANY tickets should take a
@@ -565,7 +626,7 @@ def probe_ticket_state_from_source(source: RunStateSource | None, ticket_id: str
             filesystem path segment, and only when that directory is actually
             probed: :func:`run_state_resolver` settles the UNREADABLE-source question
             before any id is validated, so a directory the console cannot read at all
-            answers ``unknown`` for an unsafe id too, without raising. A VACUOUS
+            answers ``unreadable`` for an unsafe id too, without raising. A VACUOUS
             directory does NOT get that treatment — it deliberately falls through to
             the per-ticket closure (see the NOTE in :func:`run_state_resolver`), which
             validates the id first and therefore DOES raise. The JSON path joins no
@@ -606,6 +667,15 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
     if source.kind == "json":
         parsed = read_json_run_state(source.path)
 
+        # The file is there and its bytes could not be read: every ticket resolves the
+        # refusing ``unreadable``, settled once here exactly like ``readable`` and
+        # vacuity. A constant closure is honest — nothing was parsed, so there is no
+        # per-ticket question left to ask — and it is the JSON twin of the directory
+        # form's unreadable-source closure below, which the two forms must not drift
+        # apart on.
+        if parsed.unreadable:
+            return lambda _ticket_id: RunState.unreadable
+
         # A ``tickets`` object that parsed fine and is EMPTY is a vacuous source: it
         # lists nobody, so it makes no claim about anybody. Settled once here (like
         # ``readable``) rather than re-derived per ticket. ``known_ticket_ids`` is
@@ -631,16 +701,31 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
         # a directory that is readable while one of its state subdirectories is not
         # cannot be decided here (see ``reported_unreadable`` below for why that case
         # must stay per ticket, and how its warning is still emitted only once).
-        directory_readable = source.path.is_dir()
-        if directory_readable:
+        directory_present = source.path.is_dir()
+        if directory_present:
             # Called for the OSError, not the answer — bind it so this does not read
             # as a no-op line someone deletes.
             _ = (source.path / _MARKER_PRECEDENCE[0]).exists()
     except OSError:
-        directory_readable = False
-    if not directory_readable:
+        # PRESENT but unreadable, and the two halves of the ``try`` say so in the same
+        # way: ``Path.is_dir()`` swallows ``ENOENT``/``ENOTDIR``/``EBADF``/``ELOOP``
+        # (a directory that is not there answers ``False``, it does not raise), and the
+        # canary only runs once ``is_dir()`` has already said the directory IS there.
+        # So an ``OSError`` from either can only mean "it exists and I could not look"
+        # — never "it vanished" — which is the split T80's second amendment turns on:
+        # this resolves the refusing ``unreadable`` for every ticket, while the
+        # vanished case below stays the mutable ``unknown``.
         _LOGGER.warning(
-            "run-state: %s is not a readable directory; every ticket resolves unknown", source.path
+            "run-state: %s could not be read; every ticket resolves unreadable and is "
+            "refused a write",
+            source.path,
+        )
+        return lambda _ticket_id: RunState.unreadable
+    if not directory_present:
+        # The path is not a directory (any more): nothing is there to be hiding a
+        # marker, so this is indistinguishable from a project with no source at all.
+        _LOGGER.warning(
+            "run-state: %s is not a directory; every ticket resolves unknown", source.path
         )
         return lambda _ticket_id: RunState.unknown
 
@@ -670,21 +755,27 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
         # gate on a project whose markers say ``merged``. Fall through to the per-ticket
         # probe instead: ``_marker_state`` only needs ``+x``, so a ticket the directory
         # DOES name still resolves its real, read-only state, and only an id with no
-        # marker gets the mutable ``unknown``. Logged once per resolver, like the
-        # unreadable case above.
+        # marker gets the refusing ``unreadable``. Logged once per resolver, like the
+        # unreadable-source case above.
         _LOGGER.warning(
-            "run-state: %s could not be enumerated; only tickets with a marker resolve",
+            "run-state: %s could not be enumerated; tickets with no readable marker "
+            "resolve unreadable and are refused a write",
             source.path,
         )
 
     lists_someone = lists_any_ticket is True
+    # Separate from ``lists_someone``: an unenumerable source cannot answer "does it
+    # list you?" at all, so an id with no marker is "I could not look" (refused), not
+    # "it lists nobody" (mutable). Carried into the closure rather than re-derived,
+    # since vacuity is settled once here.
+    enumeration_failed = lists_any_ticket is None
     # The readability canary above stats only ``_MARKER_PRECEDENCE[0]``, so it catches
     # an unreadable run-state dir but NOT one whose individual state subdirectories
     # differ (``merged`` readable, ``ready`` mode-0000). That case can only surface per
     # ticket, inside ``_marker_state`` — and it must stay per ticket, because widening
-    # the canary to every state would answer a constant mutable ``unknown`` for the
-    # whole project the moment one subdirectory is restricted, silently disabling the
-    # gate for the tickets whose markers ARE readable. What must not be per ticket is
+    # the canary to every state would answer a constant ``unreadable`` for the whole
+    # project the moment one subdirectory is restricted, refusing every write to the
+    # tickets whose markers ARE readable and resolve ``todo``. What must not be per ticket is
     # the WARNING: a 200-ticket projection would otherwise emit 200 identical lines,
     # breaking this function's "settled once, logged once" guarantee exactly when an
     # operator needs one clear signal. So the degradation is reported once per resolver.
@@ -742,11 +833,11 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
                 _LOGGER.warning(
                     "run-state: %s could not be read (the directory itself or one of "
                     "its state subdirectories); every ticket with no readable marker "
-                    "(first: %r) resolves unknown",
+                    "(first: %r) resolves unreadable and is refused a write",
                     source.path,
                     ticket_id,
                 )
-            return RunState.unknown
+            return RunState.unreadable
         if not still_a_directory:
             # Logged once per resolver, like every other degradation settled here: a
             # 200-ticket projection must not emit 200 identical lines.
@@ -760,8 +851,12 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
                 )
             return RunState.unknown
         # No marker: ``absent`` only when the source is known to list SOMEONE. When
-        # vacuity is unknowable (``lists_any_ticket is None``) this is the mutable
-        # ``unknown``, matching ``probe_ticket_state``.
-        return RunState.absent if lists_someone else RunState.unknown
+        # the enumeration FAILED this is the refusing ``unreadable`` — the marker this
+        # id needs may be in the subdirectory that would not open — and when the source
+        # genuinely lists nobody it is the mutable ``unknown``. All three match
+        # ``probe_ticket_state``'s tail, which the two forms must not drift apart on.
+        if lists_someone:
+            return RunState.absent
+        return RunState.unreadable if enumeration_failed else RunState.unknown
 
     return resolve_directory

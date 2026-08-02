@@ -71,14 +71,18 @@ describe('RunStateBadge', () => {
 
 		const pill = screen.getByText('Unknown');
 		// The tooltip must cover EVERY way the server answers `unknown` — no source,
-		// or a source it could not read/parse/understand — not just the first.
+		// a source that vanished, one that lists nobody, one whose content made no
+		// sense — not just the first. It must NOT claim "could not be read": since
+		// T80's second amendment that is a different state (`unreadable`) with a
+		// different consequence, and saying it here would send an operator whose
+		// run-state.json is merely corrupt hunting a permissions problem.
 		expect(pill.getAttribute('title')).toBe(
-			'No run-state source for this project, or its source could not be read or understood'
+			'No run-state source for this project, or its source could not be understood'
 		);
 		expect(container.querySelector('span')).toMatchInlineSnapshot(`
 			<span
 			  class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-slate-100 text-slate-500"
-			  title="No run-state source for this project, or its source could not be read or understood"
+			  title="No run-state source for this project, or its source could not be understood"
 			>
 			  Unknown
 			</span>
@@ -102,6 +106,34 @@ describe('RunStateBadge', () => {
 			  Not listed
 			</span>
 		`);
+	});
+
+	// T80 amendment 2: `unreadable` is distinct from BOTH of its unnamed siblings —
+	// the source is there and could not be read, so the console refuses every write
+	// to the ticket until that is fixed. The tooltip carries the fix, and the pill is
+	// deliberately not slate: this is the only one of the three an operator must act
+	// on.
+	it('renders the unreadable variant, distinctly from unknown and absent', () => {
+		const { container } = render(RunStateBadge, { props: { runState: 'unreadable' } });
+
+		const pill = screen.getByText('Unreadable');
+		expect(pill.getAttribute('title')).toBe(
+			'The run-state source could not be read (check its permissions) — writes are refused'
+		);
+		expect(container.querySelector('span')).toMatchInlineSnapshot(`
+			<span
+			  class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-red-50 text-red-800 ring-1 ring-red-300"
+			  title="The run-state source could not be read (check its permissions) — writes are refused"
+			>
+			  Unreadable
+			</span>
+		`);
+
+		const classes = (state: RunState) =>
+			render(RunStateBadge, { props: { runState: state } }).container.querySelector('span')
+				?.className;
+		expect(classes('unreadable')).not.toBe(classes('unknown'));
+		expect(classes('unreadable')).not.toBe(classes('absent'));
 	});
 
 	// The six states only the factory's run-state.json names. Each must render a

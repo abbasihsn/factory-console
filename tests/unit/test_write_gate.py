@@ -20,10 +20,17 @@ nobody and so resolves the mutable ``unknown`` for every id (with the
 one-entry-only cases asserted alongside as the guard against over-correcting),
 and :func:`ensure_deletable` permits ``absent`` where :func:`ensure_mutable`
 refuses it, so an ungated ``create`` cannot mint an undeletable ticket.
+
+T80's SECOND amendment adds the axis that fails closed: a source that EXISTS and
+cannot be READ resolves ``unreadable``, which BOTH gates refuse — asserted here on
+the resolved state (so it is distinguishable from ``absent``) and on the refusal
+naming the source path, with the "no source at all stays mutable" and "a vacuous
+source stays mutable" cases above standing as its regression guards.
 """
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -306,6 +313,92 @@ def test_ensure_deletable_still_refuses_every_other_read_only_state() -> None:
         assert exc_info.value.details == {"ticketId": ticket_id, "runState": state.value}
 
 
+# --------------------------------------------------------------------------- #
+# unreadable (T80 amendment 2) — a source that EXISTS and cannot be read is
+# refused BOTH writes, distinguishably from absent
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
+def test_an_unreadable_directory_source_refuses_edit_and_delete(tmp_path: Path) -> None:
+    # The regression this amendment exists for: before it, a chmod-000 run-state
+    # directory resolved the MUTABLE `unknown`, so every write was granted precisely
+    # because the gate could not check. It must now refuse both writes, and the
+    # refusal must name the source path — an operator has to know this is a
+    # permissions problem on that path, not a missing ticket entry.
+    run_state_dir = tmp_path / "project" / ".factory" / "run-state"
+    (run_state_dir / "todo").mkdir(parents=True)
+    (run_state_dir / "todo" / "T01").write_text("", encoding="utf-8")
+    project = _project_with_run_state_dir(run_state_dir)
+    run_state_dir.chmod(0o000)
+    try:
+        with pytest.raises(TicketNotMutable) as edit_exc:
+            ensure_mutable(project, "T01")
+        with pytest.raises(TicketNotMutable) as delete_exc:
+            ensure_deletable(project, "T01")
+    finally:
+        run_state_dir.chmod(0o755)
+
+    for exc_info in (edit_exc, delete_exc):
+        exc = exc_info.value
+        assert exc.code == "ticket_not_mutable"
+        assert exc.status == 409
+        # The resulting STATE is the assertion that distinguishes this from `absent`;
+        # the message is only checked for the path it must name.
+        assert exc.details == {"ticketId": "T01", "runState": RunState.unreadable.value}
+        assert str(run_state_dir) in exc.message
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+def test_an_unreadable_json_source_refuses_edit_and_delete(tmp_path: Path) -> None:
+    # The JSON form of the same rule. `T01` is recorded `todo` — editable if the file
+    # could be read — so this pins that the refusal comes from the unreadability and
+    # not from the ticket's recorded state.
+    project = _project_with_run_state_json(
+        tmp_path / "project" / ".factory" / "run-state.json",
+        '{"version": 1, "tickets": {"T01": {"status": "todo", "pr_url": null}}}',
+    )
+    json_path = tmp_path / "project" / ".factory" / "run-state.json"
+    json_path.chmod(0o000)
+    try:
+        with pytest.raises(TicketNotMutable) as edit_exc:
+            ensure_mutable(project, "T01")
+        with pytest.raises(TicketNotMutable) as delete_exc:
+            ensure_deletable(project, "T01")
+    finally:
+        json_path.chmod(0o644)
+
+    for exc_info in (edit_exc, delete_exc):
+        assert exc_info.value.details == {
+            "ticketId": "T01",
+            "runState": RunState.unreadable.value,
+        }
+        assert str(json_path) in exc_info.value.message
+
+
+def test_the_unreadable_refusal_reads_differently_from_the_absent_one() -> None:
+    # Amendment 2 requires the two refusals to be TOLD APART. The state is what a
+    # client switches on and is asserted everywhere else; here — once, in the one
+    # place that is about the operator-facing prose — the two messages are asserted
+    # to differ, because "could not be read" and "not listed" are different problems
+    # with different fixes, and `absent` additionally offers the delete that
+    # `unreadable` refuses.
+    absent = TicketNotMutable("T01", RunState.absent, source_path=Path("/p/run-state.json"))
+    unreadable = TicketNotMutable("T01", RunState.unreadable, source_path=Path("/p/run-state.json"))
+
+    assert absent.message != unreadable.message
+    assert absent.details != unreadable.details
+    assert str(Path("/p/run-state.json")) in unreadable.message
+
+
+def test_unreadable_is_in_neither_allowlist() -> None:
+    # The structural half, so widening either tuple has to be deliberate. Unlike
+    # `absent`, `unreadable` is not deletable: a source we could not read proves
+    # nothing about whether the factory tracks this ticket.
+    assert RunState.unreadable not in MUTABLE_STATES
+    assert RunState.unreadable not in DELETABLE_STATES
+
+
 def test_absent_is_deletable_but_not_mutable_at_the_allowlist_level() -> None:
     # The structural half of the same fact, so a future edit to either tuple has to
     # be deliberate: `absent` is in DELETABLE_STATES and NOT in MUTABLE_STATES.
@@ -335,6 +428,19 @@ def _project_and_id_for(state: RunState) -> tuple[Project, str]:
     if state is RunState.unknown:
         # unknown is only reachable with no run-state dir on disk.
         return _make_project(run_state_dir=None), "CAD-131"
+    if state is RunState.unreadable:
+        # A source that EXISTS and whose bytes cannot be read. Reached here without
+        # chmod — which would skip under root and leave a mode-000 path behind for
+        # pytest's tmp_path cleanup — by pointing the JSON form at a DIRECTORY:
+        # ``read_text`` raises ``IsADirectoryError``, an OSError that is not "the file
+        # is not there", which is exactly the condition amendment 2 refuses.
+        return (
+            _make_project(
+                run_state_dir=None,
+                run_state_source=RunStateSource(kind="json", path=_FIXTURE_ROOT / ".factory"),
+            ),
+            "CAD-131",
+        )
     if state is RunState.absent:
         return _make_project(run_state_dir=_FIXTURE_RUN_STATE_DIR), _ABSENT_DIRECTORY_ID
     if state is RunState.todo:

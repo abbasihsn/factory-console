@@ -22,7 +22,11 @@ describe('isEditable', () => {
 		// T80: absent is refused too — distinct from unknown, which stays
 		// editable (no run-state source at all vs. a source that resolved and
 		// simply does not list this ticket).
-		['absent', false]
+		['absent', false],
+		// T80 amendment 2: `unreadable` is refused too, and for the opposite reason to
+		// `unknown` — a source that EXISTS and could not be read may be hiding a
+		// `merged` marker, so the UI must not offer an edit the server will 409.
+		['unreadable', false]
 	] as const)('%s -> %s', (runState: RunState, expected: boolean) => {
 		expect(isEditable(runState)).toBe(expected);
 	});
@@ -48,7 +52,12 @@ describe('isDeletable', () => {
 		['in_submilestone', false],
 		['flagged', false],
 		['failed', false],
-		['needs_human', false]
+		['needs_human', false],
+		// And the widening stops AT `absent`: `unreadable` is in neither server
+		// allowlist, because "the source could not be read" proves nothing about
+		// whether the factory tracks this ticket, where "the source does not list it"
+		// proves the delete is harmless (T80 amendment 2).
+		['unreadable', false]
 	] as const)('%s -> %s', (runState: RunState, expected: boolean) => {
 		expect(isDeletable(runState)).toBe(expected);
 	});
@@ -69,7 +78,8 @@ describe('isDeletable', () => {
 			'in_submilestone',
 			'flagged',
 			'failed',
-			'needs_human'
+			'needs_human',
+			'unreadable'
 		];
 		const differing = states.filter((s) => isDeletable(s) !== isEditable(s));
 

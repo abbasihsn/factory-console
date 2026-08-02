@@ -13,11 +13,12 @@ contributed it uses, not one canonical spelling:
 
 ``unknown`` belongs to neither source: it is the "no answer this console can
 trust" catch-all, which is BROADER than "no run-state source on disk". It also
-covers a source that could not be read or parsed, a source that resolved and
-lists NO ticket at all (a VACUOUS source — an empty marker directory, or a
-``run-state.json`` whose ``tickets`` object parsed and is empty; a source that
-names nobody says nothing about anybody), and a ticket the source DOES list under
-a status outside
+covers a source whose bytes were read but could not be PARSED or understood
+(unparseable JSON, no ``tickets`` object, non-UTF-8 content), a source that
+resolved and lists NO ticket at all (a VACUOUS source — an empty marker
+directory, or a ``run-state.json`` whose ``tickets`` object parsed and is empty;
+a source that names nobody says nothing about anybody), and a ticket the source
+DOES list under a status outside
 :data:`~factory_console.file_adapter.run_state.FACTORY_STATUS_ALIASES`.
 ``absent`` is different again: a run-state source WAS resolved, lists at least one
 ticket, and does not list the ticket being asked about — a ticket added to
@@ -29,6 +30,24 @@ stays editable, because a project with no run-state source at all must remain
 fully usable in the console, while ``absent`` is refused an edit. ``absent`` is
 still DELETABLE (:data:`~factory_console.file_adapter.write_gate.DELETABLE_STATES`),
 since an ungated ``create`` must not mint a ticket the console can never remove.
+
+``unreadable`` is the third of these unnamed states, and it is the one that fails
+CLOSED. A run-state source EXISTS and the console could not read it at all — a
+marker directory that raises ``EACCES`` on enumeration, a ``run-state.json`` whose
+bytes cannot be read. It differs from ``unknown`` by WHY there is no answer:
+``unknown`` is "I looked and there is nothing to find" (no source, a source that
+names nobody, a source whose content was read and made no sense), ``unreadable``
+is "I could not look". It differs from ``absent`` by what the source said:
+``absent`` is a source that answered "not listed", ``unreadable`` is a source that
+did not answer. Something claims, and we could not see what — so ``unreadable`` is
+in NEITHER :data:`~factory_console.file_adapter.write_gate.MUTABLE_STATES` nor
+:data:`~factory_console.file_adapter.write_gate.DELETABLE_STATES`: unlike
+``absent``, where "not tracked by the factory" makes a delete provably harmless,
+an unreadable source may be hiding a ``merged`` marker, so both writes are refused
+(T80 amendment 2). A source that VANISHED between discovery and the read is NOT
+this state — nothing is there to be unreadable, so it resolves ``unknown`` and
+stays mutable, exactly like a project with no source at all.
+
 Because
 two vocabularies meet here, NO name is ever interpreted by string munging
 (``in_progress`` and ``in-flight`` differ by exactly the kind of character a
@@ -68,13 +87,22 @@ class RunState(str, Enum):  # noqa: UP042
     flagged = "flagged"
     failed = "failed"
     needs_human = "needs_human"
-    # No answer to trust: no run-state source present, one that could not be read
-    # or parsed, one that resolved but lists no ticket at all, or an entry whose
+    # No answer to trust: no run-state source present, one that vanished before it
+    # could be read, one whose content was read but could not be parsed or
+    # understood, one that resolved but lists no ticket at all, or an entry whose
     # status this console does not recognise. See the module docstring — this is
-    # deliberately broader than "no source on disk".
+    # deliberately broader than "no source on disk", and deliberately NARROWER than
+    # it was: a source that exists and refuses to be READ is ``unreadable`` below.
     unknown = "unknown"
     # Named by no source either — but for a different reason: a run-state source
     # WAS resolved and read, it lists at least one ticket, and it simply does not
     # list this one. Distinct from ``unknown`` so a caller cannot conflate "no
     # answer to trust" with "asked, and the answer is 'not listed'".
     absent = "absent"
+    # Named by no source for a third reason: a run-state source is THERE and could
+    # not be read (EACCES on a marker directory, an I/O error on the JSON file), so
+    # neither "not listed" nor "nothing to find" is honest — the answer is "I could
+    # not look". The only unnamed state the write gate refuses for BOTH edit and
+    # delete: an unreadable source may be hiding a ``merged`` marker, so failing
+    # open here would grant write access precisely because we could not check.
+    unreadable = "unreadable"

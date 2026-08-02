@@ -33,7 +33,14 @@
 		failed: 'bg-red-200 text-red-900',
 		needs_human: 'bg-red-100 text-red-900 ring-1 ring-red-400',
 		unknown: 'bg-slate-100 text-slate-500',
-		absent: 'bg-slate-200 text-slate-600'
+		absent: 'bg-slate-200 text-slate-600',
+		// Red, unlike its slate siblings: `unknown` and `absent` are ordinary answers
+		// about a source that WAS read, while `unreadable` is a source the console
+		// could not read at all — an operator has to notice it, because every write in
+		// the project is refused until it is fixed. Outlined rather than solid so it
+		// still reads as "the console cannot see", not as a lane failure like
+		// `failed`/`needs_human`.
+		unreadable: 'bg-red-50 text-red-800 ring-1 ring-red-300'
 	};
 	const STATE_LABELS: Record<RunState, string> = {
 		todo: 'To do',
@@ -47,7 +54,8 @@
 		failed: 'Failed',
 		needs_human: 'Needs human',
 		unknown: 'Unknown',
-		absent: 'Not listed'
+		absent: 'Not listed',
+		unreadable: 'Unreadable'
 	};
 	const STATE_TITLES: Record<RunState, string> = {
 		todo: 'Queued — no factory lane has started this ticket yet',
@@ -61,12 +69,17 @@
 		failed: 'The lane failed — the ticket did not get built',
 		needs_human: 'Blocked: the factory cannot proceed without a human decision',
 		// NOT just "no source": the server also answers `unknown` when a source
-		// exists but could not be read or parsed, and when it lists this ticket
-		// under a status this console does not recognise. Naming only the first
-		// case would tell an operator with a corrupt run-state.json that they have
-		// no run-state at all — hiding the degradation the state exists to report.
-		unknown: 'No run-state source for this project, or its source could not be read or understood',
-		absent: 'A run-state source exists but does not list this ticket'
+		// vanished, when its content could not be parsed, and when it lists this
+		// ticket under a status this console does not recognise. Naming only the
+		// first case would tell an operator with a corrupt run-state.json that they
+		// have no run-state at all — hiding the degradation the state exists to report.
+		unknown: 'No run-state source for this project, or its source could not be understood',
+		absent: 'A run-state source exists but does not list this ticket',
+		// The tooltip has to carry the FIX, because this is the only state whose cause
+		// is on the operator's side: the source is there, the console cannot open it,
+		// and every write is refused until that changes.
+		unreadable:
+			'The run-state source could not be read (check its permissions) — writes are refused'
 	};
 </script>
 
