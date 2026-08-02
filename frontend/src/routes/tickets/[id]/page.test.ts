@@ -256,6 +256,21 @@ describe('ticket detail write affordances', () => {
 		});
 	}
 
+	// `absent` is the ONE state where the two buttons must disagree, so it cannot
+	// ride either loop above. The server keeps two allowlists (`MUTABLE_STATES` vs
+	// `DELETABLE_STATES`) precisely so a ticket the console created — and which a
+	// populated run-state source therefore does not list — can still be deleted
+	// through the UI that created it (T80 amendment, gap 2). This route owns both
+	// buttons, so it is the only level at which that split is observable: the unit
+	// suites below it test the predicates, not the affordances they gate.
+	it('disables edit but LEAVES DELETE ENABLED for absent, and says so', () => {
+		render(Page, { props: { data: foundData(ticketInState('absent')) } });
+
+		expect(editButton().hasAttribute('disabled')).toBe(true);
+		expect(deleteButton().hasAttribute('disabled')).toBe(false);
+		expect(screen.getByRole('note').textContent).toContain('absent');
+	});
+
 	it('opens the edit dialog seeded from the ticket', async () => {
 		setToken(TOKEN);
 		render(Page, { props: { data: foundData(ticketInState('todo')) } });

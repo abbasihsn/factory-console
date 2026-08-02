@@ -36,7 +36,7 @@ Within a few seconds the console discovers the project, starts a local server on
 
 - A searchable, filterable list of every ticket (id / status / title / track).
 - A detail view with the rendered ticket `.md`, resolved `depends_on` / `provides`, and a factory run-state badge.
-- **Edit and delete** from the detail view — an edit shows the exact diff for review before anything is written, and both are disabled (with the reason stated) once a ticket leaves `todo` and a factory lane owns it. The first write asks for the token the server printed at startup; it is kept for that browser tab only.
+- **Edit and delete** from the detail view — an edit shows the exact diff for review before anything is written, and both are disabled (with the reason stated) once a factory lane owns a ticket. Delete is deliberately the wider of the two: a ticket the project's run-state does not list at all — one you added by hand, or just mistyped into the **New ticket** form — can be deleted but not edited, so the console can always undo what it created. The first write asks for the token the server printed at startup; it is kept for that browser tab only.
 - A **New ticket** route (`/tickets/new`) with the same dry-run preview → review → apply flow as edits.
 - A dependency-neighborhood view listing direct deps and dependents as clickable links.
 - A **global full-text search** box (header) over a ticket's id, title, `provides`, and body, with results at `/search`.

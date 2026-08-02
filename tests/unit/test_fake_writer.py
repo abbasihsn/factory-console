@@ -317,6 +317,23 @@ def test_delete_on_non_mutable_state_raises_not_mutable(state: RunState) -> None
         writer.delete_ticket(_make_project(), "TM-001")
 
 
+def test_edit_on_absent_is_refused_but_delete_on_absent_applies() -> None:
+    # The fake's gates must split the same way the real ones do (T80's amendment):
+    # a seeded `absent` refuses an edit and permits a delete. Without the fake's own
+    # `_ensure_deletable` a service-level test seeded `absent` would see this fake
+    # refuse a delete production performs.
+    project = _make_project()
+    writer = _seeded_writer(run_states={"TM-001": RunState.absent})
+    with pytest.raises(TicketNotMutable) as exc_info:
+        writer.edit_ticket(project, "TM-001", _edit())
+    assert exc_info.value.details == {"ticketId": "TM-001", "runState": RunState.absent.value}
+
+    result = writer.delete_ticket(project, "TM-001")
+
+    assert result.applied is True
+    assert "TM-001" not in {entry["id"] for entry in writer._manifest}
+
+
 def test_edit_unknown_id_raises_unknown_ticket() -> None:
     writer = _seeded_writer()
     with pytest.raises(UnknownTicket) as exc_info:

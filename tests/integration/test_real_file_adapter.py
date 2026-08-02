@@ -103,7 +103,6 @@ def test_list_tickets_resolves_run_state_per_ticket() -> None:
         "CAD-125": RunState.in_flight,
         "CAD-131": RunState.todo,
         "CAD-140": RunState.todo,
-        # Present run-state dir, no marker for CAD-152 -> todo (not unknown).
         "CAD-152": RunState.todo,
     }
 
@@ -151,9 +150,10 @@ def test_a_json_sourced_project_reads_run_state_from_the_factory_file(tmp_path: 
         "CAD-125": RunState.in_progress,
         "CAD-131": RunState.needs_human,
         "CAD-140": RunState.todo,
-        # Absent from the JSON: no entry, no answer — unknown (NOT the directory
-        # form's present-dir-but-unmarked ``todo`` default).
-        "CAD-152": RunState.unknown,
+        # T80: absent from the JSON's tickets object — the source resolved and
+        # simply does not list this id, so RunState.absent (refused), not unknown
+        # (which is reserved for "no source to ask" / "could not be read").
+        "CAD-152": RunState.absent,
     }
 
 
@@ -278,12 +278,18 @@ def test_get_graph_edges_target_only_known_nodes_and_drop_the_dangling_edge() ->
 # --------------------------------------------------------------------------- #
 
 
-def test_read_run_state_probes_markers_and_defaults_to_todo() -> None:
+def test_read_run_state_probes_markers() -> None:
     adapter, project = _load_with_run_state()
     assert adapter.read_run_state(project, "CAD-125") is RunState.in_flight
     assert adapter.read_run_state(project, "CAD-100") is RunState.merged
-    # Present run-state dir but no marker for CAD-152 -> todo, not unknown.
     assert adapter.read_run_state(project, "CAD-152") is RunState.todo
+
+
+def test_read_run_state_defaults_to_absent_for_an_unmarked_id() -> None:
+    # T80: present run-state dir but no marker anywhere for this id -> absent
+    # (the directory resolved and does not list it), not todo.
+    adapter, project = _load_with_run_state()
+    assert adapter.read_run_state(project, "CAD-999-unlisted") is RunState.absent
 
 
 def test_read_run_state_raises_path_traversal_for_dot_ids() -> None:
@@ -295,16 +301,24 @@ def test_read_run_state_raises_path_traversal_for_dot_ids() -> None:
             adapter.read_run_state(project, bad_id)
 
 
-def test_safe_run_state_degrades_dot_ids_to_unknown(tmp_path: Path) -> None:
+def test_safe_run_state_degrades_dot_ids_to_unreadable(tmp_path: Path) -> None:
     # The LIST/DEPS projection probes run-state for EVERY ticket, so a single '.'/'..'
-    # id must degrade to unknown rather than raise PathTraversal and 400 the whole
-    # request. A valid id still resolves normally (present dir, no marker -> todo).
+    # id must degrade rather than raise PathTraversal and 400 the whole request. It
+    # degrades to the REFUSING unreadable, not the mutable unknown: the prober would not
+    # even look, so the run-state is UNAVAILABLE, and answering unknown would put the id
+    # in MUTABLE_STATES — offering Edit and Delete precisely because the check could not
+    # run. A valid id still resolves normally (present dir, no marker -> absent, per
+    # T80: the directory resolved and does not list this id).
     run_state_dir = tmp_path / "run-state"
     (run_state_dir / "todo").mkdir(parents=True)
+    # A marker for SOME other ticket, so the directory is not vacuous — a directory
+    # that lists nobody resolves unknown for every id (T80's amendment) and would
+    # make the `absent` half of this assertion vacuously unreachable.
+    (run_state_dir / "todo" / "CAD-2").write_text("", encoding="utf-8")
     resolve = run_state_resolver(RunStateSource(kind="directory", path=run_state_dir))
-    assert RealFileAdapter._safe_run_state(resolve, "CAD-1") is RunState.todo
+    assert RealFileAdapter._safe_run_state(resolve, "CAD-1") is RunState.absent
     for bad_id in (".", ".."):
-        assert RealFileAdapter._safe_run_state(resolve, bad_id) is RunState.unknown
+        assert RealFileAdapter._safe_run_state(resolve, bad_id) is RunState.unreadable
 
 
 # --------------------------------------------------------------------------- #

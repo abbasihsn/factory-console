@@ -5,9 +5,10 @@ sample:
 
 * **Property A — the mutability gate.** Over a randomized ``RunState`` (the full
   enum) and mutation kind (edit/delete), an in-memory :class:`FakeFileWriter`
-  refuses every non-mutable state (``in-flight``/``ready``/``merged``) with
-  :class:`TicketNotMutable` and performs ZERO observable mutation of its seeded
-  state, while a mutable state (``todo``/``unknown``) applies — so the gate is
+  refuses every state outside the allowlist for that kind
+  (``MUTABLE_STATES`` for an edit, ``DELETABLE_STATES`` — the same plus ``absent``
+  — for a delete) with :class:`TicketNotMutable` and performs ZERO observable
+  mutation of its seeded state, while an allowed state applies — so the gate is
   never vacuously rejecting everything.
 * **Property B — the co-writer's honest atomicity.** Over a randomized failure
   point in the fixed manifest -> ``.md`` -> roadmap apply sequence, a disk-backed
@@ -47,7 +48,11 @@ from factory_console.file_adapter.atomic_write import AtomicWriteError
 from factory_console.file_adapter.fake_writer import FakeFileWriter
 from factory_console.file_adapter.real import RealFileAdapter
 from factory_console.file_adapter.real_writer import RealFileWriter
-from factory_console.file_adapter.write_gate import MUTABLE_STATES, TicketNotMutable
+from factory_console.file_adapter.write_gate import (
+    DELETABLE_STATES,
+    MUTABLE_STATES,
+    TicketNotMutable,
+)
 
 WITH_RUN_STATE = Path(__file__).resolve().parents[1] / "fixtures" / "projects" / "with_run_state"
 
@@ -142,7 +147,13 @@ def test_gate_refuses_non_mutable_state_with_zero_mutation(
             return writer.edit_ticket(project, ticket_id, _mem_edit())
         return writer.delete_ticket(project, ticket_id)
 
-    if state not in MUTABLE_STATES:
+    # The two kinds authorize against DIFFERENT allowlists since T80's amendment:
+    # delete additionally permits `absent`, so the console can remove a ticket its
+    # own ungated create just minted. Deriving the expectation from the gate's own
+    # tuples keeps this property honest for both.
+    allowed = MUTABLE_STATES if kind == "edit" else DELETABLE_STATES
+
+    if state not in allowed:
         before = _internal_state(writer)
         with pytest.raises(TicketNotMutable) as exc_info:
             op()
@@ -151,7 +162,8 @@ def test_gate_refuses_non_mutable_state_with_zero_mutation(
         # ZERO mutating calls: every seeded collection is value-identical afterwards.
         assert _internal_state(writer) == before
     else:
-        # Mutable (todo/unknown): the op applies — the gate is not vacuously refusing.
+        # Allowed (todo/unknown, plus absent for delete): the op applies — the gate is
+        # not vacuously refusing.
         result = op()
         assert isinstance(result, WriteResult)
         assert result.applied is True

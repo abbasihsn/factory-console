@@ -20,8 +20,9 @@
 	// Cytoscape paints to an opaque <canvas> and only understands hex/named colors,
 	// NOT Tailwind class names — so this mirrors RunStateBadge's palette INTENT
 	// (todo=gray, in-progress=amber, ready=green, merged=violet, the failure-ish
-	// states=red, unknown=slate) as concrete solid fills. Keep in sync with
-	// RunStateBadge's STATE_CLASSES.
+	// states=red, and the two no-lane-state answers unknown/absent=slate, in
+	// adjacent shades) as concrete solid fills. Keep in sync with RunStateBadge's
+	// STATE_CLASSES.
 	const RUN_STATE_HEX: Record<RunState, string> = {
 		todo: '#9ca3af', // gray-400
 		'in-flight': '#f59e0b', // amber-500
@@ -33,7 +34,13 @@
 		flagged: '#ef4444', // red-500
 		failed: '#b91c1c', // red-700
 		needs_human: '#dc2626', // red-600
-		unknown: '#94a3b8' // slate-400
+		unknown: '#94a3b8', // slate-400
+		absent: '#64748b', // slate-500
+		// Red, not slate: unlike `unknown`/`absent` (a source that answered), this is a
+		// source the console could not read, and every write to the node is refused.
+		// Distinct from `flagged`/`failed`/`needs_human` so a graph can still tell a
+		// lane failure from a console-side one.
+		unreadable: '#fb7185' // rose-400
 	};
 
 	// The container the cytoscape canvas mounts into (client-only; see onMount).

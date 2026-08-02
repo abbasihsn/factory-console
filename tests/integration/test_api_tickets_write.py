@@ -426,6 +426,122 @@ async def test_delete_on_non_todo_ticket_is_ticket_not_mutable_409(
     assert _snapshot(root) == before
 
 
+async def test_edit_on_json_sourced_merged_ticket_is_ticket_not_mutable_409(
+    tmp_path: Path,
+) -> None:
+    # The end-to-end proof T78 exists for: a project whose run-state comes from
+    # the factory's real ``.factory/run-state.json`` (not the legacy marker
+    # directory) refuses an edit to a ticket the factory recorded ``merged``.
+    # Pre-T78 this request succeeded (the JSON was never read, so the ticket
+    # resolved the mutable ``unknown``).
+    app, root = _real_app(tmp_path)
+    (root / ".factory" / "run-state.json").write_text(
+        '{"version": 1, "tickets": {"CAD-131": {"status": "merged", "pr_url": null}}}',
+        encoding="utf-8",
+    )
+    before = _snapshot(root)
+    async with _client(app) as client:
+        resp = await client.put("/api/v1/tickets/CAD-131", json=_edit_body(), headers=AUTH)
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "ticket_not_mutable"
+    assert _snapshot(root) == before
+
+
+async def test_edit_on_a_ticket_the_json_source_does_not_list_is_absent_409(
+    tmp_path: Path,
+) -> None:
+    # T80's end-to-end proof, the counterpart of the `merged` case above: the JSON
+    # source resolves and simply has no entry for CAD-131, so the gate answers
+    # RunState.absent — refused, where pre-T80 it resolved the mutable `unknown` and
+    # this PUT succeeded. Asserted through the real app because the `absent` branch
+    # of TicketNotMutable (and the source path it puts in `message`) was otherwise
+    # only ever exercised at the exception-construction level.
+    app, root = _real_app(tmp_path)
+    run_state_json = root / ".factory" / "run-state.json"
+    run_state_json.write_text(
+        '{"version": 1, "tickets": {"CAD-100": {"status": "merged", "pr_url": null}}}',
+        encoding="utf-8",
+    )
+    before = _snapshot(root)
+    async with _client(app) as client:
+        resp = await client.put("/api/v1/tickets/CAD-131", json=_edit_body(), headers=AUTH)
+
+    assert resp.status_code == 409
+    error = resp.json()["error"]
+    assert error["code"] == "ticket_not_mutable"
+    assert error["details"] == {"ticketId": "CAD-131", "runState": "absent"}
+    # The operator needs to know WHICH file was consulted — the whole point of the
+    # distinct `absent` wording is that the answer is "the file you are not looking
+    # at" (T80 step 4).
+    assert str(run_state_json) in error["message"]
+    assert _snapshot(root) == before
+
+
+async def test_a_status_this_console_cannot_classify_refuses_both_writes_end_to_end(
+    tmp_path: Path,
+) -> None:
+    # T80 amendment 4 through the real app, and the amendment's own worked example:
+    # the factory gains a tenth FAC_STATES member (`in_review`), this console does not
+    # know the name, and CAD-131 is a ticket a lane is actively reviewing. Pre-amendment
+    # the unrecognised status resolved the mutable `unknown` and this PUT SUCCEEDED —
+    # the console editing a ticket the factory was working on, which is the fail-open
+    # the ticket exists to close, arriving through the one door left open.
+    #
+    # Asserted end to end rather than at the resolver because the whole point is the
+    # gate's answer: the state that reaches `MUTABLE_STATES`, the 409 an operator
+    # actually sees, and (unlike `absent`) the DELETE being refused too.
+    app, root = _real_app(tmp_path)
+    run_state_json = root / ".factory" / "run-state.json"
+    run_state_json.write_text(
+        '{"version": 1, "tickets": {"CAD-131": {"status": "in_review", "pr_url": null}}}',
+        encoding="utf-8",
+    )
+    before = _snapshot(root)
+    async with _client(app) as client:
+        edited = await client.put("/api/v1/tickets/CAD-131", json=_edit_body(), headers=AUTH)
+        deleted = await client.delete("/api/v1/tickets/CAD-131", headers=AUTH)
+
+    for resp in (edited, deleted):
+        assert resp.status_code == 409
+        error = resp.json()["error"]
+        assert error["code"] == "ticket_not_mutable"
+        assert error["details"] == {"ticketId": "CAD-131", "runState": "unreadable"}
+        # The refusal NAMES the value and the file (amendment 4, step 1): "not tracked"
+        # would send an operator hunting a missing entry that is right there, and the
+        # `unreadable` sibling's "check its permissions" would send them to chmod a
+        # file that reads perfectly well. The fix here is a console that knows the
+        # status the factory now writes.
+        assert "in_review" in error["message"]
+        assert str(run_state_json) in error["message"]
+    assert _snapshot(root) == before
+
+
+async def test_a_created_ticket_can_be_deleted_but_not_edited_end_to_end(
+    tmp_path: Path,
+) -> None:
+    # T80's amendment through the real app: `create` is ungated, so the id it mints
+    # resolves `absent` against the fixture's populated run-state source. Editing it
+    # is refused (the rule holds) while DELETING it succeeds (gap 2) — otherwise a
+    # mistyped new ticket would be unrecoverable through the UI that created it.
+    app, root = _real_app(tmp_path)
+    async with _client(app) as client:
+        created = await client.post("/api/v1/tickets", json=_draft_body(), headers=AUTH)
+        assert created.status_code == 201
+
+        edited = await client.put(f"/api/v1/tickets/{NEW_ID}", json=_edit_body(), headers=AUTH)
+        assert edited.status_code == 409
+        error = edited.json()["error"]
+        assert error["code"] == "ticket_not_mutable"
+        assert error["details"] == {"ticketId": NEW_ID, "runState": "absent"}
+
+        deleted = await client.delete(f"/api/v1/tickets/{NEW_ID}", headers=AUTH)
+        assert deleted.status_code == 200
+
+        gone = await client.get(f"/api/v1/tickets/{NEW_ID}")
+    assert gone.status_code == 404
+    assert not (root / "docs" / "planning" / "tickets" / f"{NEW_ID}.md").exists()
+
+
 @pytest.mark.parametrize("ticket_id", NON_TODO_IDS)
 async def test_dry_run_still_previews_a_non_todo_ticket_and_writes_nothing(
     ticket_id: str, tmp_path: Path

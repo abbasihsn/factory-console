@@ -129,4 +129,59 @@ describe('DepGraph run-state palette', () => {
 		for (const hex of [...failure, ...working]) expect(hex).toMatch(/^#[0-9a-f]{6}$/);
 		expect(failure.filter((hex) => working.includes(hex))).toEqual([]);
 	});
+
+	// T80's new state. `Record<RunState, string>` only guarantees the KEY exists —
+	// a wrong or duplicated hex still type-checks and still ships, which is exactly
+	// what the pinning table above exists to catch.
+	it('paints absent its own slate, distinct from unknown', () => {
+		expect(fillFor('absent')).toBe('#64748b');
+		expect(fillFor('unknown')).toBe('#94a3b8');
+		expect(fillFor('absent')).not.toBe(fillFor('unknown'));
+	});
+
+	// T80 amendment 2's state, pinned the same way and for the same reason. It must
+	// share a hex with nothing: `unknown`/`absent` are answers from a source that was
+	// read, the lane states are answers from the factory, and this one means the
+	// console could not read the source at all — the node's writes are all refused.
+	it('paints unreadable a hex shared with no other state', () => {
+		expect(fillFor('unreadable')).toBe('#fb7185');
+
+		const others = (
+			[
+				'todo',
+				'in-flight',
+				'in_progress',
+				'in_part',
+				'in_submilestone',
+				'ready',
+				'merged',
+				'flagged',
+				'failed',
+				'needs_human',
+				'unknown',
+				'absent'
+			] as const
+		).map(fillFor);
+
+		expect(others).not.toContain(fillFor('unreadable'));
+	});
+
+	// `absent`/`unknown` both mean "no lane state to show" and must never be
+	// mistakable for a lane that is working or that failed.
+	it('paints the no-state pair distinctly from the working and failure families', () => {
+		const noState = (['unknown', 'absent'] as const).map(fillFor);
+		const others = (
+			[
+				'in-flight',
+				'in_progress',
+				'in_part',
+				'in_submilestone',
+				'flagged',
+				'failed',
+				'needs_human'
+			] as const
+		).map(fillFor);
+
+		expect(noState.filter((hex) => others.includes(hex))).toEqual([]);
+	});
 });

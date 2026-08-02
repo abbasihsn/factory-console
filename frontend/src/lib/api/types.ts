@@ -503,7 +503,7 @@ export interface components {
          *     (``RunState.todo == "todo"``); the value is the name its source uses.
          * @enum {string}
          */
-        readonly RunState: "todo" | "in-flight" | "ready" | "merged" | "in_progress" | "in_part" | "in_submilestone" | "flagged" | "failed" | "needs_human" | "unknown";
+        readonly RunState: "todo" | "in-flight" | "ready" | "merged" | "in_progress" | "in_part" | "in_submilestone" | "flagged" | "failed" | "needs_human" | "unknown" | "absent" | "unreadable";
         /**
          * RunStateSource
          * @description A resolved run-state artifact: its form (``kind``) and where it lives.

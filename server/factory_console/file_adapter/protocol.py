@@ -55,7 +55,29 @@ class FileAdapter(Protocol):
         ...
 
     def read_run_state(self, project: Project, ticket_id: str) -> RunState:
-        """Return the :class:`RunState` for ``ticket_id`` (``unknown`` when undetermined)."""
+        """Return the :class:`RunState` for ``ticket_id``.
+
+        ``unknown`` when there is no run-state source to ask, when it could not be
+        trusted, or when it resolved and lists NO ticket at all (a VACUOUS source —
+        an empty marker directory, or a ``run-state.json`` whose ``tickets`` object
+        parsed and is empty); ``absent`` only when a source resolved, lists at least
+        one ticket, and does not list THIS id. The vacuous carve-out is not optional
+        for a conforming implementation: a source that names nobody exercises no
+        authority over anybody, and answering ``absent`` there makes every write 409
+        and turns an empty-but-valid run-state into a project-wide read-only lockout
+        (T80 amendment, gap 1). ``unreadable`` is the THIRD unnamed answer and the
+        only one that fails closed: the source is THERE and its bytes or entries could
+        not be read at all (``EACCES`` and friends), so nothing was learned about this
+        id. A conforming implementation must not fold it into either of the other two
+        — "I could not look" is not "I looked and there is nothing to find", and the
+        entry saying a lane owns this ticket may be exactly what could not be read
+        (T80 amendment 2).
+
+        The three states are NOT interchangeable at the write
+        gate — ``unknown`` is mutable, ``absent`` is refused 409 for an edit (though
+        :func:`~factory_console.file_adapter.write_gate.ensure_deletable` permits a
+        delete), and ``unreadable`` is refused 409 by BOTH gates.
+        """
         ...
 
     def get_roadmap(self, project: Project) -> Roadmap | None:

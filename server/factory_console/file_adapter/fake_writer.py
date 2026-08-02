@@ -129,8 +129,17 @@ class FakeFileWriter:
         :class:`~factory_console.file_adapter.write_render.UnknownTicket`, 404, for
         an absent id), then enforces the todo-only mutability gate over the SEEDED
         run-state (raising :class:`~factory_console.file_adapter.write_gate.TicketNotMutable`,
-        409, for a non-mutable state) — mirroring how the real write path composes
-        the render check and the gate.
+        409, for a non-mutable state).
+
+        That existence-first order matches :class:`RealFileWriter` ONLY for a project
+        with no run-state source; since T80 it is NOT a general mirror of it. The real
+        writer gates FIRST, and against a resolved source an id it does not list
+        answers :attr:`RunState.absent` (409) rather than the mutable ``unknown`` — so
+        for an unheard-of id the real writer raises ``TicketNotMutable`` where this
+        fake raises ``UnknownTicket``, and a just-created id is refused here only if
+        seeded ``absent``. See :meth:`_ensure_mutable` for the full divergence note;
+        pin order-sensitive and create-then-edit expectations against
+        :class:`RealFileWriter`, not this fake.
         """
         planned = self._plan_edit(project, ticket_id, edit)  # validates id + existence
         self._ensure_mutable(ticket_id)
@@ -156,11 +165,17 @@ class FakeFileWriter:
     def delete_ticket(self, project: Project, ticket_id: str) -> WriteResult:
         """Delete ``ticket_id`` from memory and return the applied :class:`WriteResult`.
 
-        Validates existence FIRST (:class:`UnknownTicket`, 404) then the todo-only
-        gate (:class:`TicketNotMutable`, 409), exactly like :meth:`edit_ticket`.
+        Validates existence FIRST (:class:`UnknownTicket`, 404) then the gate
+        (:class:`TicketNotMutable`, 409), in the same order as :meth:`edit_ticket` —
+        including that method's T80 divergence from :class:`RealFileWriter`, which
+        gates first. The gate itself is :meth:`_ensure_deletable`, not
+        :meth:`_ensure_mutable`: delete additionally permits a seeded
+        :attr:`RunState.absent`, matching
+        :meth:`~factory_console.file_adapter.real_writer.RealFileWriter.delete_ticket`
+        so the console can always remove a ticket it just created.
         """
         planned = self._plan_delete(project, ticket_id)  # validates id + existence
-        self._ensure_mutable(ticket_id)
+        self._ensure_deletable(ticket_id)
         preview = write_diff.preview(ticket_id, planned)
 
         index = write_render._find_entry_index(self._manifest, ticket_id)
@@ -350,15 +365,53 @@ class FakeFileWriter:
                 return
 
     def _ensure_mutable(self, ticket_id: str) -> None:
-        """Enforce the todo-only gate over the SEEDED run-state (no FS probe).
+        """Enforce the EDIT gate over the SEEDED run-state (no FS probe).
 
         Mirrors :func:`~factory_console.file_adapter.write_gate.ensure_mutable`
         without ``probe_ticket_state``: an unseeded id resolves to
         :attr:`RunState.unknown` (mutable), any state outside
         :data:`~factory_console.file_adapter.write_gate.MUTABLE_STATES` raises.
+
+        KNOWN DIVERGENCE from the real gate since T80, and the reason this default
+        is not simply "correct": the real gate answers :attr:`RunState.absent`
+        (refused, 409) for an id a RESOLVED run-state source does not list, whereas
+        this fake has no source to resolve and so keeps every unseeded id mutable.
+        Seed ``run_states={id: RunState.absent}`` to exercise the refusal. A test
+        that asserts a write SUCCEEDS for an unseeded id therefore pins the fake's
+        convenience, not production behaviour — assert those against
+        :class:`RealFileWriter`.
         """
+        self._ensure_state_allowed(ticket_id, write_gate.MUTABLE_STATES)
+
+    def _ensure_deletable(self, ticket_id: str) -> None:
+        """Enforce the DELETE gate over the SEEDED run-state (no FS probe).
+
+        The fake's counterpart of
+        :func:`~factory_console.file_adapter.write_gate.ensure_deletable`: the same
+        allowlist, :data:`~factory_console.file_adapter.write_gate.DELETABLE_STATES`,
+        which permits :attr:`RunState.absent` where :meth:`_ensure_mutable` refuses
+        it. It exists because the fake CAN be seeded ``absent`` — so without it a
+        test seeding ``absent`` would see the fake refuse a delete the real writer
+        performs, which is the one thing a fake gate must never do. The divergence
+        noted on :meth:`_ensure_mutable` is about the UNSEEDED default only; for a
+        seeded state the two writers now agree on the allow/refuse DECISION for both
+        edit and delete.
+
+        They do NOT agree on the refusal MESSAGE, and cannot: the real gate names the
+        resolved run-state source in its ``absent`` message
+        (:class:`~factory_console.file_adapter.write_gate.TicketNotMutable`), and this
+        fake has no source to name — a seeded state is not read from one. So a seeded
+        ``absent`` refusal here carries the generic prose. Pin the ``absent`` 409 BODY
+        against :class:`~factory_console.file_adapter.real_writer.RealFileWriter`;
+        ``details`` (``ticketId``/``runState``) is identical either way, so a test that
+        switches on the state rather than the prose holds against both.
+        """
+        self._ensure_state_allowed(ticket_id, write_gate.DELETABLE_STATES)
+
+    def _ensure_state_allowed(self, ticket_id: str, allowed: tuple[RunState, ...]) -> None:
+        """Raise :class:`TicketNotMutable` unless the seeded state is in ``allowed``."""
         state = self._run_states.get(ticket_id, RunState.unknown)
-        if state not in write_gate.MUTABLE_STATES:
+        if state not in allowed:
             raise write_gate.TicketNotMutable(ticket_id, state)
 
     def _entry_to_ticket(

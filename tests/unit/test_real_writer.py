@@ -60,6 +60,15 @@ def _load(tmp_path: Path) -> tuple[RealFileWriter, Project]:
     return RealFileWriter(), project
 
 
+def _load_without_run_state(tmp_path: Path) -> tuple[RealFileWriter, Project]:
+    """Like :func:`_load`, but with ``.factory/`` stripped: no run-state source at all."""
+    root = tmp_path / "project"
+    shutil.copytree(WITH_RUN_STATE, root)
+    shutil.rmtree(root / ".factory")
+    project = RealFileAdapter().load_project(root)
+    return RealFileWriter(), project
+
+
 def _hash_tree(root: Path) -> dict[str, str]:
     """Map every file under ``root`` (project-relative POSIX) to its content SHA-256."""
     return {
@@ -161,6 +170,61 @@ def test_create_duplicate_id_raises_already_exists_and_writes_nothing(tmp_path: 
     assert _hash_tree(project.rootPath) == before
 
 
+def test_create_then_edit_is_refused_while_the_source_does_not_list_it(tmp_path: Path) -> None:
+    # T80's sharpest consequence, pinned so it is a DECISION and not a surprise:
+    # create has no gate, but the id it mints is in the manifest and in no run-state
+    # source, so it immediately resolves RunState.absent — and `absent` is refused.
+    # In a project WITH a run-state source the console can therefore create a ticket
+    # it cannot EDIT until the factory seeds it (it can still delete it — see the
+    # test below). This is the same case the ticket accepts for a hand-added ticket
+    # (T80 step 6); the console's own create path reaches it too. If this is ever
+    # softened (e.g. only refusing
+    # `absent` for ids the manifest does not know), THIS is the test to change.
+    writer, project = _load(tmp_path)
+    assert project.runStateSource is not None  # the fixture ships a marker directory
+
+    created = writer.create_ticket(project, _draft(id="CAD-210", milestone="v2"))
+    assert created.applied is True
+
+    with pytest.raises(TicketNotMutable) as edit_exc:
+        writer.edit_ticket(project, "CAD-210", _edit())
+    assert edit_exc.value.details == {"ticketId": "CAD-210", "runState": RunState.absent.value}
+
+
+def test_create_then_delete_succeeds_while_the_source_does_not_list_it(tmp_path: Path) -> None:
+    # T80's amendment, gap 2: the console must be able to un-create what it created.
+    # `create` is ungated, so in a project with a populated run-state source the fresh
+    # id resolves `absent` immediately; delete gates on `ensure_deletable`, which
+    # permits `absent`, so a mistyped new ticket is recoverable through the same UI.
+    # (Its sibling above proves the EDIT gate did not widen with it.)
+    writer, project = _load(tmp_path)
+    assert project.runStateSource is not None  # the fixture ships a marker directory
+
+    writer.create_ticket(project, _draft(id="CAD-210", milestone="v2"))
+    result = writer.delete_ticket(project, "CAD-210")
+
+    assert result.applied is True
+    assert result.ticket is not None
+    assert result.ticket.id == "CAD-210"
+    # Every trace of the mistyped ticket is gone again: .md, manifest entry, roadmap
+    # line. (The manifest's BYTES are not compared — a create+delete round trip
+    # re-serializes it, which is orthogonal to this ticket.)
+    assert not (project.ticketsDir / "CAD-210.md").exists()
+    assert "CAD-210" not in {s.id for s in RealFileAdapter().list_tickets(project)}
+    assert "CAD-210" not in project.roadmapPath.read_text()
+
+
+def test_create_then_edit_is_allowed_with_no_run_state_source(tmp_path: Path) -> None:
+    # The contrast that shows the refusal above is about the SOURCE, not about
+    # newness: with no run-state source the same fresh id stays mutable `unknown`.
+    writer, project = _load_without_run_state(tmp_path)
+    writer.create_ticket(project, _draft(id="CAD-210", milestone="v2"))
+
+    result = writer.edit_ticket(project, "CAD-210", _edit())
+
+    assert result.applied is True
+
+
 def test_create_rejects_a_slash_id_at_the_draft_boundary() -> None:
     # A traversal id never reaches create: TicketDraft.id is validated against
     # TICKET_ID_PATTERN at construction, so an id with a path separator is refused
@@ -206,8 +270,26 @@ def test_edit_merges_unknown_manifest_fields(tmp_path: Path) -> None:
     assert reread.raw["status"] == "todo"  # untouched manifest field survives
 
 
-def test_edit_unknown_id_raises_unknown_ticket(tmp_path: Path) -> None:
+def test_edit_id_absent_from_manifest_and_run_state_raises_ticket_not_mutable(
+    tmp_path: Path,
+) -> None:
+    # T80: the gate runs FIRST (per the module docstring) and a project WITH a
+    # run-state source resolves an id it has never heard of to RunState.absent,
+    # not the mutable ``unknown`` — so the 409 gate masks the manifest's 404 here.
+    # This is intentional per T80: "not mutable" is the honest answer when a
+    # resolved source has nothing to say about the id.
     writer, project = _load(tmp_path)
+    with pytest.raises(TicketNotMutable) as exc_info:
+        writer.edit_ticket(project, "CAD-999", _edit())
+    assert exc_info.value.status == 409
+    assert exc_info.value.details == {"ticketId": "CAD-999", "runState": RunState.absent.value}
+
+
+def test_edit_unknown_id_raises_unknown_ticket_with_no_run_state_source(tmp_path: Path) -> None:
+    # With NO run-state source at all, an unheard-of id resolves the mutable
+    # ``unknown`` (T80 does not touch this), the gate passes it through, and the
+    # manifest lookup downstream is what reports the id does not exist.
+    writer, project = _load_without_run_state(tmp_path)
     with pytest.raises(UnknownTicket) as exc_info:
         writer.edit_ticket(project, "CAD-999", _edit())
     assert exc_info.value.status == 404
@@ -259,8 +341,23 @@ def test_delete_todo_ticket_removes_files_and_returns_snapshot(tmp_path: Path) -
     assert "CAD-131" not in project.roadmapPath.read_text()
 
 
-def test_delete_unknown_id_raises_unknown_ticket(tmp_path: Path) -> None:
+def test_delete_id_absent_from_manifest_and_run_state_raises_unknown_ticket(
+    tmp_path: Path,
+) -> None:
+    # The DELETE counterpart of
+    # test_edit_id_absent_from_manifest_and_run_state_raises_ticket_not_mutable, and it
+    # answers differently since T80's amendment: delete gates on `ensure_deletable`,
+    # which permits `absent`, so the gate no longer masks the manifest's honest 404
+    # for an id nothing has ever heard of. Edit still 409s there — that asymmetry is
+    # the amendment, not an accident.
     writer, project = _load(tmp_path)
+    with pytest.raises(UnknownTicket) as exc_info:
+        writer.delete_ticket(project, "CAD-999")
+    assert exc_info.value.status == 404
+
+
+def test_delete_unknown_id_raises_unknown_ticket_with_no_run_state_source(tmp_path: Path) -> None:
+    writer, project = _load_without_run_state(tmp_path)
     with pytest.raises(UnknownTicket):
         writer.delete_ticket(project, "CAD-999")
 

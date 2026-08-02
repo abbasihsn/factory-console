@@ -13,7 +13,7 @@
 	import EditGate from '$lib/components/EditGate.svelte';
 	import EditTicketModal from '$lib/components/EditTicketModal.svelte';
 	import WriteTokenPrompt from '$lib/components/WriteTokenPrompt.svelte';
-	import { isEditable } from '$lib/forms/editability';
+	import { isDeletable, isEditable } from '$lib/forms/editability';
 	import { clearToken, WRITE_TOKEN_INVALID_CODE, writeToken } from '$lib/stores/writeToken';
 
 	let { data }: { data: PageData } = $props();
@@ -49,10 +49,18 @@
 	// would invite a second paste for a delete that no longer needs one.
 	const deleteTokenNeeded = $derived(deleteTokenRequested && $writeToken === null);
 
-	// One predicate for both buttons and the banner (`EditGate` calls the same
-	// `isEditable`), so what the banner explains is exactly what is disabled. A
-	// client-side MIRROR of the server write-gate, never the only gate.
-	const canWrite = $derived(!data.notFound && isEditable(data.ticket.runState) && !deleting);
+	// TWO predicates, mirroring the server's two allowlists (`MUTABLE_STATES` for
+	// edit, the wider `DELETABLE_STATES` for delete) — `EditGate` calls the same
+	// pair, so what the banner explains is exactly what is disabled. Collapsing them
+	// back into one would disable Delete for `absent` and leave a just-created ticket
+	// unrecoverable through the UI that created it, which is the hole the server's
+	// `ensure_deletable` closes (T80 amendment, gap 2). A client-side MIRROR of the
+	// server write-gate, never the only gate.
+	// `!data.notFound` is repeated in each rather than hoisted into a shared flag:
+	// it is the discriminant that narrows `data.ticket` to non-undefined, and that
+	// narrowing does not survive being stored in a separate `$derived`.
+	const canEdit = $derived(!data.notFound && isEditable(data.ticket.runState) && !deleting);
+	const canDelete = $derived(!data.notFound && isDeletable(data.ticket.runState) && !deleting);
 
 	// SvelteKit REUSES this component instance for a params-only navigation, replacing
 	// only `data` — and the "Depends on" chips below link to exactly that (`/tickets/<id>`).
@@ -118,7 +126,7 @@
 	// decision, which is why only that flow goes through `DiffPreviewModal`.
 	async function confirmDelete(id: string): Promise<void> {
 		// One confirmation is one DELETE. The dialog stays mounted for the whole
-		// round-trip, so this guard — not `canWrite`, which only gates the buttons
+		// round-trip, so this guard — not `canDelete`, which only gates the buttons
 		// behind the backdrop — is what stops a double-click sending two.
 		if (deleting) {
 			return;
@@ -210,12 +218,12 @@
 			<button
 				type="button"
 				class={ACTION_CLASS}
-				disabled={!canWrite}
+				disabled={!canEdit}
 				onclick={() => (editOpen = true)}
 			>
 				Edit
 			</button>
-			<button type="button" class={DANGER_CLASS} disabled={!canWrite} onclick={startDelete}>
+			<button type="button" class={DANGER_CLASS} disabled={!canDelete} onclick={startDelete}>
 				Delete
 			</button>
 		</div>

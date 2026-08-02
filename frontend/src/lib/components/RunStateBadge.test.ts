@@ -70,17 +70,76 @@ describe('RunStateBadge', () => {
 		const { container } = render(RunStateBadge, { props: { runState: 'unknown' } });
 
 		const pill = screen.getByText('Unknown');
+		// The tooltip must cover EVERY way the server answers `unknown` — no source,
+		// a source that vanished, one that lists nobody, one whose content made no
+		// sense — not just the first. It must NOT claim "could not be read": since
+		// T80's second amendment that is a different state (`unreadable`) with a
+		// different consequence, and saying it here would send an operator whose
+		// run-state.json is merely corrupt hunting a permissions problem.
 		expect(pill.getAttribute('title')).toBe(
-			'No run-state source present, or this ticket is not in it'
+			'No run-state source for this project, or its source could not be understood'
 		);
 		expect(container.querySelector('span')).toMatchInlineSnapshot(`
 			<span
 			  class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-slate-100 text-slate-500"
-			  title="No run-state source present, or this ticket is not in it"
+			  title="No run-state source for this project, or its source could not be understood"
 			>
 			  Unknown
 			</span>
 		`);
+	});
+
+	// T80: absent is DISTINCT from unknown — a run-state source WAS resolved and
+	// simply does not list this ticket, unlike unknown's "no usable source to ask".
+	it('renders the absent variant with an explanatory title tooltip', () => {
+		const { container } = render(RunStateBadge, { props: { runState: 'absent' } });
+
+		const pill = screen.getByText('Not listed');
+		expect(pill.getAttribute('title')).toBe(
+			'A run-state source exists but does not list this ticket'
+		);
+		expect(container.querySelector('span')).toMatchInlineSnapshot(`
+			<span
+			  class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-slate-200 text-slate-600"
+			  title="A run-state source exists but does not list this ticket"
+			>
+			  Not listed
+			</span>
+		`);
+	});
+
+	// T80 amendment 2: `unreadable` is distinct from BOTH of its unnamed siblings —
+	// the information is unavailable, so the console refuses every write to the ticket
+	// until that is fixed. The pill is deliberately not slate: this is the only one of
+	// the three an operator must act on.
+	//
+	// The tooltip used to end "(check its permissions)". Amendment 4 gave this state a
+	// SECOND cause — a source read perfectly well that says something about this ticket
+	// the console cannot interpret — and a badge has only the enum member, so it cannot
+	// tell which. Naming permissions would be the wrong fix half the time; the server's
+	// 409 is what carries the specific cause and names the offending value.
+	it('renders the unreadable variant, distinctly from unknown and absent', () => {
+		const { container } = render(RunStateBadge, { props: { runState: 'unreadable' } });
+
+		const pill = screen.getByText('Unreadable');
+		expect(pill.getAttribute('title')).toBe(
+			'The run-state source could not be read, or says something about this ticket this console does not understand — writes are refused'
+		);
+		expect(pill.getAttribute('title')).not.toContain('permissions');
+		expect(container.querySelector('span')).toMatchInlineSnapshot(`
+			<span
+			  class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-red-50 text-red-800 ring-1 ring-red-300"
+			  title="The run-state source could not be read, or says something about this ticket this console does not understand — writes are refused"
+			>
+			  Unreadable
+			</span>
+		`);
+
+		const classes = (state: RunState) =>
+			render(RunStateBadge, { props: { runState: state } }).container.querySelector('span')
+				?.className;
+		expect(classes('unreadable')).not.toBe(classes('unknown'));
+		expect(classes('unreadable')).not.toBe(classes('absent'));
 	});
 
 	// The six states only the factory's run-state.json names. Each must render a

@@ -19,8 +19,11 @@ the four single-purpose write modules rather than parsing manifests, rendering
   side-effect-free :class:`~factory_console.domain.write.DiffPreview` the UI and
   dry-run show.
 * :func:`~factory_console.file_adapter.write_gate.ensure_mutable` is the todo-only
-  authorization gate (409 ``TicketNotMutable`` for ``in-flight``/``ready``/
-  ``merged``).
+  authorization gate for an EDIT (409 ``TicketNotMutable`` for ``in-flight``/
+  ``ready``/``merged``, and for ``absent``);
+  :func:`~factory_console.file_adapter.write_gate.ensure_deletable` is its
+  delete-path sibling, identical but for also permitting ``absent`` — see
+  :meth:`RealFileWriter.delete_ticket`.
 * :func:`~factory_console.file_adapter.atomic_write.apply_changes` is the ONE
   sanctioned write site — this class never opens, writes, or unlinks a file
   itself, and that layer independently refuses any run-state path.
@@ -53,8 +56,12 @@ class RealFileWriter:
     satisfies the ``@runtime_checkable``
     :class:`~factory_console.file_adapter.writer_protocol.FileWriter` Protocol
     structurally, so ``isinstance(RealFileWriter(), FileWriter)`` holds without
-    inheritance. Preview methods are pure (no gate, no write); apply methods pass
-    the todo-only mutability gate before routing every write through
+    inheritance. Preview methods are pure (no gate, no write); each apply method
+    passes ITS OWN gate — :func:`~factory_console.file_adapter.write_gate.ensure_mutable`
+    for :meth:`edit_ticket`, the wider
+    :func:`~factory_console.file_adapter.write_gate.ensure_deletable` for
+    :meth:`delete_ticket`, and none at all for :meth:`create_ticket` — before routing
+    every write through
     :func:`~factory_console.file_adapter.atomic_write.apply_changes`.
     """
 
@@ -86,8 +93,30 @@ class RealFileWriter:
     def create_ticket(self, project: Project, draft: TicketDraft) -> WriteResult:
         """Create ``draft`` on disk and return the applied :class:`WriteResult`.
 
-        No mutability gate: a brand-new id has no factory run-state (it resolves to
-        the mutable ``unknown``), matching :class:`FakeFileWriter`. Raises
+        No mutability gate: create is ungated by design, and a brand-new id's
+        run-state is not consulted at all. Note what that id then resolves to on the
+        NEXT request, because it is NOT uniform (T80): with no run-state source at
+        all — or with one that is resolved but VACUOUS (an empty run-state directory,
+        or ``run-state.json`` with an empty ``tickets`` object) — it is the mutable
+        ``unknown``, because a source that names nobody claims nothing about anybody.
+        Only in a project with a resolved and POPULATED source is it
+        :attr:`~factory_console.domain.run_state.RunState.absent` — that source was
+        consulted, lists other tickets, and does not list an id the factory has never
+        seeded. Creating is
+        therefore always allowed, while a follow-up :meth:`edit_ticket` on that same
+        fresh id is refused 409 until the factory seeds it. That is the ticket's
+        accepted consequence of refusing ``absent`` (T80 step 6, "a ticket in
+        ``tickets.json`` but not in the run-state ... is now refused"), pinned by
+        ``test_create_then_edit_is_refused_while_the_source_does_not_list_it``.
+        :meth:`delete_ticket` is the deliberate exception — it gates on
+        :func:`~factory_console.file_adapter.write_gate.ensure_deletable`, which
+        permits ``absent``, so what create mints can always be un-created (T80's
+        amendment, gap 2) — with one exception, since ``ensure_deletable`` still
+        refuses :attr:`~factory_console.domain.run_state.RunState.unreadable`: in a
+        project whose source is there and cannot be READ, a freshly created ticket can
+        be neither edited nor deleted until that source's permissions are fixed
+        (T80 amendment 2). The split is called out here because this docstring once
+        claimed the mutable ``unknown`` for every project. Raises
         :class:`~factory_console.file_adapter.path_safety.PathTraversal` for an
         unsafe id and
         :class:`~factory_console.file_adapter.write_render.TicketAlreadyExists`
@@ -105,12 +134,24 @@ class RealFileWriter:
 
         Enforces the todo-only gate FIRST (ticket step 4): a non-todo run-state
         fails fast with :class:`~factory_console.file_adapter.write_gate.TicketNotMutable`
-        (409) BEFORE any render or write. (Gate-first vs the fake's existence-first
-        order is observationally equivalent — an unknown id resolves to the mutable
-        ``unknown`` state, so the gate never masks the
-        :class:`~factory_console.file_adapter.write_render.UnknownTicket` that
-        :func:`~factory_console.file_adapter.write_render.render_edit` then raises
-        for it.)
+        (409) BEFORE any render or write. Gate-first vs the fake's existence-first
+        order is observationally equivalent whenever the project's run-state source is
+        missing or VACUOUS, since both answer the mutable ``unknown``. It diverges for
+        a resolved, POPULATED source: an id such a source does not list now (T80)
+        answers :attr:`~factory_console.domain.run_state.RunState.absent`, so an id
+        that is also absent from the manifest is refused by THIS gate (409) before it
+        ever reaches the
+        :class:`~factory_console.file_adapter.write_render.UnknownTicket` (404) that
+        :func:`~factory_console.file_adapter.write_render.render_edit` would otherwise
+        raise for it. That is intentional: "not known to the run-state" is the honest
+        answer the gate has for such an id.
+
+        That 409-before-404 ordering is not reachable through the wired API:
+        :class:`~factory_console.services.write_service.WriteService` checks manifest
+        existence and raises the canonical 404 before calling in here, so an id in
+        neither the manifest nor the run-state is a 404 end-to-end. The ordering is
+        observable only to a caller that drives this writer directly (the unit tests
+        do), and is documented because the port permits both call orders.
         """
         write_gate.ensure_mutable(project, ticket_id)
         planned = write_render.render_edit(project, ticket_id, edit)  # validates id + existence
@@ -127,8 +168,20 @@ class RealFileWriter:
         after the delete it is gone, and :class:`WriteResult` requires ``ticket``
         set iff ``applied`` — mirroring how :class:`FakeFileWriter` snapshots the
         entry before removal.
+
+        The gate is :func:`~factory_console.file_adapter.write_gate.ensure_deletable`,
+        NOT ``ensure_mutable``: delete additionally permits
+        :attr:`~factory_console.domain.run_state.RunState.absent`, so a ticket
+        :meth:`create_ticket` just minted into a project with a populated run-state
+        source can be removed again (T80's amendment, gap 2). Every other read-only
+        state is refused here exactly as it is for an edit, and an edit of that same
+        ``absent`` ticket stays refused. The widening is exactly one state wide:
+        :attr:`~factory_console.domain.run_state.RunState.unreadable` is refused here
+        too, because a source that could not be READ proves nothing about whether the
+        factory tracks this ticket, while ``absent`` proves it does not
+        (T80 amendment 2).
         """
-        write_gate.ensure_mutable(project, ticket_id)
+        write_gate.ensure_deletable(project, ticket_id)
         planned = write_render.render_delete(project, ticket_id)  # validates id + existence
         preview = write_diff.preview(ticket_id, planned)
         # Re-read the deleted ticket's FINAL state before the write erases its .md,

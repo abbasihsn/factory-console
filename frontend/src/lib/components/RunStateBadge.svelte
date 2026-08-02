@@ -32,7 +32,15 @@
 		flagged: 'bg-red-100 text-red-800',
 		failed: 'bg-red-200 text-red-900',
 		needs_human: 'bg-red-100 text-red-900 ring-1 ring-red-400',
-		unknown: 'bg-slate-100 text-slate-500'
+		unknown: 'bg-slate-100 text-slate-500',
+		absent: 'bg-slate-200 text-slate-600',
+		// Red, unlike its slate siblings: `unknown` and `absent` are ordinary answers
+		// about a source that WAS read, while `unreadable` is a source the console
+		// could not read at all — an operator has to notice it, because every write in
+		// the project is refused until it is fixed. Outlined rather than solid so it
+		// still reads as "the console cannot see", not as a lane failure like
+		// `failed`/`needs_human`.
+		unreadable: 'bg-red-50 text-red-800 ring-1 ring-red-300'
 	};
 	const STATE_LABELS: Record<RunState, string> = {
 		todo: 'To do',
@@ -45,7 +53,9 @@
 		flagged: 'Flagged',
 		failed: 'Failed',
 		needs_human: 'Needs human',
-		unknown: 'Unknown'
+		unknown: 'Unknown',
+		absent: 'Not listed',
+		unreadable: 'Unreadable'
 	};
 	const STATE_TITLES: Record<RunState, string> = {
 		todo: 'Queued — no factory lane has started this ticket yet',
@@ -58,7 +68,24 @@
 		flagged: 'The lane finished but flagged a problem — needs a look',
 		failed: 'The lane failed — the ticket did not get built',
 		needs_human: 'Blocked: the factory cannot proceed without a human decision',
-		unknown: 'No run-state source present, or this ticket is not in it'
+		// NOT just "no source": the server also answers `unknown` when a source
+		// vanished and when its whole document could not be parsed. Naming only the
+		// first case would tell an operator with a corrupt run-state.json that they
+		// have no run-state at all — hiding the degradation the state exists to report.
+		// It no longer covers an entry that names this ticket under a status the
+		// console cannot classify: that is `unreadable` since T80 amendment 4.
+		unknown: 'No run-state source for this project, or its source could not be understood',
+		absent: 'A run-state source exists but does not list this ticket',
+		// The tooltip has to carry the FIX, because this is the only state whose cause
+		// is on the operator's side and every write is refused until it changes. Since
+		// amendment 4 there are TWO causes with two different fixes — the source could
+		// not be opened, or it was read and says something about this ticket the
+		// console cannot interpret — so the tooltip names both rather than sending
+		// half of the cases to chmod a file that reads fine. The server's 409 is what
+		// says WHICH one and names the offending value; a badge tooltip is static
+		// prose over a single enum member and cannot.
+		unreadable:
+			'The run-state source could not be read, or says something about this ticket this console does not understand — writes are refused'
 	};
 </script>
 

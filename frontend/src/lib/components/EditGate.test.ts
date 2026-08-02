@@ -4,8 +4,12 @@ import type { RunState } from '$lib/api';
 import EditGate from '$lib/components/EditGate.svelte';
 
 // The gate mirrors `isEditable`: only `todo` and `unknown` are writable, so those
-// two are the only states with nothing to explain.
-const READ_ONLY_STATES: RunState[] = ['in-flight', 'ready', 'merged'];
+// two are the only states with nothing to explain. `absent` is read-only for EDIT
+// but still deletable, and `unreadable` refuses BOTH writes for a reason that is
+// about the SOURCE rather than a lane — so both are banner-worthy yet say something
+// different from the lane-owned states below, hence their own lists.
+const LANE_OWNED_STATES: RunState[] = ['in-flight', 'ready', 'merged'];
+const READ_ONLY_STATES: RunState[] = [...LANE_OWNED_STATES, 'absent', 'unreadable'];
 const EDITABLE_STATES: RunState[] = ['todo', 'unknown'];
 
 describe('EditGate', () => {
@@ -20,9 +24,91 @@ describe('EditGate', () => {
 			// The raw run-state value, so the banner names the same thing the server
 			// gate and the run-state directory do.
 			expect(text).toContain(runState);
+			// Only what EVERY read-only state shares — WHICH writes are disabled
+			// differs by state and is asserted per-branch below.
+			expect(text).toContain('editing');
+			expect(text).toContain('disabled');
+		});
+	}
+
+	for (const runState of LANE_OWNED_STATES) {
+		it(`says both writes are disabled for ${runState}`, () => {
+			render(EditGate, { props: { runState } });
+
+			const text = screen.getByRole('note').textContent?.replace(/\s+/g, ' ') ?? '';
 			expect(text).toContain('editing and deleting are disabled');
 		});
 	}
+
+	// The banner must not claim a refusal the server does not make. `ensure_deletable`
+	// permits `absent`, so a banner that says "editing and deleting are disabled"
+	// would send an operator off to hand-edit tickets.json rather than press the
+	// Delete button that actually works (T80 amendment, gap 2).
+	it('does not claim delete is disabled for absent', () => {
+		render(EditGate, { props: { runState: 'absent' } });
+
+		const text = screen.getByRole('note').textContent?.replace(/\s+/g, ' ') ?? '';
+		expect(text).not.toContain('deleting are disabled');
+		expect(text).toContain('You can still delete it.');
+	});
+
+	// T80: `absent` is read-only for a DIFFERENT reason than the lane-owned states,
+	// and the banner must say so — no lane owns a ticket the run-state source never
+	// listed, so the lane-ownership sentence would misdirect the operator.
+	it('gives absent its own reason instead of blaming a factory lane', () => {
+		render(EditGate, { props: { runState: 'absent' } });
+
+		const text = screen.getByRole('note').textContent?.replace(/\s+/g, ' ') ?? '';
+		expect(text).toContain('run-state source does not list this ticket');
+		expect(text).not.toContain('a factory lane owns a ticket');
+	});
+
+	// The gate is not the only gate, and for `absent` it is not even the same gate:
+	// the server would accept the delete. Claiming otherwise is worse than silence.
+	it('scopes the "server would reject it anyway" claim to the edit for absent', () => {
+		render(EditGate, { props: { runState: 'absent' } });
+
+		const text = screen.getByRole('note').textContent?.replace(/\s+/g, ' ') ?? '';
+		expect(text).toContain('would reject the edit anyway');
+		expect(text).not.toContain('would reject the write anyway');
+	});
+
+	// T80 amendment 2: `unreadable` is in NEITHER server allowlist, so both writes are
+	// refused — and the cause is on the operator's side (the source), not a lane's.
+	// Blaming a lane here sends them looking for a lane that does not exist. Asserted as
+	// the two behaviours the banner owes: which writes are disabled, and why.
+	//
+	// Amendment 4 gave the state a second cause (a source read fine whose entry for this
+	// ticket could not be interpreted), so the banner must not name a fix — it has only
+	// the enum member and would be wrong half the time. The reason it gives is therefore
+	// asserted below as covering both, and the specific value lives in the server's 409.
+	it('says both writes are disabled for unreadable', () => {
+		render(EditGate, { props: { runState: 'unreadable' } });
+
+		const text = screen.getByRole('note').textContent?.replace(/\s+/g, ' ') ?? '';
+		expect(text).toContain('editing and deleting are disabled');
+	});
+
+	it('gives unreadable its own reason instead of blaming a factory lane', () => {
+		render(EditGate, { props: { runState: 'unreadable' } });
+
+		const text = screen.getByRole('note').textContent?.replace(/\s+/g, ' ') ?? '';
+		expect(text).toContain('run-state source could not be read');
+		// ...and the other cause too (amendment 4) — the banner cannot tell them apart,
+		// so it must name both rather than sending half the cases to chmod a file that
+		// reads perfectly well.
+		expect(text).toContain('cannot interpret');
+		expect(text).not.toContain('a factory lane owns a ticket');
+		// It must not offer the delete the way `absent` does — the server refuses it.
+		expect(text).not.toContain('You can still delete it.');
+	});
+
+	it('still blames the owning lane for a state a lane really did set', () => {
+		render(EditGate, { props: { runState: 'merged' } });
+
+		const text = screen.getByRole('note').textContent?.replace(/\s+/g, ' ') ?? '';
+		expect(text).toContain('a factory lane owns a ticket');
+	});
 
 	for (const runState of EDITABLE_STATES) {
 		it(`renders nothing for ${runState}`, () => {

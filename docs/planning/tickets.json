@@ -1122,7 +1122,7 @@
       "depends_on": [
         "T78"
       ],
-      "provides": "RunState.absent; ensure_mutable refuses a ticket a present run-state does not list, while a project with no run-state source stays fully editable. AMENDED 2026-08-01: a vacuous run-state source resolves unknown rather than absent, and delete is permitted on absent via ensure_deletable — the two high findings from T80's own review, folded in because they must be fixed before this ticket merges.",
+      "provides": "RunState.absent; ensure_mutable refuses a ticket that a POPULATED run-state source does not list, while the separate ensure_deletable (DELETABLE_STATES = MUTABLE_STATES + absent) still permits DELETING it, so the ungated create_ticket cannot mint a ticket the console can never remove. A project with no run-state source — or with a resolved but VACUOUS one (a marker directory holding no ticket marker, or run-state.json with an empty tickets object) — resolves unknown and stays fully editable. Plus RunState.unreadable, for a source that IS there and whose bytes or entries could not be read at all (EACCES and friends): it is in NEITHER allowlist, so ensure_mutable AND ensure_deletable both refuse it with the same 409, whose message names the source path. Resolution is four-way — no source / vanished / vacuous / content unparseable resolve the mutable unknown; a populated source that does not list the id resolves absent (edit refused, delete permitted); a source that could not be READ resolves unreadable (both refused). unreadable is deliberately NOT foldable into either of the others: 'I could not look' is not 'I looked and there is nothing to find'.",
       "path": "docs/planning/tickets/v2.1/T80-write-gate-absent-vs-unsourced.md",
       "status": "todo"
     },
@@ -1254,6 +1254,18 @@
       "status": "todo",
       "audit_finding": "F1",
       "audit_date": "2026-08-01"
+    },
+    {
+      "id": "T92",
+      "title": "An unrecognised state directory is unavailable information too",
+      "track": "backend",
+      "milestone": "v2.1",
+      "depends_on": [
+        "T80"
+      ],
+      "provides": "The directory run-state form refuses, PER ID, the ids named under a state subdirectory this console has no name for — even when a recognised marker also names them, because the unknown state's precedence is unknown. A source populated only under unrecognised names is populated, not vacuous, so the vacuity scan counts markers under every subdirectory. An unrecognised directory naming no ids changes nothing: over-refusal is the failure mode the per-id narrowness exists to prevent. Closes the seventh and last instance of T80's fail-open class, found by T80's Amendment 4 step-4 enumeration rather than by a seventh review round.",
+      "path": "docs/planning/tickets/v2.1/T92-unrecognised-state-directory.md",
+      "status": "todo"
     }
   ]
 }
