@@ -14,6 +14,8 @@ render "the factory has not run here" for a lane whose result exists.
 """
 
 import json
+import os
+import stat as stat_module
 from pathlib import Path
 
 import pytest
@@ -231,10 +233,11 @@ def test_absent_and_malformed_are_distinct_reasons(tmp_path: Path) -> None:
 
 
 def test_a_directory_at_the_artifact_path_is_unreadable_not_unparseable(tmp_path: Path) -> None:
-    # A directory stats fine and then fails to read — the shape of any I/O failure
-    # (permission denied, an EIO). The reason must say the file could not be read:
-    # nothing ever examined its contents, and ``unparseable`` would send a human
-    # hunting a syntax error in a file nothing could open.
+    # A directory stats fine and is not a regular file. The reason must say the file
+    # could not be read: nothing ever examined its contents, and ``unparseable``
+    # would send a human hunting a syntax error in a file nothing could open.
+    # Permission-denied and EIO are the same reason by a different route; they are
+    # covered separately below, since this case never raises from the read at all.
     (tmp_path / _result_relative()).mkdir(parents=True)
 
     result = read_result(tmp_path, TICKET_ID)
@@ -251,6 +254,109 @@ def test_a_directory_at_the_receipt_path_is_unreadable(tmp_path: Path) -> None:
 
 def test_a_directory_at_the_last_stop_path_is_unreadable(tmp_path: Path) -> None:
     (tmp_path / LAST_STOP_RELATIVE_PATH).mkdir(parents=True)
+
+    assert read_last_stop(tmp_path).reason == "unreadable"
+
+
+def test_a_permission_denied_stat_is_unreadable_never_absent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # THE fail-quiet this result type exists to prevent, and the one an easy refactor
+    # reintroduces: ``FileNotFoundError``/``NotADirectoryError`` sit in the sibling
+    # except clause, so widening that clause to swallow ``PermissionError`` would make
+    # a result the console cannot read report as "the factory never ran here".
+    # Monkeypatched rather than chmod'd so the assertion is about THIS module's errno
+    # split and not about pathlib's, which changed across CPython versions.
+    _write_artifact(tmp_path, _result_relative(), '{"status":"ready"}')
+
+    def _denied(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "stat", _denied)
+
+    result = read_result(tmp_path, TICKET_ID)
+
+    assert result.reason == "unreadable", "'I could not look' is never 'nothing is there'"
+    assert result.data is None
+
+
+def test_a_permission_denied_read_is_unreadable_never_absent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The same split one step later: the stat succeeds and the OPEN is refused.
+    _write_artifact(tmp_path, _result_relative(), '{"status":"ready"}')
+
+    def _denied(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "open", _denied)
+
+    assert read_result(tmp_path, TICKET_ID).reason == "unreadable"
+
+
+def test_an_artifact_that_vanishes_between_the_stat_and_the_read_is_absent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The race the module names: the factory rewrites these files while the console
+    # is running, so a file can stat and then be gone. It is still "there is nothing
+    # to find", NOT "I could not look" — routing it to ``unreadable`` would report a
+    # degradation for an ordinary rewrite. Mocked because a real race is not
+    # reproducible deterministically.
+    _write_artifact(tmp_path, _result_relative(), '{"status":"ready"}')
+
+    def _vanished(*_args: object, **_kwargs: object) -> None:
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(Path, "open", _vanished)
+
+    result = read_result(tmp_path, TICKET_ID)
+
+    assert result.reason == "absent"
+    assert result.data is None
+
+
+def test_a_file_where_a_parent_directory_belongs_is_absent(tmp_path: Path) -> None:
+    # ``.factory/results`` is a FILE, so stat'ing ``.factory/results/T88.json`` raises
+    # NotADirectoryError. Nothing is there to be hiding anything, so this is absent —
+    # routing it to ``unreadable`` would sound like a permissions problem and send an
+    # operator chasing one that does not exist.
+    (tmp_path / ".factory").mkdir()
+    (tmp_path / RESULTS_RELATIVE_DIR).write_text("not a directory", encoding="utf-8")
+
+    result = read_result(tmp_path, TICKET_ID)
+
+    assert result.reason == "absent"
+    assert result.data is None
+
+
+def test_a_non_regular_file_is_refused_before_it_is_opened(tmp_path: Path) -> None:
+    # A FIFO stats as size 0, so it passes the size cap — and opening it BLOCKS until
+    # a writer appears, hanging the request with no timeout. The node type must be
+    # checked before the open, so this returns rather than hanging. If this test ever
+    # hangs instead of failing, that is the regression.
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("platform has no FIFOs")
+    path = tmp_path / _result_relative()
+    path.parent.mkdir(parents=True)
+    os.mkfifo(path)
+
+    result = read_result(tmp_path, TICKET_ID)
+
+    assert result.reason == "unreadable", "a size bounds a regular file and nothing else"
+    assert result.data is None
+
+
+def test_a_non_regular_last_stop_is_refused_too(tmp_path: Path) -> None:
+    # The same node-type gate on the reader that has no id to validate. A device node
+    # would be the other shape of this (``/dev/zero`` stats as size 0 and never reaches
+    # EOF, so an unbounded read exhausts memory); one reached through a SYMLINK is
+    # already refused a step earlier by the containment gate, and creating one inside
+    # the root needs privileges a test must not assume — so the FIFO is what exercises
+    # this branch for a CONTAINED path.
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("platform has no FIFOs")
+    (tmp_path / ".factory").mkdir()
+    os.mkfifo(tmp_path / LAST_STOP_RELATIVE_PATH)
 
     assert read_last_stop(tmp_path).reason == "unreadable"
 
@@ -304,6 +410,39 @@ def test_an_artifact_exactly_at_the_cap_is_still_read(tmp_path: Path) -> None:
 
     assert receipt.reason is None
     assert receipt.data == {"status": "ready"}
+
+
+def test_a_file_that_grows_past_the_cap_after_the_stat_is_still_capped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The cap must bound the READ, not a stat that is already stale when it is acted
+    # on: the factory rewrites these files while the console is running, so a file
+    # that stats small and is extended before the read would otherwise be pulled into
+    # memory whole — the unbounded read on a request path the cap exists to prevent.
+    # The stat is pinned to a small size while the file on disk is over the cap.
+    path = tmp_path / _result_relative()
+    path.parent.mkdir(parents=True)
+    with path.open("wb") as handle:
+        handle.write(b'{"status":"ready"}')
+        handle.truncate(MAX_ARTIFACT_BYTES + 1)
+
+    real_stat = Path.stat
+
+    class _SmallStat:
+        st_mode = stat_module.S_IFREG | 0o644
+        st_size = 18
+
+    def _stale_stat(self: Path, *args: object, **kwargs: object) -> object:
+        if self == path:
+            return _SmallStat()
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", _stale_stat)
+
+    result = read_result(tmp_path, TICKET_ID)
+
+    assert result.reason == "too_large", "the cap is a property of the read, not of the stat"
+    assert result.data is None, "never parsed from the truncated prefix"
 
 
 def test_the_cap_reason_is_distinct_from_unparseable(tmp_path: Path) -> None:
@@ -371,11 +510,87 @@ def test_an_id_whose_resolved_path_escapes_the_project_root_is_refused(
     (outside / "T88.json").write_text('{"leaked":true}', encoding="utf-8")
     project_root = tmp_path / "project"
     (project_root / ".factory").mkdir(parents=True)
-    (project_root / RESULTS_RELATIVE_DIR).symlink_to(outside, target_is_directory=True)
-    (project_root / RECEIPTS_RELATIVE_DIR).symlink_to(outside, target_is_directory=True)
+    try:
+        (project_root / RESULTS_RELATIVE_DIR).symlink_to(outside, target_is_directory=True)
+        (project_root / RECEIPTS_RELATIVE_DIR).symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("platform does not support symlinks")
 
     with pytest.raises(PathTraversal):
         reader(project_root, TICKET_ID)
+
+
+@pytest.mark.parametrize("reader", [read_result, read_receipt], ids=["result", "receipt"])
+def test_a_symlink_loop_is_unreadable_and_does_not_escape_as_a_crash(
+    tmp_path: Path, reader
+) -> None:
+    # ``Path.resolve(strict=False)`` is not total: through CPython 3.12 it re-stats the
+    # resolved path and turns ELOOP into a RuntimeError, which 3.13 dropped. Both are
+    # inside this project's supported range, so an unhandled loop is an unmapped 500
+    # on one interpreter and a clean skip on the other, for identical bytes on disk.
+    # It is NOT a PathTraversal: the id is well-formed and nothing was proven unsafe.
+    for relative in (RESULTS_RELATIVE_DIR, RECEIPTS_RELATIVE_DIR):
+        (tmp_path / relative).mkdir(parents=True)
+        try:
+            (tmp_path / relative / f"{TICKET_ID}.json").symlink_to(f"{TICKET_ID}.json")
+        except (OSError, NotImplementedError):
+            pytest.skip("platform does not support symlinks")
+
+    result = reader(tmp_path, TICKET_ID)
+
+    assert result.reason == "unreadable"
+    assert result.data is None
+
+
+def test_a_symlinked_last_stop_is_not_read_through_out_of_the_project(tmp_path: Path) -> None:
+    # read_last_stop takes no ticket id, which removes the id-validation surface and
+    # NOT the containment one: console-owned constants fix the path asked for, not the
+    # file it lands on. A symlink here (a committed one in an untrusted checkout, or
+    # anything the factory process writes) would otherwise return any JSON object the
+    # server can open as this project's last-stop record — with ``reason is None``
+    # marking it a clean read.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "creds.json").write_text('{"token":"SECRET"}', encoding="utf-8")
+    project_root = tmp_path / "project"
+    (project_root / ".factory").mkdir(parents=True)
+    try:
+        (project_root / LAST_STOP_RELATIVE_PATH).symlink_to(outside / "creds.json")
+    except (OSError, NotImplementedError):
+        pytest.skip("platform does not support symlinks")
+
+    last_stop = read_last_stop(project_root)
+
+    assert last_stop.data is None, "out-of-project content is never returned"
+    assert last_stop.reason == "unreadable", "it is there and this console will not look"
+
+
+def test_a_symlinked_factory_dir_does_not_leak_last_stop_either(tmp_path: Path) -> None:
+    # The escape one level up: ``.factory`` itself is the symlink, so every constant
+    # under it resolves outside the root.
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "last-stop.json").write_text('{"reason":"leaked"}', encoding="utf-8")
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    try:
+        (project_root / ".factory").symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("platform does not support symlinks")
+
+    assert read_last_stop(project_root).reason == "unreadable"
+
+
+def test_last_stop_reports_a_resolved_path_like_the_other_two_readers(tmp_path: Path) -> None:
+    # ``path`` is what makes a reason actionable, so it must mean the same thing for
+    # all three artifacts. discover_project can hand back an unresolved root, and the
+    # ticket-id readers always resolve — last-stop must not be the odd one out.
+    _write_artifact(tmp_path, LAST_STOP_RELATIVE_PATH, '{"reason":"budget"}')
+
+    last_stop = read_last_stop(tmp_path)
+
+    assert last_stop.reason is None
+    assert last_stop.path == (tmp_path / LAST_STOP_RELATIVE_PATH).resolve()
 
 
 def test_the_refusal_uses_the_uniform_invalid_ticket_id_contract() -> None:

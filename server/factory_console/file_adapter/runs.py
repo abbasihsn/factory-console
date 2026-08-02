@@ -17,15 +17,29 @@ these, and a file that is missing must stay tellable apart from one that is ther
 and could not be read. See :data:`~factory_console.domain.runs.ArtifactSkipReason`
 for the four reasons and what separates them.
 
-The reads are bounded: a file over :data:`MAX_ARTIFACT_BYTES` is not read at all,
-and the cap is REPORTED as ``too_large`` rather than short-read in silence.
+The reads are bounded, and bounded at the READ and not merely at a preceding
+``stat`` — see :func:`_read_json_artifact`. A file over :data:`MAX_ARTIFACT_BYTES`
+is not read, and the cap is REPORTED as ``too_large`` rather than short-read in
+silence. Only a REGULAR file is read at all: a size is a bound on a regular file
+and on nothing else.
 
 ``read_result``/``read_receipt`` turn a ticket id into a filesystem path segment,
-so they re-validate the id (:func:`_validate_ticket_id_as_segment`) and then check
-the RESOLVED path is still contained under the project root — the same
-defense-in-depth :mod:`~factory_console.file_adapter.run_state` and
+so they re-validate the id
+(:func:`~factory_console.file_adapter.path_safety.validate_ticket_id_as_segment`)
+and then check the RESOLVED path is still contained under the project root — the
+same defense-in-depth :mod:`~factory_console.file_adapter.run_state` and
 :mod:`~factory_console.file_adapter.ticket_md` apply, raising the same shared
 :class:`~factory_console.file_adapter.path_safety.PathTraversal`.
+
+:func:`read_last_stop` takes no ticket id, but it gets the CONTAINMENT half of that
+check anyway (:func:`_contained_artifact_path`). Owning the path a caller asks for
+is not the same as owning the file it lands on: ``.factory/last-stop.json`` is a
+constant, and a symlink there — or at ``.factory`` itself — still resolves wherever
+it likes, which is precisely the escape the results/receipts gate exists to close
+and which no amount of id validation was ever going to catch. Its containment
+failure answers ``unreadable`` rather than raising, because with no id to name,
+:class:`~factory_console.file_adapter.path_safety.PathTraversal`'s
+``invalid_ticket_id`` contract has nothing to be about.
 
 The console MUST NOT write, create, or delete anything here — a guard test
 asserts this module contains no filesystem-mutating call.
@@ -35,12 +49,14 @@ from __future__ import annotations
 
 import json
 import logging
-import re
+import stat
 from pathlib import Path
 
 from factory_console.domain.runs import ArtifactRead
-from factory_console.domain.ticket import TICKET_ID_PATTERN
-from factory_console.file_adapter.path_safety import PathTraversal
+from factory_console.file_adapter.path_safety import (
+    PathTraversal,
+    validate_ticket_id_as_segment,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -63,42 +79,109 @@ LAST_STOP_RELATIVE_PATH = Path(".factory") / "last-stop.json"
 # smaller, wrong record.
 MAX_ARTIFACT_BYTES = 1 * 1024 * 1024
 
+# The escape refusal's message, named rather than inlined — the same constant
+# ``ticket_md`` and ``write_render`` each carry for the same string, so the three
+# readers' ``invalid_ticket_id`` envelopes stay word-identical.
+_ID_ESCAPES_ROOT = "Ticket id resolves outside the project root"
 
-def _validate_ticket_id_as_segment(ticket_id: str) -> None:
-    """Raise :class:`PathTraversal` unless ``ticket_id`` is one path-safe segment.
 
-    Defense-in-depth: the id was already validated at the API boundary, but this
-    module joins it onto a filesystem path, so it is re-validated at the point of
-    use. ``fullmatch`` (not ``match``) so a trailing newline cannot sneak past the
-    ``$`` anchor. :data:`TICKET_ID_PATTERN` allows ``.`` as a character, so bare
-    ``.`` and ``..`` pass the regex yet are single-segment traversals — they are
-    rejected explicitly, exactly as
-    :mod:`~factory_console.file_adapter.run_state` rejects them.
+def _resolve_or_none(path: Path) -> Path | None:
+    """``path.resolve(strict=False)``, or ``None`` when the resolution itself fails.
+
+    :meth:`Path.resolve` is NOT total, and non-strict does not mean non-raising.
+    Through CPython 3.12 it re-stats the resolved path and converts ``ELOOP`` into
+    a ``RuntimeError("Symlink loop from ...")``; 3.13 dropped that re-stat and
+    answers with the unresolved path instead. ``pyproject.toml`` declares
+    ``requires-python = ">=3.11"`` with no upper bound, so BOTH behaviours are
+    inside the supported range — the same interpreter-drift trap
+    :func:`~factory_console.file_adapter.run_state._node_exists` exists to
+    neutralise, met here one layer earlier. Left unhandled, a symlink loop at
+    ``.factory/results/<id>.json`` escapes this read-only reader as a ``RuntimeError``
+    on 3.11/3.12 — an unmapped 500 on every request naming that ticket, from a module
+    whose readers document that they raise nothing but :class:`PathTraversal` — while
+    3.13 answers the same bytes on disk with a clean ``unreadable``. ``ValueError``
+    joins it for a path that cannot be encoded (an embedded NUL), matching the
+    ``except ValueError`` the run-state probes carry.
+
+    ``None`` means the containment question cannot be ANSWERED, which is not the same
+    as answering it NO — so callers must treat it as "I could not look"
+    (``unreadable``) and never read the path, rather than as a traversal to refuse.
     """
-    if re.fullmatch(TICKET_ID_PATTERN, ticket_id) is None or ticket_id in (".", ".."):
-        raise PathTraversal(ticket_id)
+    try:
+        return path.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        return None
 
 
-def _safe_artifact_path(project_root: Path, relative_dir: Path, ticket_id: str) -> Path:
+def _within_root(resolved: Path, project_root: Path) -> bool | None:
+    """Is ``resolved`` contained under ``project_root``? ``None`` if undecidable.
+
+    The containment gate no id validation can cover: a symlinked ``.factory``,
+    ``.factory/results`` or ``.factory/last-stop.json`` resolves wherever it points,
+    and the console must not read through it. The ROOT is resolved too, so a
+    symlinked root (``/tmp`` on some platforms) is not a false escape, mirroring
+    :func:`~factory_console.file_adapter.ticket_md._safe_resolve`.
+
+    The single containment implementation in this module, so the ticket-id readers
+    and :func:`read_last_stop` cannot answer this differently — they differ only in
+    how they PHRASE a refusal, never in what counts as one.
+
+    ``None`` (the root itself would not resolve) is deliberately not ``False``: a
+    question that could not be put has not been answered NO. Both are refusals here,
+    but only ``False`` is a proven escape, and only a proven escape may be reported
+    as one.
+    """
+    root = _resolve_or_none(project_root)
+    if root is None:
+        return None
+    return resolved.is_relative_to(root)
+
+
+def _safe_artifact_path(project_root: Path, relative_dir: Path, ticket_id: str) -> Path | None:
     """Resolve ``<project_root>/<relative_dir>/<ticket_id>.json``, refusing an unsafe id.
 
     Two independent gates, in order and BOTH before any read: the id must be one
-    path-safe segment (:func:`_validate_ticket_id_as_segment`), and the RESOLVED
-    candidate must stay under the resolved project root — so a symlinked
-    ``.factory/results`` pointing out of the project cannot be read through, which
-    no amount of id validation can catch. Both sides are resolved so a symlinked
-    root (``/tmp`` on some platforms) is not a false escape, mirroring
-    :func:`~factory_console.file_adapter.ticket_md._safe_resolve`.
+    path-safe segment
+    (:func:`~factory_console.file_adapter.path_safety.validate_ticket_id_as_segment`),
+    and the resolved candidate must stay under the resolved project root
+    (:func:`_contained_artifact_path`).
+
+    Returns ``None`` when the path could not be RESOLVED at all, which is a
+    different answer from an escape: nothing was proven unsafe, the question could
+    not be put, and the caller reports ``unreadable`` rather than raising. An escape
+    that WAS proven still raises.
 
     Raises:
-        PathTraversal: for either cause, with the uniform ``invalid_ticket_id``
-            contract. Raised BEFORE any filesystem read.
+        PathTraversal: when the id is not a single path-safe segment, or when the
+            resolved path provably escapes ``project_root`` — the uniform
+            ``invalid_ticket_id`` contract. Raised BEFORE any filesystem read.
     """
-    _validate_ticket_id_as_segment(ticket_id)
-    candidate = (project_root / relative_dir / f"{ticket_id}.json").resolve(strict=False)
-    if not candidate.is_relative_to(project_root.resolve()):
-        raise PathTraversal(ticket_id, reason="Ticket id resolves outside the project root")
-    return candidate
+    validate_ticket_id_as_segment(ticket_id)
+    resolved = _resolve_or_none(project_root / relative_dir / f"{ticket_id}.json")
+    if resolved is None:
+        return None
+    within = _within_root(resolved, project_root)
+    if within is None:
+        return None
+    if not within:
+        raise PathTraversal(ticket_id, reason=_ID_ESCAPES_ROOT)
+    return resolved
+
+
+def _read_ticket_artifact(project_root: Path, relative_dir: Path, ticket_id: str) -> ArtifactRead:
+    """The shared body of :func:`read_result` and :func:`read_receipt`.
+
+    Gate the path, then read it. Factored out so the two readers cannot drift in
+    how they handle an unresolvable path — a receipt and a result are two artifacts
+    of the same kind, and this module must not tolerate a malformed one differently
+    from the other.
+    """
+    safe = _safe_artifact_path(project_root, relative_dir, ticket_id)
+    if safe is None:
+        candidate = project_root / relative_dir / f"{ticket_id}.json"
+        _LOGGER.warning("runs: %s could not be resolved; it is not read", candidate)
+        return ArtifactRead(path=candidate, reason="unreadable")
+    return _read_json_artifact(safe)
 
 
 def _read_json_artifact(path: Path) -> ArtifactRead:
@@ -109,12 +192,13 @@ def _read_json_artifact(path: Path) -> ArtifactRead:
     between results, receipts and last-stop.
 
     NEVER raises. Every failure becomes a named reason (see
-    :data:`~factory_console.domain.runs.ArtifactSkipReason`): the file is stat'd
-    first so an oversized one is refused before its bytes are touched, then read,
+    :data:`~factory_console.domain.runs.ArtifactSkipReason`): the node is stat'd
+    first — so a non-regular file is refused before it is opened and an oversized
+    one before its bytes are touched — then read under an INDEPENDENT byte bound,
     then parsed, and only a top-level JSON OBJECT counts as data.
     """
     try:
-        size = path.stat().st_size
+        info = path.stat()
     except (FileNotFoundError, NotADirectoryError):
         # Nothing is there — no file, or a path component that is not a directory,
         # which amounts to the same thing. The ordinary state of a fresh clone, so
@@ -128,29 +212,76 @@ def _read_json_artifact(path: Path) -> ArtifactRead:
         # unescaped newline in it would forge a record.
         _LOGGER.warning("runs: %s could not be stat'd: %r", path, error)
         return ArtifactRead(path=path, reason="unreadable")
+    except ValueError:
+        # A path that cannot be encoded (an embedded NUL). ``Path.stat`` raises this
+        # rather than an ``OSError``, so the clause above does not cover it, and the
+        # NEVER-raises contract is stated without exceptions — the same
+        # ``except ValueError`` the run-state probes carry.
+        _LOGGER.warning("runs: an artifact path could not be encoded; it is not read")
+        return ArtifactRead(path=path, reason="unreadable")
 
-    if size > MAX_ARTIFACT_BYTES:
+    if not stat.S_ISREG(info.st_mode):
+        # Only a REGULAR file is read. A size is a bound on a regular file and on
+        # nothing else: a FIFO and a character device both stat as ``st_size == 0``,
+        # so each sails past the cap below — and then ``open()`` on the FIFO BLOCKS
+        # until a writer appears (stalling the request, and with it the event loop,
+        # with no timeout), while ``/dev/zero`` reached through a symlink never sees
+        # EOF and is read until the process dies. The node type is therefore checked
+        # BEFORE the file is opened, not inferred from the read failing — the same
+        # rule ``ledger.find_ledger_path`` states with ``is_file()`` and
+        # ``run_state.find_run_state_source`` with ``_is_regular_file``.
+        #
+        # This also settles the DIRECTORY case here rather than reactively: a
+        # directory used to reach ``unreadable`` only because ``read_bytes`` raised
+        # ``IsADirectoryError``, which meant a directory whose ``st_size`` happened to
+        # exceed the cap (large directories on ext4/XFS) was reported ``too_large``
+        # instead — two of the four reasons this module promises never to conflate.
+        _LOGGER.warning("runs: %s is not a regular file; it is not read", path)
+        return ArtifactRead(path=path, reason="unreadable")
+
+    if info.st_size > MAX_ARTIFACT_BYTES:
         _LOGGER.warning(
             "runs: %s is %d bytes, over the %d-byte cap; not read",
             path,
-            size,
+            info.st_size,
             MAX_ARTIFACT_BYTES,
         )
         return ArtifactRead(path=path, reason="too_large")
 
     try:
-        raw = path.read_bytes()
+        with path.open("rb") as handle:
+            # Bounded at the READ, not merely at the stat above. The stat's size is
+            # already stale by the time it is acted on — this module's own comments
+            # note the factory rewrites these files while the console is running — so
+            # a file that stats at 18 bytes and is extended to gigabytes before this
+            # line would otherwise be pulled into memory whole, which is the
+            # unbounded read on a request path the cap exists to prevent. Reading
+            # ``MAX + 1`` makes the cap a property of this call: at most one byte
+            # over is ever held, and that byte is what distinguishes "exactly at the
+            # cap" (read) from "over it" (reported).
+            raw = handle.read(MAX_ARTIFACT_BYTES + 1)
     except (FileNotFoundError, NotADirectoryError):
         # It vanished between the stat and the read — the factory rewrites these
         # files while the console is running. Still "there is nothing to find",
         # not "I could not look", so it keeps the ``absent`` reason.
         return ArtifactRead(path=path, reason="absent")
     except OSError as error:
-        # Everything else: PermissionError, an I/O error, and IsADirectoryError
-        # for a directory sitting where the artifact belongs (which stats fine
-        # above and only fails here).
+        # Everything else: PermissionError, an I/O error, and IsADirectoryError for
+        # a directory that replaced the artifact after the ``S_ISREG`` check above.
         _LOGGER.warning("runs: %s could not be read: %r", path, error)
         return ArtifactRead(path=path, reason="unreadable")
+
+    if len(raw) > MAX_ARTIFACT_BYTES:
+        # The file GREW past the cap between the stat and the read. Reported, never
+        # parsed from the truncated prefix: a short read of a rewritten artifact is
+        # a smaller, wrong record, and ``too_large`` is the same answer the
+        # pre-read check gives for the same file one moment earlier.
+        _LOGGER.warning(
+            "runs: %s grew past the %d-byte cap while being read; not read",
+            path,
+            MAX_ARTIFACT_BYTES,
+        )
+        return ArtifactRead(path=path, reason="too_large")
 
     # Decode with replacement rather than strictly, for the same reason the ledger
     # does: a byte-level corruption must not cost more than this one file. Note the
@@ -195,11 +326,14 @@ def read_result(project_root: Path, ticket_id: str) -> ArtifactRead:
 
     Raises:
         PathTraversal: if ``ticket_id`` is not a single path-safe segment, or if
-            it resolves outside ``project_root``. Raised BEFORE any filesystem
-            access — the same contract
-            :mod:`~factory_console.file_adapter.run_state` carries.
+            it PROVABLY resolves outside ``project_root``. Raised BEFORE any
+            filesystem read — the same contract
+            :mod:`~factory_console.file_adapter.run_state` carries. A path that
+            could not be resolved at all (a symlink loop) is NOT this case: the id
+            is well-formed and nothing was proven unsafe, so it answers
+            ``unreadable`` rather than raising.
     """
-    return _read_json_artifact(_safe_artifact_path(project_root, RESULTS_RELATIVE_DIR, ticket_id))
+    return _read_ticket_artifact(project_root, RESULTS_RELATIVE_DIR, ticket_id)
 
 
 def read_receipt(project_root: Path, ticket_id: str) -> ArtifactRead:
@@ -215,19 +349,37 @@ def read_receipt(project_root: Path, ticket_id: str) -> ArtifactRead:
 
     Raises:
         PathTraversal: exactly as :func:`read_result`, before any filesystem
-            access.
+            read.
     """
-    return _read_json_artifact(_safe_artifact_path(project_root, RECEIPTS_RELATIVE_DIR, ticket_id))
+    return _read_ticket_artifact(project_root, RECEIPTS_RELATIVE_DIR, ticket_id)
 
 
 def read_last_stop(project_root: Path) -> ArtifactRead:
     """Read ``<project_root>/.factory/last-stop.json``.
 
     Why the LAST run stopped — one artifact per project, naming no ticket, so this
-    takes no ticket id and has nothing to path-validate: the whole path is
-    console-owned constants under a root the caller already resolved.
+    takes no ticket id and has no id to validate.
 
-    NEVER raises, for any input: with no id to reject there is no
-    :class:`PathTraversal` path here either.
+    It is NOT therefore exempt from the CONTAINMENT check. Console-owned constants
+    fix the path this asks for, not the file that path lands on: ``.factory/`` is
+    written by a process the console does not control and may be a checkout of an
+    untrusted repository, so a symlink at ``last-stop.json`` — or at ``.factory``
+    itself — resolves wherever it points, and reading through it would return any
+    JSON object the server process can open (a credentials file, another project's
+    artifacts) as this project's last-stop record, with ``reason is None`` marking it
+    a clean read. That is the same escape :func:`_safe_artifact_path` closes for
+    results and receipts, and an id was never what made it possible. An escaping or
+    unresolvable path answers ``unreadable`` — it is there and this console will not
+    look — rather than raising, since :class:`PathTraversal`'s ``invalid_ticket_id``
+    contract has no id to be about.
+
+    NEVER raises, for any input.
     """
-    return _read_json_artifact(project_root / LAST_STOP_RELATIVE_PATH)
+    candidate = project_root / LAST_STOP_RELATIVE_PATH
+    resolved = _resolve_or_none(candidate)
+    if resolved is None or not _within_root(resolved, project_root):
+        _LOGGER.warning(
+            "runs: %s does not resolve to a path inside the project; it is not read", candidate
+        )
+        return ArtifactRead(path=candidate, reason="unreadable")
+    return _read_json_artifact(resolved)
