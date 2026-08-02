@@ -213,6 +213,103 @@ async def test_atomic_rename_within_root_reports_destination_path(tmp_path: Path
         watcher.stop()
 
 
+async def test_json_run_state_source_write_emits_run_state_event(tmp_path: Path) -> None:
+    # T91/F1: since T78 the PRIMARY run-state source is a FILE,
+    # ``.factory/run-state.json``. The watcher used to schedule only the
+    # DIRECTORY locations, so on a JSON-sourced project a run-state change fired
+    # no event at all and the live-update path was silently dead. Writing the
+    # file must deliver a ChangeEvent scoped exactly like a directory-source one.
+    (tmp_path / "docs" / "planning").mkdir(parents=True)
+    (tmp_path / ".factory").mkdir()
+    watcher = RealFileWatcher(tmp_path)
+    watcher.start()
+    stream, first = await _primed_stream(watcher)
+    try:
+        (tmp_path / ".factory" / "run-state.json").write_text('{"version": 1, "tickets": {}}')
+        event = await _next_event(stream, first)
+        assert event.scope == "run-state"
+        assert event.path == ".factory/run-state.json"
+        assert event.kind in {"created", "modified"}
+    finally:
+        first.cancel()
+        await stream.aclose()
+        watcher.stop()
+
+
+async def test_json_run_state_source_atomic_rename_emits_event(tmp_path: Path) -> None:
+    # The factory REPLACES run-state.json via mktemp + mv (INV-03), so the file's
+    # inode changes on every update. A naive single-file watch would follow the
+    # old inode and go quiet after the first rename; watching the parent
+    # directory and filtering by name is what keeps this firing.
+    (tmp_path / ".factory").mkdir()
+    factory_dir = tmp_path / ".factory"
+    (factory_dir / "run-state.json").write_text('{"version": 1, "tickets": {}}')
+    watcher = RealFileWatcher(tmp_path)
+    watcher.start()
+    stream, first = await _primed_stream(watcher)
+    try:
+        temp = factory_dir / "run-state.json.tmp"
+        temp.write_text('{"version": 1, "tickets": {"T91": {"status": "merged"}}}')
+        temp.rename(factory_dir / "run-state.json")
+
+        async def _drain_until_json() -> ChangeEvent:
+            pending: asyncio.Task | None = first
+            while True:
+                event = await (pending if pending is not None else stream.__anext__())
+                pending = None
+                if event.path == ".factory/run-state.json":
+                    return event
+
+        event = await asyncio.wait_for(_drain_until_json(), _EVENT_TIMEOUT)
+        assert event.scope == "run-state"
+    finally:
+        first.cancel()
+        await stream.aclose()
+        watcher.stop()
+
+
+async def test_other_files_beside_the_json_source_yield_nothing(tmp_path: Path) -> None:
+    # Watching ``.factory`` is a means to observe ONE file. T91 explicitly must
+    # not widen scope: any other entry under ``.factory`` stays invisible.
+    (tmp_path / ".factory").mkdir()
+    watcher = RealFileWatcher(tmp_path)
+    watcher.start()
+    stream, first = await _primed_stream(watcher)
+    try:
+        (tmp_path / ".factory" / "ledger.jsonl").write_text("{}\n")
+        (tmp_path / ".factory" / "notes").mkdir()
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(first, _QUIET_WINDOW)
+    finally:
+        first.cancel()
+        await stream.aclose()
+        watcher.stop()
+
+
+async def test_both_run_state_sources_present_do_not_double_fire(tmp_path: Path) -> None:
+    # With BOTH a run-state directory and the JSON file, one logical change must
+    # still yield exactly one ChangeEvent — the ``.factory`` watch (scheduled for
+    # the JSON file) and the recursive ``.factory/run-state`` watch must not each
+    # report the same change.
+    _make_project(tmp_path)
+    (tmp_path / ".factory" / "run-state.json").write_text('{"version": 1, "tickets": {}}')
+    watcher = RealFileWatcher(tmp_path)
+    watcher.start()
+    stream, first = await _primed_stream(watcher)
+    try:
+        (tmp_path / ".factory" / "run-state.json").write_text(
+            '{"version": 1, "tickets": {"T91": {"status": "ready"}}}'
+        )
+        event = await _next_event(stream, first)
+        assert event.path == ".factory/run-state.json"
+        assert event.scope == "run-state"
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(stream.__anext__(), _QUIET_WINDOW)
+    finally:
+        await stream.aclose()
+        watcher.stop()
+
+
 async def test_change_outside_watched_roots_yields_nothing(tmp_path: Path) -> None:
     _make_project(tmp_path)
     watcher = RealFileWatcher(tmp_path)
