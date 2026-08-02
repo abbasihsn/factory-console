@@ -143,6 +143,24 @@ def _is_directory(path: Path) -> bool:
         return False
 
 
+def _is_regular_file(path: Path) -> bool:
+    """``True`` if ``path`` is a regular file, ``False`` if it definitively is not, else RAISE.
+
+    :meth:`Path.is_file` with the same errno split :func:`_node_exists` makes, and for
+    the same reason — see its docstring. The JSON half of :func:`find_run_state_source`'s
+    probe, so that discovering a source obeys the same "I could not look" rule as reading
+    one.
+    """
+    try:
+        return stat.S_ISREG(path.stat().st_mode)
+    except OSError as exc:
+        if exc.errno in _ABSENT_ERRNOS:
+            return False
+        raise
+    except ValueError:
+        return False
+
+
 def find_run_state_source(project_root: Path) -> RunStateSource | None:
     """Return the project's resolved run-state source, or ``None`` if it has none.
 
@@ -154,14 +172,42 @@ def find_run_state_source(project_root: Path) -> RunStateSource | None:
     2. ``<project_root>/.factory/run-state`` (directory).
     3. ``<project_root>/docs/planning/.run-state`` (directory).
 
-    The node type is checked, not merely existence (:meth:`Path.is_file` for the
-    JSON form, :meth:`Path.is_dir` for the directory form), so a stray file where
+    The node type is checked, not merely existence (:func:`_is_regular_file` for the
+    JSON form, :func:`_is_directory` for the directory form), so a stray file where
     a directory belongs — or a directory named ``run-state.json`` — is skipped
     rather than resolved into a source that cannot be read.
+
+    DISCOVERY IS BOUND BY THE SAME INVARIANT AS RESOLUTION (T80 amendment 3): a
+    candidate that could not be PROBED — ``.factory`` itself mode ``0000``, so stat'ing
+    the file inside it raises ``EACCES`` — resolves TO that candidate rather than being
+    skipped, and the read path then answers the refusing :attr:`RunState.unreadable` for
+    every ticket. Skipping it would fall through to a lower-precedence location, or to
+    ``None``, and ``None`` is the MUTABLE ``unknown`` for every ticket in the project —
+    a write granted precisely because the check could not run, from the one step that
+    runs before any of the checks. Probing a candidate we could not look at as though
+    it were absent is the "I could not look" / "there is nothing to find" conflation this
+    ticket has now been amended for four times, one step further upstream.
+
+    This is also why the probe goes through :func:`_is_regular_file` /
+    :func:`_is_directory` rather than :meth:`Path.is_file` / :meth:`Path.is_dir`: those
+    two RE-RAISE ``EACCES`` through CPython 3.12 and SWALLOW it from 3.13 (gh-113978, see
+    :func:`_node_exists`), so on the older interpreter an unreadable ``.factory`` escaped
+    this read-only prober as an unmapped 500 on every request, and on the newer one it
+    would silently become "this project has no run-state" — a crash and a fail-open from
+    one line, neither of them a decision. The helpers make the answer the interpreter's
+    to report and this module's to decide.
     """
     for kind, relative in RUN_STATE_SOURCE_LOCATIONS:
         candidate = project_root / relative
-        present = candidate.is_file() if kind == "json" else candidate.is_dir()
+        try:
+            present = _is_regular_file(candidate) if kind == "json" else _is_directory(candidate)
+        except OSError:
+            _LOGGER.warning(
+                "run-state: %s could not be probed; it is treated as the project's source "
+                "and every ticket resolves unreadable and is refused a write",
+                candidate,
+            )
+            return RunStateSource(kind=kind, path=candidate)
         if present:
             return RunStateSource(kind=kind, path=candidate)
     return None
@@ -312,76 +358,48 @@ def _marker_state(run_state_dir: Path, ticket_id: str) -> RunState | None:
     each settles the SOURCE-level questions (readable, vacuous) in the way that suits
     it. :func:`_node_exists` covers a marker present as either a file or a directory,
     and needs only ``+x`` on the state subdirectory, so this still answers on a directory
-    :func:`_directory_lists_any_ticket` could not enumerate.
+    :func:`_directory_lists_any_ticket` could not enumerate — the one degraded source
+    a marker probe can still resolve honestly.
 
-    An unreadable state subdirectory does NOT abort the walk. :func:`_node_exists` needs
-    ``+x`` on the state subdirectory and RAISES ``EACCES`` without it, and ``merged``
-    is probed first — so aborting on the first error meant that a single non-searchable
-    ``merged/`` (mode ``0600``, or created by the factory under a different uid) made
-    EVERY id raise before ``ready``/``in-flight``/``todo`` were ever probed. Both
-    callers map that to the REFUSED ``unreadable``, so one restricted directory locked
-    the whole project read-only — including tickets whose markers sit in perfectly
-    readable state directories, the exact outcome :func:`run_state_resolver`'s "it must
-    stay per ticket" comment claims to avoid. (Before T80's second amendment the same
-    error mapped to the MUTABLE ``unknown``, so the failure ran the other way and
-    silently disabled the gate; the reason to probe each state independently is
-    unchanged either way — an answer this console can actually read beats a
-    source-level verdict.) Each state is therefore probed independently and the first
-    READABLE hit wins.
+    ``OSError`` PROPAGATES, and the walk stops there. :func:`_node_exists` needs ``+x``
+    on the state subdirectory and RAISES ``EACCES`` without it, so an error here means
+    "a state that could have named this ticket could not be read", and the states are
+    probed highest-precedence first. Both callers map the escaping ``OSError`` to the
+    refusing :attr:`RunState.unreadable`, which is the answer T80's RESOLUTION INVARIANT
+    (amendment 3) requires: a resolution that could not read something it needed must
+    refuse, and may never fall back to a state MORE PERMISSIVE than the one it failed to
+    check. "I looked and found nothing" and "I could not look" are different answers,
+    and only the first may return a mutable state.
 
-    Propagates ``OSError`` — the caller decides what an unreadable directory means —
-    but only when the walk found nothing AND at least one state could not be read,
-    i.e. only when "no marker" would otherwise be reported as fact rather than as "I
-    could not tell". The original exception is re-raised, not a synthetic one, so the
-    callers' existing ``except OSError`` handling is unchanged.
+    The invariant's bound is "at or above the marker found", and the precedence walk
+    satisfies it for free rather than by tracking which states failed: the loop returns
+    on the FIRST readable hit, so every state it has already probed — and therefore every
+    state that could have raised — outranks the hit. An unreadable directory BELOW an
+    answer already determined is never even looked at (an unreadable ``todo/`` cannot
+    change a readable ``merged/<id>``), and an unreadable directory ABOVE one refuses
+    before the lower marker is reached. That is why this needs no error bookkeeping: the
+    error and the hit can never both exist with the error at a lower precedence.
 
-    RESIDUAL, deliberate, and in TWO shapes — both logged so neither is silent, and
-    only the second still fails open:
-
-    1. The walk finds nothing and a HIGHER-precedence directory was unreadable: the
-       answer is the refusing ``unreadable``, because a marker for this id may be
-       sitting in the directory that would not open. This is where T80's second
-       amendment landed — the answer used to be the mutable ``unknown``, which granted
-       a write on a ticket that could well be ``merged``. Both callers log it.
-    2. The walk HITS at a lower precedence than an unreadable directory: the answer is
-       that lower state, which may not be the ticket's real one. ``merged`` is probed
-       first, so an unreadable ``merged/`` over a stale ``todo/<id>`` reports the
-       MUTABLE ``todo`` for a ticket the factory has already merged. Neither caller
-       can see this — no exception escapes — so it is logged HERE, at the only place
-       that knows a hit was returned over an unread directory. That warning is
-       deliberately per ticket rather than per resolver (the "settled once, logged
-       once" rule the source-level degradations follow): the fact being reported is
-       about ONE id's answer, not about the source, and it fires only for an id that
-       has both a readable marker and an unreadable higher-precedence directory.
+    An earlier revision continued past the error and returned the first readable hit,
+    to keep one non-searchable ``merged/`` (mode ``0600``, or created by the factory
+    under a different uid) from refusing every id in the project. That is availability
+    bought with a fail-open, and it is exactly the trade the invariant forbids: a stale
+    ``todo/<id>`` under an unreadable ``merged/`` reported the MUTABLE ``todo`` for a
+    ticket the factory had already merged, silently, since no exception escaped to tell
+    either caller. The project-wide refusal is now the correct cost — a refusal is
+    recoverable by fixing the directory's permissions, an unnoticed write to a merged
+    ticket is not. What the walk still does NOT do is turn one restricted state
+    subdirectory into a source-level verdict: it is re-probed per ticket, so a project
+    whose state subdirectories are merely unenumerable (mode ``0711`` — ``iterdir()``
+    fails, ``stat()`` does not) still resolves each ticket the directory names to its
+    real state.
 
     Callers MUST have validated ``ticket_id`` as a single path-safe segment first;
     this joins it onto a filesystem path.
     """
-    first_error: OSError | None = None
-    unreadable: list[str] = []
     for state in _MARKER_PRECEDENCE:
-        try:
-            if _node_exists(run_state_dir / state / ticket_id):
-                if unreadable:
-                    _LOGGER.warning(
-                        "run-state: %s state director%s %s could not be read; %r resolves "
-                        "%r from a lower-precedence marker, which may not be its real state",
-                        run_state_dir,
-                        "y" if len(unreadable) == 1 else "ies",
-                        ", ".join(unreadable),
-                        ticket_id,
-                        state,
-                    )
-                return RunState(state)
-        except OSError as exc:
-            # Keep probing the lower-precedence states: a marker this console can
-            # actually read still answers the question, and a read-only state
-            # (``ready``/``in-flight``) is a strictly safer answer than ``unknown``.
-            if first_error is None:
-                first_error = exc
-            unreadable.append(state)
-    if first_error is not None:
-        raise first_error
+        if _node_exists(run_state_dir / state / ticket_id):
+            return RunState(state)
     return None
 
 
@@ -488,9 +506,11 @@ def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
         # covers ``_marker_state`` (a state subdirectory), the ``is_dir()`` re-check
         # (the run-state directory itself) and ``_directory_lists_any_ticket``, so
         # attributing an EACCES on the directory to "a state subdirectory" would send
-        # an operator to chmod the wrong path; and ``_marker_state`` answers from any
-        # state subdirectory it CAN read, so a ticket this directory names still
-        # resolves its real state rather than being refused.
+        # an operator to chmod the wrong path. ``_marker_state`` reaches here only for
+        # an id whose answer was not already settled by a HIGHER-precedence readable
+        # marker (it returns on the first hit), so the refusal never overrides a state
+        # this console did read — it covers exactly the ids whose real state could be
+        # sitting in the directory that would not open (T80 amendment 3).
         _LOGGER.warning(
             "run-state: %s could not be read (the directory itself or one of its state "
             "subdirectories); %r resolves unreadable and is refused a write",
@@ -673,8 +693,10 @@ def probe_ticket_state_from_source(source: RunStateSource | None, ticket_id: str
       directory lists other tickets but no marker names this id,
       :attr:`RunState.unknown` when it holds no marker for any id at all (the same
       vacuous rule) or when it is no longer there, :attr:`RunState.unreadable` when
-      it exists and could not be read or enumerated and no marker for this id could
-      be found either, unchanged otherwise.
+      it exists and could not be read or enumerated and no marker of a precedence the
+      walk reached BEFORE the unreadable state answered for this id first (T80
+      amendment 3 — an answer already determined by a higher precedence stands;
+      anything below one this console could not read is refused), unchanged otherwise.
 
     :attr:`RunState.unreadable` is the only one of the three unnamed states that
     BOTH write gates refuse (T80 amendment 2): ``unknown`` and ``absent`` mean the
@@ -844,8 +866,11 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
     # differ (``merged`` readable, ``ready`` mode-0000). That case can only surface per
     # ticket, inside ``_marker_state`` — and it must stay per ticket, because widening
     # the canary to every state would answer a constant ``unreadable`` for the whole
-    # project the moment one subdirectory is restricted, refusing every write to the
-    # tickets whose markers ARE readable and resolve ``todo``. What must not be per ticket is
+    # project the moment one subdirectory is restricted, refusing even the ids whose
+    # answer ``_marker_state`` reaches BEFORE the restricted state (a readable
+    # ``merged/<id>`` outranks an unreadable ``ready/``, and the walk returns on the
+    # first hit) and the ids in a merely unenumerable source (mode ``0711``, where
+    # every marker still stats). What must not be per ticket is
     # the WARNING: a 200-ticket projection would otherwise emit 200 identical lines,
     # breaking this function's "settled once, logged once" guarantee exactly when an
     # operator needs one clear signal. So the degradation is reported once per resolver.

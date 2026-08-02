@@ -318,34 +318,35 @@ def test_unenumerable_state_dirs_do_not_read_as_vacuous(
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
-def test_a_non_searchable_state_dir_does_not_hide_a_readable_marker(tmp_path: Path) -> None:
-    # The OTHER gate-bypass shape, and the one mode-0711 above cannot reach. A state
-    # subdirectory that is readable but NOT searchable (mode 0600) makes `exists()`
-    # raise EACCES rather than `iterdir()` — and `merged` is probed FIRST, so aborting
-    # the precedence walk on the first error made every id raise before `ready`/
-    # `in-flight`/`todo` were ever tried. Both callers map that to the MUTABLE
-    # `unknown`, so ONE restricted directory silently disabled the write gate for the
-    # whole project, including tickets whose markers sit in perfectly readable state
-    # directories. Asserted as the resolved state AND as the gate consequence.
+def test_an_unreadable_lower_precedence_dir_does_not_change_a_higher_marker(
+    tmp_path: Path,
+) -> None:
+    # The INVERSE BOUND of T80 amendment 3, and the test that fails if the refusal
+    # over-corrects. The invariant refuses only when a state AT OR ABOVE the marker
+    # found could not be read: a directory BELOW an answer this console already read
+    # cannot change that answer, so it must not refuse. Here `merged/CAD-1` is
+    # readable and `ready`/`in-flight`/`todo` are non-searchable (mode 0600 — the shape
+    # mode-0711 cannot reach, where `exists()` raises EACCES rather than `iterdir()`);
+    # the precedence walk returns at `merged` and never touches them.
     run_state_dir = tmp_path / "run-state"
     for state in ("merged", "ready", "in-flight", "todo"):
         (run_state_dir / state).mkdir(parents=True)
-    # A ticket a lane owns, in a directory that stays fully readable throughout.
-    _place_marker(run_state_dir, "ready", "CAD-118", as_dir=False)
     _place_marker(run_state_dir, "merged", "CAD-1", as_dir=False)
-    (run_state_dir / "merged").chmod(0o600)
+    for state in ("ready", "in-flight", "todo"):
+        (run_state_dir / state).chmod(0o600)
     try:
         resolve = run_state_resolver(RunStateSource(kind="directory", path=run_state_dir))
-        batch_state = resolve("CAD-118")
-        probed = probe_ticket_state(run_state_dir, "CAD-118")
+        batch_state = resolve("CAD-1")
+        probed = probe_ticket_state(run_state_dir, "CAD-1")
     finally:
-        (run_state_dir / "merged").chmod(0o755)
+        for state in ("ready", "in-flight", "todo"):
+            (run_state_dir / state).chmod(0o755)
 
-    assert batch_state is RunState.ready
+    assert batch_state is RunState.merged
     # The single-ticket prober must agree with the batch form, as everywhere else.
-    assert probed is RunState.ready
-    # The point of the fix: a lane-owned ticket stays refused for BOTH writes. Before,
-    # this resolved `unknown` and was editable and deletable.
+    assert probed is RunState.merged
+    # A lane-owned ticket is refused BOTH writes — by its REAL state, not by a refusal
+    # standing in for one, which is what makes this distinguishable from over-refusing.
     assert batch_state not in write_gate.MUTABLE_STATES
     assert batch_state not in write_gate.DELETABLE_STATES
 
@@ -394,16 +395,21 @@ def test_an_unmarked_id_in_a_partly_unreadable_dir_is_refused_and_reported_once(
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
-def test_a_marker_found_below_an_unreadable_state_dir_is_logged(
+def test_a_marker_found_below_an_unreadable_state_dir_is_refused(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    # The second, quieter residual of probing each state independently. `merged` is
-    # probed FIRST; when it cannot be searched and a STALE lower-precedence marker
-    # still names the id, `_marker_state` answers with the lower state — here the
-    # MUTABLE `todo` for a ticket the factory has already merged. No exception escapes,
-    # so neither caller can see it. It must therefore leave a trace at the only place
-    # that knows a hit was returned over an unread directory, or a merged ticket is
-    # silently editable with nothing in the log to explain why.
+    # This test SUPERSEDES the one that pinned the opposite answer, and the old answer
+    # is kept here because it looked reasonable: `merged` is probed FIRST, and when it
+    # cannot be searched while a STALE lower-precedence marker still names the id,
+    # answering with that lower state kept the project working — one restricted
+    # directory did not lock every ticket out — and the degradation was logged. What it
+    # actually did was report the MUTABLE `todo` for a ticket the factory had already
+    # merged, silently as far as both callers were concerned, because no exception
+    # escaped. T80's RESOLUTION INVARIANT (amendment 3) forbids exactly that trade: a
+    # resolution that could not read something it needed must refuse, and may never
+    # fall back to a state more permissive than the one it failed to check. So the
+    # answer is now the refusing `unreadable` — recoverable by chmod, unlike a write
+    # that already landed on a merged ticket.
     run_state_dir = tmp_path / "run-state"
     for state in ("merged", "ready", "in-flight", "todo"):
         (run_state_dir / state).mkdir(parents=True)
@@ -413,18 +419,24 @@ def test_a_marker_found_below_an_unreadable_state_dir_is_logged(
     try:
         with caplog.at_level("WARNING", logger=run_state_module._LOGGER.name):
             state = probe_ticket_state(run_state_dir, "CAD-1")
+            batch_state = run_state_resolver(RunStateSource(kind="directory", path=run_state_dir))(
+                "CAD-1"
+            )
     finally:
         (run_state_dir / "merged").chmod(0o755)
 
-    # The documented fail-open answer, pinned so a future narrowing is a deliberate
-    # gate-policy change rather than an accident.
-    assert state is RunState.todo
-    downgraded = [r for r in caplog.records if "lower-precedence marker" in r.getMessage()]
-    assert len(downgraded) == 1
-    # The operator needs both halves: WHICH directory could not be read, and WHICH
-    # ticket's answer is therefore suspect.
-    assert "merged" in downgraded[0].getMessage()
-    assert "CAD-1" in downgraded[0].getMessage()
+    assert state is RunState.unreadable
+    # Asserted as the gate consequence too, not only as the state: the point of the
+    # amendment is that the stale `todo` can no longer license a write.
+    assert state not in write_gate.MUTABLE_STATES
+    assert state not in write_gate.DELETABLE_STATES
+    # The batch form must agree, as everywhere else — one filesystem, one answer.
+    assert batch_state is RunState.unreadable
+    # The refusal is not silent, and the operator needs both halves: that the source
+    # could not be read, and WHICH ticket is therefore refused.
+    refusals = [r for r in caplog.records if "could not be read (the directory" in r.getMessage()]
+    assert len(refusals) == 2
+    assert all("CAD-1" in r.getMessage() for r in refusals)
 
 
 def test_the_resolver_answers_unknown_not_absent_when_the_source_vanishes(

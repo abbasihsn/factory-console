@@ -160,6 +160,45 @@ def test_a_file_at_the_directory_location_is_not_accepted_as_the_directory_sourc
     )
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
+def test_a_candidate_that_cannot_be_probed_resolves_to_it_and_refuses(tmp_path: Path) -> None:
+    # T80's RESOLUTION INVARIANT (amendment 3) applied one step UPSTREAM of resolution.
+    # `.factory` mode 0000 means the probe cannot tell whether `run-state.json` is
+    # there — and a candidate we could not look at must not be skipped, because
+    # skipping it falls through to a lower-precedence location or to `None`, and
+    # `None` is the MUTABLE `unknown` for EVERY ticket in the project. So the
+    # unprobeable candidate becomes the source and the read path refuses. The readable
+    # fallback below is the point: it must NOT win, or a project could hide a merged
+    # ticket behind an unreadable higher-precedence source.
+    #
+    # Version-independence is asserted here too, implicitly: `Path.is_file()` re-raises
+    # EACCES through CPython 3.12 (an unmapped 500 out of a read-only prober) and
+    # SWALLOWS it from 3.13 (gh-113978 — silently "no run-state source", i.e. every
+    # ticket mutable). Neither is a decision, and the module's own errno split is what
+    # makes this one.
+    factory_dir = tmp_path / ".factory"
+    factory_dir.mkdir()
+    (factory_dir / "run-state.json").write_text(
+        json.dumps({"version": 1, "tickets": {"T01": {"status": "merged"}}}), encoding="utf-8"
+    )
+    fallback = tmp_path / "docs" / "planning" / ".run-state"
+    (fallback / "todo").mkdir(parents=True)
+    (fallback / "todo" / "T01").write_text("", encoding="utf-8")
+    factory_dir.chmod(0o000)
+    try:
+        source = find_run_state_source(tmp_path)
+        assert source is not None
+        states = [probe_ticket_state_from_source(source, tid) for tid in ("T01", "T99")]
+    finally:
+        factory_dir.chmod(0o755)
+
+    assert source == RunStateSource(kind="json", path=factory_dir / "run-state.json")
+    assert states == [RunState.unreadable, RunState.unreadable]
+    # Asserted as the gate consequence, not as wording: refused for edit AND delete.
+    assert all(state not in MUTABLE_STATES for state in states)
+    assert all(state not in DELETABLE_STATES for state in states)
+
+
 # --------------------------------------------------------------------------- #
 # find_run_state_dir — the directory-only wrapper
 # --------------------------------------------------------------------------- #
