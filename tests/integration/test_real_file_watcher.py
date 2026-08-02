@@ -385,11 +385,14 @@ async def test_start_is_idempotent(tmp_path: Path) -> None:
 
 
 async def test_start_is_safe_when_no_watched_root_exists(tmp_path: Path) -> None:
-    # Neither root exists — start still works and stops cleanly (nothing scheduled).
+    # No root exists — not the planning dir, not the run-state dir, and not the
+    # ``.factory`` parent of the JSON source — so start still works and stops
+    # cleanly with NOTHING scheduled (T91 must not invent a root that is absent).
     watcher = RealFileWatcher(tmp_path)
     watcher.start()
     try:
         assert watcher._observer is not None
+        assert watcher._observer.emitters == set()
     finally:
         watcher.stop()
 
