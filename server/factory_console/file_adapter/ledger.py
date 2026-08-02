@@ -177,7 +177,7 @@ def read_ledger(path: Path) -> LedgerRead:
     try:
         raw = path.read_bytes()
     except OSError as error:
-        _LOGGER.warning("ledger: %s could not be read: %s", path, error)
+        _LOGGER.warning("ledger: %s could not be read: %r", path, error)
         return _whole_file_skip(path, "unreadable", "ledger file could not be read")
     # Decode with replacement rather than strictly: a byte-level corruption in one
     # line must cost that line (it will not be JSON) instead of the whole file,
