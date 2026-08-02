@@ -308,3 +308,70 @@ decided by a human and written into this ticket, not silently patched.
    opposite directions — collapse `probe_ticket_state` into a wrapper (removes the duplication, keeps
    the eager cost) or route the single-id path back through it (removes the cost, keeps the
    duplication) — which is why this is a design decision and not an auto-fix.
+
+---
+
+## Amendment 4, 2026-08-02 — an unclassifiable status is unavailable information, and the last of the class
+
+The round after Amendment 3 found a **fifth** instance by rule rather than by accident (ELOOP treated
+as definitively-absent, letting a looping `merged/` fall through to a stale mutable `todo/`) and
+surfaced a **sixth**:
+
+> `resolve_json` routes an entry that names this ticket under an **unclassifiable status** to the
+> mutable `unknown`. `run_state.py:795`
+
+**Amendment 3 worked.** These were found by applying the stated invariant to every resolution path,
+not by a review happening to trip over them. That is the difference between closing a class and
+patching an instance, and it is why this amendment can be the last policy decision the class admits.
+
+### The decision, and a correction to the invariant's wording
+
+Amendment 3 phrased the rule as *"could not **read** something it needed."* This case does not fit
+that phrasing: the file was read successfully. We read `status: <value>` and **could not interpret
+it**. Looked, saw, did not understand — which is not the same as not looking.
+
+**The conclusion is unchanged, and the wording is what needs widening:**
+
+> **THE RESOLUTION INVARIANT (restated).** A run-state resolution must refuse whenever the
+> information it needed is **unavailable** — whether because it could not be read, or because it was
+> read and could not be interpreted. It may never fall back to a state *more permissive* than the one
+> it failed to establish.
+
+An unrecognised status is the factory saying something about this ticket in a vocabulary this console
+does not know. **The one thing it is not is silence.** `read_json_run_state` already treats it as
+signal — it collects unrecognised values into `unrecognised` precisely so *"a tenth factory state
+must be visible as a named gap, never silently dropped."* Routing that same value to a **mutable**
+state contradicts the collection: the gap is named and then ignored at the only point it matters.
+
+**The concrete failure:** the factory adds a tenth state — say `in_review`. This console does not know
+it. A ticket under review resolves `unknown` → mutable → **the console edits a ticket the factory is
+actively reviewing.** That is the fail-open this ticket exists to close, arriving through the one door
+left open.
+
+### What to build
+
+1. `resolve_json`: an entry that names this ticket under a status outside `FACTORY_STATUS_ALIASES`
+   **refuses**, and the refusal names the unrecognised value — an operator needs *"the run-state says
+   `in_review`, which this console does not know"*, not *"not tracked"*.
+2. **`unknown → mutable` still stands** for its one real case: **no entry for this ticket at all**, in
+   a source that lists others → that is `absent`; and **no source at all** → `unknown`, mutable. This
+   amendment narrows `unknown` to *"nothing was said"*, never *"something was said that we could not
+   read or could not interpret."*
+3. The tests, two docstrings and `ARCHITECTURE.md` that pin today's behaviour are **superseded, not
+   deleted**: rewrite each to assert the refusal and keep the reasoning that made the old answer look
+   right.
+4. **State in the PR body that the enumeration is complete** — list every resolution path in
+   `run_state.py` with its verdict under the restated invariant, including the ones already correct.
+   If a seventh case exists, it is found *now*, by enumeration, and not by a seventh review round.
+
+### Verification
+
+- a JSON entry with an unrecognised status → **refuses**, error names the value;
+- the value still appears in `unrecognised` — the naming and the refusal are both required, and a fix
+  that refuses while dropping the name has traded one silence for another;
+- **no entry at all** in a populated source → still `absent`, still refused (unchanged);
+- **no source at all** → still `unknown`, still **mutable** — the regression guard for the rule this
+  amendment must not break;
+- a vacuous source → still mutable (Amendment 1); a wholly unreadable source → refuses (Amendment 2);
+  a higher-precedence unreadable directory → refuses (Amendment 3); ELOOP → refuses;
+- CPython 3.13's non-raising `Path.exists()`/`is_dir()` (gh-113978) is not assumed anywhere.
