@@ -36,7 +36,6 @@ from factory_console.errors import FactoryConsoleError
 
 _DEFAULT_REASON = "ticket id failed path-safety validation"
 _PATTERN_VIOLATION_REASON = f"Ticket id must match {TICKET_ID_PATTERN}"
-_ROOT_ESCAPE_REASON = "Ticket id resolves outside the project root"
 
 
 class PathTraversal(FactoryConsoleError):
@@ -71,19 +70,6 @@ class PathTraversal(FactoryConsoleError):
         resolution — the message is defined here once, never restated at a call site.
         """
         return cls(ticket_id, reason=_PATTERN_VIOLATION_REASON)
-
-    @classmethod
-    def from_root_escape(cls, ticket_id: str) -> PathTraversal:
-        """Build the ``invalid_ticket_id`` error for a path that escapes the root.
-
-        The containment refusal's counterpart to :meth:`from_pattern_violation`, and
-        here for the same reason: the message was a private ``_ID_ESCAPES_ROOT``
-        constant copied into each module that performs the check, with nothing but a
-        comment asserting the copies stay word-identical. A reword in one of them would
-        silently split the ``invalid_ticket_id`` envelope across endpoints — which is
-        exactly what the sibling classmethod exists to prevent for the other message.
-        """
-        return cls(ticket_id, reason=_ROOT_ESCAPE_REASON)
 
 
 def resolve_or_none(path: Path) -> Path | None:

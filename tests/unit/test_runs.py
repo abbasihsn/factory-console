@@ -739,12 +739,18 @@ def test_an_unsafe_id_is_refused_before_the_filesystem_is_touched(
 
 
 @pytest.mark.parametrize("reader", [read_result, read_receipt], ids=["result", "receipt"])
-def test_an_id_whose_resolved_path_escapes_the_project_root_is_refused(
+def test_an_id_whose_resolved_path_escapes_the_project_root_is_unreadable(
     tmp_path: Path, reader
 ) -> None:
     # The second gate, which no amount of id validation can cover: the id is a
     # perfectly ordinary segment and the artifact DIRECTORY is a symlink out of the
-    # project, so the resolved file sits outside the root.
+    # project, so the resolved file sits outside the root. The escape is refused —
+    # out-of-project content is never returned — but it is refused as ``unreadable``
+    # and NOT as ``invalid_ticket_id``: the id was proven well-formed one line
+    # earlier, so blaming it would send an operator to check a value they will find
+    # correct while the symlinked ``.factory`` tree, which is the actual cause, goes
+    # uninspected. It is the same condition ``read_last_stop`` meets with no id at
+    # all, and it gets the same answer here.
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "T88.json").write_text('{"leaked":true}', encoding="utf-8")
@@ -756,8 +762,10 @@ def test_an_id_whose_resolved_path_escapes_the_project_root_is_refused(
     except (OSError, NotImplementedError):
         pytest.skip("platform does not support symlinks")
 
-    with pytest.raises(PathTraversal):
-        reader(project_root, TICKET_ID)
+    escaped = reader(project_root, TICKET_ID)
+
+    assert escaped.data is None, "out-of-project content is never returned"
+    assert escaped.reason == "unreadable", "it is there and this console will not look"
 
 
 @pytest.mark.parametrize("reader", [read_result, read_receipt], ids=["result", "receipt"])
@@ -833,16 +841,21 @@ def test_last_stop_reports_a_resolved_path_like_the_other_two_readers(tmp_path: 
     assert last_stop.path == (tmp_path / LAST_STOP_RELATIVE_PATH).resolve()
 
 
-def test_the_refusal_uses_the_uniform_invalid_ticket_id_contract() -> None:
+def test_the_refusal_uses_the_uniform_invalid_ticket_id_contract(tmp_path: Path) -> None:
     # This module must reuse the SHARED PathTraversal, not define a second class:
     # one ``except PathTraversal`` at the edge layer has to catch every unsafe-id
     # path, and the REST error code has to be identical whichever module refused.
+    # Asserted on what a reader actually RAISES rather than on a name imported into
+    # runs.py — the refusal now comes from the shared validator, so the module no
+    # longer names the class itself and an attribute check would pin an import
+    # instead of the contract.
     from factory_console.file_adapter.run_state import PathTraversal as RunStatePathTraversal
 
-    exc = PathTraversal("../etc/passwd")
-    assert exc.code == "invalid_ticket_id"
-    assert exc.status == 400
-    assert runs_module.PathTraversal is RunStatePathTraversal
+    with pytest.raises(RunStatePathTraversal) as refused:
+        read_result(tmp_path, "../../etc/passwd")
+
+    assert refused.value.code == "invalid_ticket_id"
+    assert refused.value.status == 400
 
 
 @pytest.mark.parametrize("reader", [read_result, read_receipt], ids=["result", "receipt"])
@@ -889,12 +902,16 @@ def test_a_bare_dot_id_keeps_the_generic_reason_because_it_matches_the_pattern(
     [(read_result, RESULTS_RELATIVE_DIR), (read_receipt, RECEIPTS_RELATIVE_DIR)],
     ids=["result", "receipt"],
 )
-def test_an_escaping_path_is_refused_in_the_words_its_shared_owner_defines(
+def test_a_well_formed_id_against_a_symlinked_factory_is_never_an_invalid_ticket_id(
     tmp_path: Path, reader, relative_dir: Path
 ) -> None:
-    # The containment refusal's message has a single owner too, for the same reason:
-    # it was a private constant copied per module with only a comment asserting the
-    # copies stayed word-identical.
+    # The converse of the containment refusal, stated explicitly because it is the
+    # thing that was wrong: ``invalid_ticket_id`` is reserved for an id that is
+    # actually invalid, and this id is not. An accusation about the wrong value is
+    # worse than an unhelpful one — it sends the operator to fix the id and away from
+    # the symlinked ``.factory`` that is the real cause. Also pins the ``path`` the
+    # refusal reports: it is the RESOLVED path, as every other outcome's is, so a
+    # caller keying artifacts by it gets one key per file.
     project_root = tmp_path / "project"
     (project_root / ".factory").mkdir(parents=True)
     outside = tmp_path / "outside" / relative_dir.name
@@ -905,10 +922,14 @@ def test_an_escaping_path_is_refused_in_the_words_its_shared_owner_defines(
         pytest.skip("platform does not support symlinks")
     (outside / f"{TICKET_ID}.json").write_text('{"status":"ready"}', encoding="utf-8")
 
-    with pytest.raises(PathTraversal) as refused:
-        reader(project_root, TICKET_ID)
+    try:
+        escaped = reader(project_root, TICKET_ID)
+    except PathTraversal as refused:
+        pytest.fail(f"a well-formed id must not be refused as {refused.code}: {refused.message}")
 
-    assert refused.value.message == PathTraversal.from_root_escape(TICKET_ID).message
+    assert escaped.reason == "unreadable"
+    assert escaped.data is None
+    assert escaped.path == (outside / f"{TICKET_ID}.json").resolve()
 
 
 def test_read_last_stop_takes_no_ticket_id_so_it_cannot_traverse(tmp_path: Path) -> None:

@@ -33,8 +33,13 @@ through.
 so they re-validate the id
 (:func:`~factory_console.file_adapter.path_safety.validate_ticket_id_as_segment`)
 and then check the RESOLVED path is still contained under the project root
-(:func:`~factory_console.file_adapter.path_safety.within_root`), raising the same
-shared :class:`~factory_console.file_adapter.path_safety.PathTraversal`.
+(:func:`~factory_console.file_adapter.path_safety.within_root`). Only the ID half
+raises the shared
+:class:`~factory_console.file_adapter.path_safety.PathTraversal`: a containment
+failure — undecidable OR a proven escape — answers ``unreadable``, exactly as
+:func:`read_last_stop` answers it. A resolved path that leaves the root is a fact
+about the TREE, not about an id these readers have already proven well-formed, and
+``invalid_ticket_id`` is reserved for an id that is actually invalid.
 :mod:`~factory_console.file_adapter.ticket_md` and
 :mod:`~factory_console.file_adapter.write_render` impose containment too, and this
 module's check is deliberately STRICTER than theirs on both halves — do not read the
@@ -56,9 +61,9 @@ is not the same as owning the file it lands on: ``.factory/last-stop.json`` is a
 constant, and a symlink there — or at ``.factory`` itself — still resolves wherever
 it likes, which is precisely the escape the results/receipts gate exists to close
 and which no amount of id validation was ever going to catch. Its containment
-failure answers ``unreadable`` rather than raising, because with no id to name,
-:class:`~factory_console.file_adapter.path_safety.PathTraversal`'s
-``invalid_ticket_id`` contract has nothing to be about.
+failure answers ``unreadable`` rather than raising — and so does the identical
+failure in results/receipts, which is the point: the CONDITION decides the answer,
+not which reader happened to observe it.
 
 The console MUST NOT write, create, or delete anything here — a guard test
 asserts this module contains no filesystem-mutating call.
@@ -74,7 +79,6 @@ from pathlib import Path
 
 from factory_console.domain.runs import ArtifactRead
 from factory_console.file_adapter.path_safety import (
-    PathTraversal,
     resolve_or_none,
     validate_ticket_id_as_segment,
     within_root,
@@ -121,25 +125,30 @@ def _safe_artifact_path(project_root: Path, relative_dir: Path, ticket_id: str) 
     and the resolved candidate must stay under the resolved project root
     (:func:`~factory_console.file_adapter.path_safety.within_root`).
 
-    Returns ``None`` when the path could not be RESOLVED at all, which is a
-    different answer from an escape: nothing was proven unsafe, the question could
-    not be put, and the caller reports ``unreadable`` rather than raising. An escape
-    that WAS proven still raises.
+    Returns ``None`` for EITHER containment answer that is not a yes — the path (or
+    the root) could not be resolved at all, or it resolved and provably escaped — and
+    the caller reports ``unreadable`` for both. Only the ID gate raises. A proven
+    escape is a fact about the resolved TREE (a symlinked ``.factory``), not about the
+    id, which this function has just proven well-formed; answering it with
+    ``invalid_ticket_id`` would accuse a value that is not at fault and send an
+    operator to check an id they will find correct. It is the same condition
+    :func:`read_last_stop` meets with no id at all, and one condition gets one answer
+    across this module's readers.
 
     Raises:
-        PathTraversal: when the id is not a single path-safe segment, or when the
-            resolved path provably escapes ``project_root`` — the uniform
-            ``invalid_ticket_id`` contract. Raised BEFORE any filesystem read.
+        PathTraversal: when the id is not a single path-safe segment — the uniform
+            ``invalid_ticket_id`` contract, and now its only cause here. Raised
+            BEFORE any filesystem read.
     """
     validate_ticket_id_as_segment(ticket_id)
     resolved = resolve_or_none(_artifact_candidate(project_root, relative_dir, ticket_id))
     if resolved is None:
         return None
-    within = within_root(resolved, project_root)
-    if within is None:
+    # ``within_root`` is three-valued and both of its non-yes answers refuse here:
+    # ``None`` (undecidable) and ``False`` (a proven escape) alike mean this console
+    # will not read the path, and neither says anything about the ticket id.
+    if not within_root(resolved, project_root):
         return None
-    if not within:
-        raise PathTraversal.from_root_escape(ticket_id)
     return resolved
 
 
@@ -154,12 +163,15 @@ def _read_ticket_artifact(project_root: Path, relative_dir: Path, ticket_id: str
     safe = _safe_artifact_path(project_root, relative_dir, ticket_id)
     if safe is None:
         candidate = _artifact_candidate(project_root, relative_dir, ticket_id)
-        # Either the artifact path or the ROOT would not resolve, and the message says
-        # so rather than naming the artifact: pointing an operator at
-        # ``.factory/results/<id>.json`` when the unresolvable node is the project root
-        # sends them to inspect a file that is not the problem.
+        # The path did not resolve, the ROOT did not resolve, or it resolved outside
+        # the root — three ways of not landing on a readable in-project file, and the
+        # message names all of them rather than only the artifact: pointing an operator
+        # at ``.factory/results/<id>.json`` when the problem is the project root or a
+        # symlinked ``.factory`` sends them to inspect a file that is not at fault. It
+        # is the id-carrying twin of the line :func:`read_last_stop` logs, because it
+        # is the same condition.
         _LOGGER.warning(
-            "runs: neither %s nor the project root %s could be resolved; it is not read",
+            "runs: %s does not resolve to a path inside the project %s; it is not read",
             candidate,
             project_root,
         )
@@ -396,13 +408,14 @@ def read_result(project_root: Path, ticket_id: str) -> ArtifactRead:
     :func:`_read_json_artifact`.
 
     Raises:
-        PathTraversal: if ``ticket_id`` is not a single path-safe segment, or if
-            it PROVABLY resolves outside ``project_root``. Raised BEFORE any
+        PathTraversal: if and ONLY if ``ticket_id`` is not a single path-safe
+            segment — a pattern violation or a bare ``.``/``..``. Raised BEFORE any
             filesystem read — the same contract
-            :mod:`~factory_console.file_adapter.run_state` carries. A path that
-            could not be resolved at all (a symlink loop) is NOT this case: the id
-            is well-formed and nothing was proven unsafe, so it answers
-            ``unreadable`` rather than raising.
+            :mod:`~factory_console.file_adapter.run_state` carries. A containment
+            failure is NOT this case, however it arises: whether the path could not
+            be resolved (a symlink loop) or resolved provably outside
+            ``project_root`` (a symlinked ``.factory``), the id is well-formed and
+            the answer is ``unreadable``, as it is for :func:`read_last_stop`.
     """
     return _read_ticket_artifact(project_root, RESULTS_RELATIVE_DIR, ticket_id)
 
@@ -440,20 +453,18 @@ def read_last_stop(project_root: Path) -> ArtifactRead:
     artifacts) as this project's last-stop record, with ``reason is None`` marking it
     a clean read. That is the same escape :func:`_safe_artifact_path` closes for
     results and receipts, and an id was never what made it possible. An escaping or
-    unresolvable path answers ``unreadable`` — it is there and this console will not
-    look — rather than raising, since :class:`PathTraversal`'s ``invalid_ticket_id``
-    contract has no id to be about.
+    unresolvable path answers ``unreadable`` here — it is there and this console will
+    not look — and it answers ``unreadable`` there too, for the same reason: the
+    condition is identical, so the report is identical.
 
     NEVER raises, for any input.
     """
     candidate = project_root / LAST_STOP_RELATIVE_PATH
     resolved = resolve_or_none(candidate)
-    # ``within_root`` is three-valued, and it is read as three: ``None`` (the root
-    # would not resolve) is a refusal but not a PROVEN escape, exactly as
-    # :func:`_safe_artifact_path` treats it. Folding it in with ``not`` would reach the
-    # same answer today only because both refuse, so the coercion would keep compiling
-    # after a future edit gave the two refusals different phrasings.
-    if resolved is None or within_root(resolved, project_root) is not True:
+    # Both of ``within_root``'s non-yes answers refuse, and refuse the same way —
+    # ``None`` (undecidable) and ``False`` (a proven escape) alike mean this path is
+    # not read. :func:`_safe_artifact_path` folds them identically.
+    if resolved is None or not within_root(resolved, project_root):
         _LOGGER.warning(
             "runs: %s does not resolve to a path inside the project; it is not read", candidate
         )
