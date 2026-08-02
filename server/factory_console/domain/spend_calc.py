@@ -135,7 +135,12 @@ def aggregate(entries: list[LedgerEntry]) -> SpendReport:
     by_level: dict[str, _Bucket] = {}
 
     for entry in entries:
-        models = _models_of(entry)
+        # Materialised ONCE and then read twice — for the ticket rows' model names
+        # and for the by-model cut itself. Re-calling the generator for each would
+        # re-walk ``by_model`` and rebuild a throwaway ``TokenCounts`` per model,
+        # twice per entry, to arrive at the same answer.
+        contributions = list(_model_contributions(entry))
+        models = _models_of(contributions)
 
         totals.costs.append(entry.cost_usd)
         totals.entries += 1
@@ -151,7 +156,7 @@ def aggregate(entries: list[LedgerEntry]) -> SpendReport:
             bucket.entries += 1
             bucket.models.update(models)
 
-        for model_id, cost, tokens in _model_contributions(entry):
+        for model_id, cost, tokens in contributions:
             bucket = by_model.setdefault(model_id, _Bucket())
             bucket.costs.append(cost)
             bucket.tokens.add(tokens)
@@ -186,17 +191,21 @@ def aggregate(entries: list[LedgerEntry]) -> SpendReport:
     )
 
 
-def _models_of(entry: LedgerEntry) -> list[str]:
-    """The model ids this entry names, verbatim, ``by_model`` first.
+def _models_of(contributions: list[tuple[str, float, TokenCounts]]) -> list[str]:
+    """The model ids named by an entry's already-computed ``contributions``.
 
-    Used for :attr:`~factory_console.domain.spend.TicketSpend.models`, and DERIVED
-    from :func:`_model_contributions` rather than re-deciding the same precedence,
-    so the models named on a ticket row are exactly the models that entry
-    contributed to the by-model cut. Stating the fallback rule twice would let the
-    two cuts disagree the first time only one copy was changed — and they would
-    disagree silently, since each is tested against itself.
+    Used for :attr:`~factory_console.domain.spend.TicketSpend.models`, and READ OFF
+    :func:`_model_contributions`' output rather than re-deciding the same
+    precedence, so the models named on a ticket row are exactly the models that
+    entry contributed to the by-model cut. Stating the fallback rule twice would
+    let the two cuts disagree the first time only one copy was changed — and they
+    would disagree silently, since each is tested against itself.
+
+    It takes the contributions rather than the entry so the caller can compute them
+    once and spend them on both cuts; the single-source property is unchanged,
+    since the precedence still lives only in :func:`_model_contributions`.
     """
-    return [model_id for model_id, _, _ in _model_contributions(entry)]
+    return [model_id for model_id, _, _ in contributions]
 
 
 def _model_contributions(

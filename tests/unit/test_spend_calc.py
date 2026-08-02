@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import math
+from decimal import Decimal, localcontext
 
 from factory_console.domain.ledger import LedgerEntry
 from factory_console.domain.spend import ATTRIBUTION_RULE, COST_DECIMAL_PLACES
@@ -244,15 +245,26 @@ def test_by_level_keys_on_whatever_level_the_factory_wrote() -> None:
 
 
 def test_totals_match_a_sum_computed_independently_of_the_aggregator() -> None:
-    # The expected figure is computed here from the fixture costs directly — not
-    # by calling aggregate() — so this checks the total against the ledger rather
-    # than against itself.
-    costs = [5.740558350000003, 1.40123456, 0.1, 0.2, 0.3, 2.7182818284, 3.14159]
+    # Independently means by a DIFFERENT METHOD, not merely at a different call
+    # site: re-running ``round(math.fsum(costs), 8)`` here would restate the
+    # aggregator's own expression, so an fsum used wrongly would produce the same
+    # wrong figure on both sides and the test would pass on the bug. Exact decimal
+    # arithmetic over the literals shares no code and no rounding behaviour with
+    # the implementation, so agreement is evidence rather than a tautology. It is
+    # the same figure `jq -s '[.[] | .cost_usd] | add'` reports over these lines.
+    literals = ["5.740558350000003", "1.40123456", "0.1", "0.2", "0.3", "2.7182818284", "3.14159"]
+    costs = [float(literal) for literal in literals]
     entries = [_entry(cost_usd=cost, ids=[f"T{i}"]) for i, cost in enumerate(costs)]
+
+    with localcontext() as context:
+        context.prec = 60
+        expected = sum((Decimal(literal) for literal in literals), start=Decimal(0))
+    expected = round(expected, COST_DECIMAL_PLACES)
 
     report = aggregate(entries)
 
-    assert report.totals.costUsd == round(math.fsum(costs), COST_DECIMAL_PLACES)
+    assert expected == Decimal("13.60166474"), "the independent figure itself, spelled out"
+    assert Decimal(str(report.totals.costUsd)) == expected
     assert report.totals.entries == len(costs)
 
 

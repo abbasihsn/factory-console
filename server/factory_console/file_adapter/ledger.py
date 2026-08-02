@@ -25,9 +25,11 @@ asserts this module contains no filesystem-mutating call.
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import re
+import stat
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -71,21 +73,48 @@ _REDACTIONS: tuple[re.Pattern[str], ...] = (
 )
 _REDACTED = '"session_id":"<redacted>"'
 
+# The errnos that mean the node is definitively NOT THERE, as opposed to "I could
+# not look". Kept identical to ``run_state.py``'s set of the same name, since both
+# encode the same claim about the same syscall. ``ELOOP`` is deliberately absent: a
+# symlink loop is a path that cannot be resolved, not a path known to be missing.
+_ABSENT_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR, errno.EBADF})
+
 
 def find_ledger_path(project_root: Path) -> Path | None:
-    """Return the project's ledger file, or ``None`` if it has none.
+    """Return the project's ledger file, ``None`` if it has none, else RAISE.
 
     ``None`` means "this project has no ledger" and MUST NOT be turned into an
     empty :class:`LedgerRead` by the caller: no ledger is an unknown bill, an
     empty ledger is a measured zero. Callers check this first and only call
     :func:`read_ledger` on a non-``None`` result.
 
-    The node type is checked (:meth:`Path.is_file`), not mere existence, so a
-    directory named ``ledger.jsonl`` resolves to ``None`` instead of to a path
-    that cannot be read.
+    The node type is checked, not mere existence, so a directory named
+    ``ledger.jsonl`` resolves to ``None`` instead of to a path that cannot be read.
+
+    "I could not look" is the THIRD answer, and it propagates as an ``OSError``
+    rather than collapsing into ``None``. :meth:`Path.is_file` cannot carry that
+    distinction portably — through CPython 3.12 it re-raises ``EACCES``, and from
+    3.13 (gh-113978) it swallows every ``OSError`` and answers ``False`` — and
+    ``pyproject.toml`` declares ``requires-python = ">=3.11"`` with no upper bound,
+    so both are inside the supported range. Left to the interpreter, an unsearchable
+    ``.factory/`` would report "this project has no ledger" on a new Python and
+    crash the caller on an old one, from the same code. Since ``None`` here is what
+    a caller renders as "$0.00, no ledger", that fail-open would be a false
+    statement about real money arriving by way of an interpreter upgrade. So the
+    split is made HERE, matching ``run_state.py``'s ``_is_regular_file``, which owns
+    the same contract for the same reason.
     """
     candidate = project_root / LEDGER_RELATIVE_PATH
-    return candidate if candidate.is_file() else None
+    try:
+        return candidate if stat.S_ISREG(candidate.stat().st_mode) else None
+    except OSError as error:
+        if error.errno in _ABSENT_ERRNOS:
+            return None
+        raise
+    except ValueError:
+        # Parity with :meth:`Path.is_file`, which reads a non-encodable path as
+        # absent rather than as a failure to look.
+        return None
 
 
 def read_ledger(path: Path) -> LedgerRead:

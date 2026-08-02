@@ -28,6 +28,14 @@ case also clears ``source.read`` — a file that was found and never opened repo
 zero entries exactly like an empty one, so without that flag ``found: true`` over
 zeroed totals would make the same "measured zero" claim about an unknown bill
 that the missing-ledger branch above exists to avoid.
+
+A ledger that cannot even be PROBED joins that same case rather than the missing
+one. ``find_ledger_path`` reserves ``None`` for a ledger that is definitively not
+there and RAISES when it could not tell, precisely so this endpoint cannot read
+the second as the first — an unsearchable ``.factory/`` billed as "$0.00, no
+ledger" would be the same false statement about real money, arriving by way of a
+directory mode instead of a missing file. The raise is caught here and answered
+as found-but-unread.
 """
 
 from __future__ import annotations
@@ -39,7 +47,11 @@ from fastapi import APIRouter, Request
 from factory_console.domain.ledger import LedgerRead, SkipReason
 from factory_console.domain.spend import SkippedLineInfo, SourceInfo, SpendResponse
 from factory_console.domain.spend_calc import aggregate
-from factory_console.file_adapter.ledger import find_ledger_path, read_ledger
+from factory_console.file_adapter.ledger import (
+    LEDGER_RELATIVE_PATH,
+    find_ledger_path,
+    read_ledger,
+)
 
 # The package ``__init__`` owns the ``/api/v1`` prefix; this sub-router only names
 # the route and its OpenAPI tag.
@@ -78,7 +90,22 @@ async def get_spend(request: Request) -> SpendResponse:
     nowhere.
     """
     root: Path = request.app.state.project_root
-    path = find_ledger_path(root)
+    try:
+        path = find_ledger_path(root)
+    except OSError:
+        # ``find_ledger_path`` answers "I could not look" by RAISING rather than by
+        # returning ``None``, so that case cannot be mistaken here for the absence
+        # that ``None`` means. This is the endpoint's half of that contract: raising
+        # on out of here would leave an unmapped 500, which this module promises not
+        # to do, so the probe failure is turned into the one body that already says
+        # "the bill is unknown" — found, not read, reason at line 0. That needs no
+        # new wire vocabulary, because a client must already handle it for the
+        # over-cap and unreadable cases.
+        return SpendResponse.from_report(
+            aggregate([]),
+            source=SourceInfo(found=True, read=False, path=str(root / LEDGER_RELATIVE_PATH)),
+            skipped=[SkippedLineInfo(lineNo=0, reason="unreadable")],
+        )
     if path is None:
         return SpendResponse.from_report(aggregate([]), source=SourceInfo(found=False))
 

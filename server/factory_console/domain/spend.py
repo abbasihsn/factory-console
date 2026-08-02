@@ -145,10 +145,14 @@ class ModelSpend(BaseModel):
     :class:`~factory_console.domain.ledger.ModelSpend`, which is the RAW shape of
     one ``by_model`` value on one entry. This is the aggregate across every entry.
 
-    ``tokens.total`` is derived (the four counts summed) because a ``by_model``
-    object carries no total of its own — except where a bucket was filled from an
-    entry that had no ``by_model`` breakdown at all, in which case the entry's own
-    written ``total`` is used.
+    ``tokens.total`` is the SUM of one total per contributing entry, and each of
+    those is arrived at differently: an entry with a ``by_model`` breakdown carries
+    no total there, so its contribution is derived (the four counts summed), while
+    an entry with no breakdown contributes the entry's own written ``total``. A
+    model fed by both kinds therefore reports a total that need NOT equal this
+    row's other four fields summed — the factory's written total is its own
+    measurement, not a restatement of the parts, and this row keeps it rather than
+    quietly replacing it with a figure the ledger never recorded.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -289,10 +293,20 @@ class SpendResponse(SpendReport):
         Copies the report's fields across by iteration rather than by name so a
         field added to :class:`SpendReport` reaches the wire without this method
         needing to hear about it.
+
+        The iteration is filtered to :class:`SpendReport`'s OWN fields because this
+        class extends it: a :class:`SpendResponse` satisfies the ``report``
+        annotation, and splatting one wholesale would pass ``source`` (and every
+        other field added here) twice — a ``TypeError`` at the one call site a type
+        checker cannot flag, since the subclass is a legal argument. Filtering keeps
+        re-wrapping an already-wrapped report a no-op on the read facts rather than
+        a crash, and still costs this method nothing when a field is added to the
+        base.
         """
+        report_fields = {name: value for name, value in report if name in SpendReport.model_fields}
         return cls(
             source=source,
             skipped=list(skipped or []),
             skippedOmitted=skipped_omitted,
-            **dict(report),
+            **report_fields,
         )

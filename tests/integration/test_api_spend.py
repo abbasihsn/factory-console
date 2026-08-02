@@ -19,9 +19,11 @@ serialised body.
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -265,6 +267,76 @@ def test_an_over_cap_ledger_is_found_but_reports_that_it_was_not_read(tmp_path: 
     assert body["totals"]["costUsd"] == 0.0
     assert body["totals"]["entries"] == 0
     assert body["skipped"] == [{"lineNo": 0, "reason": "file_too_large"}]
+
+
+def test_an_unprobeable_ledger_is_found_but_unread_rather_than_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A ledger whose directory cannot be SEARCHED is not a missing ledger, and the
+    # probe behind find_ledger_path cannot say so on its own: Path.is_file() has one
+    # bit for "absent" and "not allowed to look", and it does not even fail the same
+    # way twice — through CPython 3.12 it re-raises EACCES, from 3.13 (gh-113978) it
+    # answers False for every OSError. pyproject allows both (`>=3.11`, no upper
+    # bound). Each default is a different wrong answer: the raise escapes an endpoint
+    # whose docstring promises to raise nothing, and the False bills a ledger that is
+    # right there as "$0.00, no ledger" — the false statement about real money the
+    # whole `source` shape exists to prevent, reopened by an interpreter upgrade
+    # rather than by a code change.
+    #
+    # Faking the EACCES at Path.stat (rather than with chmod) is the idiom
+    # tests/unit/test_run_state.py uses for the same hazard, and for the same reason:
+    # it pins THIS module's guard on every interpreter and under root, where a
+    # chmod-000 directory is searchable and the test would pass vacuously.
+    ledger = _write_ledger(tmp_path, REAL_ENTRY_LINE + "\n")
+    client = TestClient(_make_app(tmp_path))  # built BEFORE the denial: app boot stats too
+
+    real_stat = Path.stat
+
+    def deny_the_ledger(self: Path, *args: object, **kwargs: object) -> os.stat_result:
+        if self == ledger:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", deny_the_ledger)
+
+    resp = client.get("/api/v1/spend")
+    assert resp.status_code == 200, "an unprobeable ledger is not a server error"
+    body = resp.json()
+
+    assert body["source"]["found"] is True, "the ledger exists; we merely could not look"
+    assert body["source"]["read"] is False, "so the bill is UNKNOWN, not a measured zero"
+    assert body["skipped"] == [{"lineNo": 0, "reason": "unreadable"}]
+    assert body["totals"]["entries"] == 0
+    assert body["totals"]["costUsd"] == 0.0
+
+
+def test_an_unreadable_ledger_file_is_found_but_reports_that_it_was_not_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The other member of _WHOLE_FILE_REASONS, and the sibling of the over-cap case
+    # above: the file is probeable but cannot be OPENED. Asserting only the over-cap
+    # member would let a future edit narrow that frozenset and still ship green.
+    # Monkeypatched rather than chmod'd for the reason given in the test above.
+    ledger = _write_ledger(tmp_path, REAL_ENTRY_LINE + "\n")
+    client = TestClient(_make_app(tmp_path))
+
+    real_read_bytes = Path.read_bytes
+
+    def deny_the_ledger(self: Path, *args: object, **kwargs: object) -> bytes:
+        if self == ledger:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read_bytes(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_bytes", deny_the_ledger)
+
+    resp = client.get("/api/v1/spend")
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert body["source"]["found"] is True
+    assert body["source"]["read"] is False
+    assert body["skipped"] == [{"lineNo": 0, "reason": "unreadable"}]
+    assert body["totals"]["costUsd"] == 0.0
 
 
 def test_an_unread_ledger_is_distinguishable_from_an_empty_one(tmp_path: Path) -> None:
