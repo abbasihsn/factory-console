@@ -14,7 +14,12 @@ watcher backbone the SSE endpoint (T45) builds on. It also accepts an optional
 write-core :class:`~factory_console.file_adapter.writer_protocol.FileWriter` (T60/T61's
 port), stashed on ``app.state.file_writer`` for the ``Depends(get_file_writer)`` seam
 the v2 write endpoints consume; the writer is stateless, so it drives no lifespan.
-It mints the per-session write token (T64) — the defence-in-depth secret every v2
+It also accepts an optional
+:class:`~factory_console.file_adapter.run_artifacts.RunArtifactReader` (T88/T89's
+per-ticket artifact port), stashed on ``app.state.run_artifact_reader`` for the
+``Depends(get_run_artifact_reader)`` seam the runs endpoint consumes; it too is
+stateless and drives no lifespan. It mints the per-session write token (T64) — the
+defence-in-depth secret every v2
 mutation must present in the
 :data:`~factory_console.config.WRITE_TOKEN_HEADER` header — stashing it on
 ``app.state.write_token`` for
@@ -31,7 +36,11 @@ instantiates the filesystem-backed ``RealFileAdapter``, the watchdog-backed
 ``RealFileWatcher``, and the ``RealFileWriter`` lazily, so importing this module
 never imports ``real.py``, ``watcher_real.py``, or ``real_writer.py`` (and never
 pulls in ``watchdog``) — their only runtime users are this dev shortcut and T25's
-production CLI.
+production CLI. It also instantiates the ``RealRunArtifactReader``, imported the
+same lazy way for SYMMETRY rather than for isolation: that concrete lives in
+``run_artifacts.py``, which this module already imports at module scope for the
+``RunArtifactReader`` port in :func:`create_app`'s signature, so — unlike the three
+above — deferring it keeps nothing new out of the import graph.
 """
 
 from __future__ import annotations
@@ -59,6 +68,7 @@ from factory_console.api.v1 import router as v1_router
 from factory_console.api.write_token import publish_write_token_scheme
 from factory_console.config import WRITE_TOKEN_HEADER
 from factory_console.file_adapter.protocol import FileAdapter
+from factory_console.file_adapter.run_artifacts import RunArtifactReader
 from factory_console.file_adapter.watcher import FileWatcher
 from factory_console.file_adapter.writer_protocol import FileWriter
 from factory_console.logging import request_log_line
@@ -220,6 +230,7 @@ def create_app(
     project_root: Path,
     file_watcher: FileWatcher | None = None,
     file_writer: FileWriter | None = None,
+    run_artifact_reader: RunArtifactReader | None = None,
     write_token: str | None = None,
 ) -> FastAPI:
     """Build the Factory Console app around an injected ``FileAdapter``.
@@ -235,7 +246,12 @@ def create_app(
     ``app.state.file_writer`` for the ``Depends(get_file_writer)`` seam; it is
     stateless, so it drives no lifespan, and leaving it ``None`` keeps the app
     write-free until a write route asks for it (then a missing writer is a wiring
-    bug the seam raises on).
+    bug the seam raises on). The optional ``run_artifact_reader`` (T88/T89's
+    :class:`RunArtifactReader` port) is stashed on ``app.state.run_artifact_reader``
+    for the ``Depends(get_run_artifact_reader)`` seam ``GET /api/v1/runs`` consumes;
+    it is stateless, so it drives no lifespan, and leaving it ``None`` is the same
+    trade as the writer — every other route keeps working, and the runs route reports
+    the wiring bug rather than inventing an answer about the factory.
 
     ``write_token`` pins the per-session write secret every v2 mutation must present
     in the :data:`~factory_console.config.WRITE_TOKEN_HEADER` header (an operator
@@ -267,6 +283,7 @@ def create_app(
     app.state.version = version
     app.state.file_watcher = file_watcher
     app.state.file_writer = file_writer
+    app.state.run_artifact_reader = run_artifact_reader
     token = write_token or secrets.token_urlsafe(_WRITE_TOKEN_BYTES)
     app.state.write_token = token
     # ``generated`` mirrors the ``or`` above exactly rather than testing ``is None``:
@@ -290,11 +307,17 @@ def create_dev_app() -> FastAPI:
     plus the watchdog-backed
     :class:`~factory_console.file_adapter.watcher_real.RealFileWatcher` rooted at
     that same root and the filesystem-backed
-    :class:`~factory_console.file_adapter.real_writer.RealFileWriter`. The imports
-    are lazy so importing this module never pulls in ``real.py``,
-    ``watcher_real.py``, or ``real_writer.py`` (and never imports ``watchdog``) —
-    the only runtime users of the concrete adapter/watcher/writer are this dev
-    shortcut and T25's CLI.
+    :class:`~factory_console.file_adapter.real_writer.RealFileWriter`, plus the
+    filesystem-backed
+    :class:`~factory_console.file_adapter.run_artifacts.RealRunArtifactReader` the
+    runs endpoint reads the per-ticket lane artifacts through. The imports are lazy
+    so importing this module never pulls in ``real.py``, ``watcher_real.py``, or
+    ``real_writer.py`` (and never imports ``watchdog``) — the only runtime users of
+    the concrete adapter/watcher/writer are this dev shortcut and T25's CLI. The
+    artifact reader is imported the same way for symmetry rather than out of
+    necessity: it shares :mod:`~factory_console.file_adapter.run_artifacts` with the
+    port this module already imports for its signature, so nothing new arrives with
+    it.
 
     The write token comes from ``FACTORY_CONSOLE_WRITE_TOKEN`` via
     :func:`~factory_console.config.read_write_token` so a dev loop can pin it across
@@ -311,6 +334,7 @@ def create_dev_app() -> FastAPI:
     from factory_console.file_adapter.discovery import discover_project
     from factory_console.file_adapter.real import RealFileAdapter
     from factory_console.file_adapter.real_writer import RealFileWriter
+    from factory_console.file_adapter.run_artifacts import RealRunArtifactReader
     from factory_console.file_adapter.watcher_real import RealFileWatcher
 
     # Same exit-2-style handling the CLI gives this variable. A bare ValueError here
@@ -330,5 +354,6 @@ def create_dev_app() -> FastAPI:
         project_root=root,
         file_watcher=RealFileWatcher(root),
         file_writer=RealFileWriter(),
+        run_artifact_reader=RealRunArtifactReader(),
         write_token=write_token,
     )

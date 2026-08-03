@@ -19,6 +19,15 @@ bound on ``app.state.file_writer``, so the v2 write endpoints obtain the writer
 through ``Depends(get_file_writer)`` without importing a concrete writer. Like the
 adapter seam (and unlike the opt-in watcher), a missing writer is a wiring bug, so
 the provider raises rather than returning ``None``.
+
+:func:`get_run_artifact_reader` is the same seam for T88/T89's
+:class:`~factory_console.file_adapter.run_artifacts.RunArtifactReader` — the small
+read port for the per-ticket lane artifacts that ``FileAdapter`` deliberately does
+not carry — which ``create_app`` binds on ``app.state.run_artifact_reader`` for the
+runs endpoint. Like the adapter and the writer, a missing reader is a wiring bug it
+raises on, not a configuration the endpoint degrades over: the port is TOTAL, so an
+absent artifact already has a named answer, and there is nothing left for a ``None``
+reader to mean.
 """
 
 from __future__ import annotations
@@ -30,6 +39,7 @@ from fastapi import Request
 
 from factory_console.domain.ticket import TICKET_ID_PATTERN
 from factory_console.file_adapter.protocol import FileAdapter
+from factory_console.file_adapter.run_artifacts import RunArtifactReader
 from factory_console.file_adapter.watcher import FileWatcher
 from factory_console.file_adapter.writer_protocol import FileWriter
 
@@ -93,3 +103,25 @@ def get_file_writer(request: Request) -> FileWriter:
             "build the app with create_app(file_writer=...)."
         )
     return writer
+
+
+def get_run_artifact_reader(request: Request) -> RunArtifactReader:
+    """Return the :class:`RunArtifactReader` bound to the app at boot.
+
+    Reads ``request.app.state.run_artifact_reader``, which ``create_app`` sets from
+    its ``run_artifact_reader`` argument, and is the target of
+    ``Depends(get_run_artifact_reader)`` in the runs endpoint. Raises
+    :class:`RuntimeError` when the reader is unbound or ``None`` — a programmer error
+    meaning the app was built without the artifact-read seam wired, exactly like
+    :func:`get_file_adapter` and :func:`get_file_writer` and unlike the opt-in
+    :func:`get_file_watcher`. Returning ``None`` here would be worse than raising: the
+    endpoint's only honest fallback would be to report every artifact as unread, which
+    is a claim about the FACTORY made from a fact about the console's own wiring.
+    """
+    reader = getattr(request.app.state, "run_artifact_reader", None)
+    if reader is None:
+        raise RuntimeError(
+            "No RunArtifactReader bound on app.state.run_artifact_reader; "
+            "build the app with create_app(run_artifact_reader=...)."
+        )
+    return reader

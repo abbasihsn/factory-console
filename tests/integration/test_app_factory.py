@@ -20,12 +20,18 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel
 from starlette.routing import Mount
 
-from factory_console.api.deps import get_file_adapter, get_file_watcher, get_file_writer
+from factory_console.api.deps import (
+    get_file_adapter,
+    get_file_watcher,
+    get_file_writer,
+    get_run_artifact_reader,
+)
 from factory_console.app import _SpaStaticFiles, create_app
 from factory_console.domain import TICKET_ID_PATTERN, Project
 from factory_console.file_adapter import FakeFileAdapter
 from factory_console.file_adapter.discovery import ProjectNotFound
 from factory_console.file_adapter.fake_writer import FakeFileWriter
+from factory_console.file_adapter.run_artifacts import FakeRunArtifactReader
 
 
 class _Body(BaseModel):
@@ -213,6 +219,33 @@ def test_get_file_writer_raises_when_unbound() -> None:
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
     with pytest.raises(RuntimeError, match="file_writer"):
         get_file_writer(request)  # type: ignore[arg-type]
+
+
+def test_get_run_artifact_reader_returns_the_reader_bound_by_create_app() -> None:
+    # create_app stashes the optional artifact-read port on app.state; the DI
+    # provider reads back the EXACT instance the composition root wired. Asserted
+    # by identity, not by type: a wiring typo that bound some other port here
+    # would still satisfy an isinstance check against a Protocol.
+    reader = FakeRunArtifactReader()
+    app = create_app(
+        _make_fake(),
+        version="0.0.0",
+        project_root=Path("/tmp/fake-root"),
+        run_artifact_reader=reader,
+    )
+    request = SimpleNamespace(app=app)
+    assert get_run_artifact_reader(request) is reader  # type: ignore[arg-type]
+
+
+def test_get_run_artifact_reader_raises_when_unbound() -> None:
+    # The artifact-reader seam mirrors the adapter's and writer's guard (not the
+    # opt-in watcher): the port is TOTAL, so a None reader has nothing left to
+    # mean, and an unbound one is a wiring bug the provider must fail loudly on.
+    # Exercised against a state object with no such attribute at all — the branch
+    # create_app itself can never produce, since it always binds the field.
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
+    with pytest.raises(RuntimeError, match="run_artifact_reader"):
+        get_run_artifact_reader(request)  # type: ignore[arg-type]
 
 
 def _spa_client(tmp_path: Path) -> TestClient:
