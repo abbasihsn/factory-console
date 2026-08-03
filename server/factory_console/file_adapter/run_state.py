@@ -393,8 +393,22 @@ def _is_ticket_marker_name(name: str) -> bool:
     It is deliberately a name-shape test and not a manifest lookup: this module is
     the read-only run-state prober and has no manifest to consult. A non-dot,
     pattern-matching stray (``README``) still counts as a marker; that is the
-    residual, and it errs toward the pre-amendment behaviour rather than toward a
-    new one.
+    residual, and under the four state names this console can rank it errs toward the
+    pre-amendment behaviour rather than toward a new one.
+
+    T92 WIDENED WHERE THAT RESIDUAL REACHES, and beyond those four it no longer errs
+    toward the old answer. :func:`_directory_lists_any_ticket` now applies this test
+    under EVERY subdirectory of the run-state dir, so a stray ``docs/`` holding a
+    ``README.md`` — a non-dot, pattern-matching name — makes an otherwise VACUOUS source
+    read as listing somebody, and every id in the project resolves :attr:`RunState.absent`
+    (edit refused, delete still permitted) where it used to resolve the mutable
+    ``unknown``. That is the unavoidable price of counting markers under names this
+    console cannot rank: ``in_review/T05`` and ``docs/README.md`` are the SAME SHAPE, and
+    with no manifest to consult nothing here can tell them apart. It errs CLOSED, which is
+    the direction this module takes everywhere else, and the narrower alternative —
+    counting an unrecognised directory only once a KNOWN state already lists somebody —
+    would reopen the exact fail-open T92 closes, since a source whose markers all moved to
+    ``in_review/`` would read vacuous again.
     """
     return not name.startswith(".") and re.fullmatch(TICKET_ID_PATTERN, name) is not None
 

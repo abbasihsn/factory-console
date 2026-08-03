@@ -43,8 +43,8 @@ could not be READ at all — a marker directory that raises ``EACCES`` on enumer
 ``run-state.json`` whose bytes cannot be read — or it was read and could not be
 INTERPRETED, i.e. it lists this ticket under a status outside the alias table, under a
 status that is not a string, under an entry that is not an object at all, or — in the
-DIRECTORY form — under a state subdirectory outside
-:data:`~factory_console.file_adapter.run_state._MARKER_PRECEDENCE` (T92), which is that
+DIRECTORY form — under a state subdirectory outside the four the marker-precedence walk
+can name (T92), which is that
 form's mirror of the unrecognised ``status`` and refuses ahead of any recognised marker
 for the same id, since a state this console cannot name has a precedence it cannot rank
 either. Amendment
