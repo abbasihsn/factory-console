@@ -66,12 +66,17 @@ class FileAdapter(Protocol):
         authority over anybody, and answering ``absent`` there makes every write 409
         and turns an empty-but-valid run-state into a project-wide read-only lockout
         (T80 amendment, gap 1). ``unreadable`` is the THIRD unnamed answer and the
-        only one that fails closed: the source is THERE and its bytes or entries could
-        not be read at all (``EACCES`` and friends), so nothing was learned about this
-        id. A conforming implementation must not fold it into either of the other two
-        — "I could not look" is not "I looked and there is nothing to find", and the
-        entry saying a lane owns this ticket may be exactly what could not be read
-        (T80 amendment 2).
+        only one that fails closed. It covers TWO ways the information can be
+        unavailable, and a conforming implementation owes both: the source is THERE and
+        its bytes or entries could not be read at all (``EACCES`` and friends), so
+        nothing was learned about this id; OR it was read fine and what it says about
+        THIS id could not be interpreted — a ``status`` outside the alias table, a
+        non-string status, an entry that is not an object (T80 amendment 4), or a marker
+        under a state subdirectory this console has no name for (T92). A conforming
+        implementation must not fold either into the other two answers — "I could not
+        look" and "I looked and did not understand" are both distinct from "I looked and
+        there is nothing to find", and the claim saying a lane owns this ticket may be
+        exactly the one that could not be read or named (T80 amendment 2).
 
         The three states are NOT interchangeable at the write
         gate — ``unknown`` is mutable, ``absent`` is refused 409 for an edit (though

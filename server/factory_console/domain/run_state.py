@@ -42,7 +42,12 @@ T80's restated resolution invariant recognises (amendment 4): the source EXISTS 
 could not be READ at all — a marker directory that raises ``EACCES`` on enumeration, a
 ``run-state.json`` whose bytes cannot be read — or it was read and could not be
 INTERPRETED, i.e. it lists this ticket under a status outside the alias table, under a
-status that is not a string, or under an entry that is not an object at all. Amendment
+status that is not a string, under an entry that is not an object at all, or — in the
+DIRECTORY form — under a state subdirectory outside the four the marker-precedence walk
+can name (T92), which is that
+form's mirror of the unrecognised ``status`` and refuses ahead of any recognised marker
+for the same id, since a state this console cannot name has a precedence it cannot rank
+either. Amendment
 4 widened the WORDING of the rule rather than adding a fifth unnamed state, because
 both are the same authorization answer: this console has nothing it may act on. Where
 they differ is the REMEDY, and that lives in the refusal's prose
@@ -121,9 +126,10 @@ class RunState(str, Enum):  # noqa: UP042
     absent = "absent"
     # Named by no source for a third reason: the information is UNAVAILABLE. Either a
     # run-state source is THERE and could not be read (EACCES on a marker directory, an
-    # I/O error on the JSON file), or it was read and this ticket's entry could not be
-    # interpreted (a status outside the alias table, a non-string status, an entry that
-    # is not an object). So neither "not listed" nor "nothing to find" is honest — the
+    # I/O error on the JSON file), or it was read and what it says about this ticket could
+    # not be interpreted (a status outside the alias table, a non-string status, an entry
+    # that is not an object, or a marker under a state subdirectory this console has no
+    # name for). So neither "not listed" nor "nothing to find" is honest — the
     # answer is "I could not look, or I looked and did not understand" (amendments 2 and
     # 4). The only unnamed state the write gate refuses for BOTH edit and
     # delete: an unreadable source may be hiding a ``merged`` marker, so failing

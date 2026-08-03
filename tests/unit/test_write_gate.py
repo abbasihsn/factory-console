@@ -436,6 +436,59 @@ def test_an_unrecognised_status_refuses_edit_and_delete_and_names_the_value(
         assert str(json_path) in exc.message
 
 
+def test_an_unrecognised_state_directory_refuses_both_writes_and_names_the_directory(
+    tmp_path: Path,
+) -> None:
+    # T92 at the gate, the DIRECTORY form's version of the test above, and reached with
+    # no change to this module: `probe_ticket_state_with_reason` now fills the same
+    # `unclassifiable` slot for a marker directory this console has no name for, so
+    # `TicketNotMutable`'s existing branch phrases it. The failure it closes is worse
+    # than the JSON one: T01 is named ONLY under `in_review/`, so before T92 it resolved
+    # `absent` — which is DELETABLE — and the console would have deleted a ticket a lane
+    # owns rather than merely edited it.
+    run_state_dir = tmp_path / "project" / ".factory" / "run-state"
+    (run_state_dir / "in_review").mkdir(parents=True)
+    (run_state_dir / "in_review" / "T01").write_text("", encoding="utf-8")
+    project = _project_with_run_state_dir(run_state_dir)
+
+    with pytest.raises(TicketNotMutable) as edit_exc:
+        ensure_mutable(project, "T01")
+    with pytest.raises(TicketNotMutable) as delete_exc:
+        ensure_deletable(project, "T01")
+
+    for exc_info in (edit_exc, delete_exc):
+        exc = exc_info.value
+        assert exc.status == 409
+        assert exc.details == {"ticketId": "T01", "runState": RunState.unreadable.value}
+        # Criterion 3: the refusal NAMES the directory, in the same words the JSON form
+        # names a status. "Not tracked" would send an operator hunting a marker that is
+        # right there, and "could not be read" would send them to chmod a directory
+        # whose permissions are fine; the fix is a console that knows `in_review`.
+        assert "state 'in_review'" in exc.message
+        assert "could not be read" not in exc.message
+        assert str(run_state_dir) in exc.message
+
+
+def test_an_unrecognised_state_directory_naming_nobody_leaves_the_project_mutable(
+    tmp_path: Path,
+) -> None:
+    # T92's converse, at the gate rather than at the resolver, because over-refusal is
+    # what the per-id rule exists to prevent: a stray `in_review/` that names NOBODY
+    # must not turn a project read-only. T01 keeps its `todo` marker and stays editable;
+    # T02, which the source does not name, keeps the `absent` it already had.
+    run_state_dir = tmp_path / "project" / ".factory" / "run-state"
+    (run_state_dir / "todo").mkdir(parents=True)
+    (run_state_dir / "todo" / "T01").write_text("", encoding="utf-8")
+    (run_state_dir / "in_review").mkdir()
+    project = _project_with_run_state_dir(run_state_dir)
+
+    assert ensure_mutable(project, "T01") is RunState.todo
+    with pytest.raises(TicketNotMutable) as exc_info:
+        ensure_mutable(project, "T02")
+    assert exc_info.value.details == {"ticketId": "T02", "runState": RunState.absent.value}
+    assert ensure_deletable(project, "T02") is RunState.absent
+
+
 def test_the_unclassifiable_refusal_does_not_borrow_the_unreadable_permissions_prose() -> None:
     # The two routes to `unreadable` are the same authorization answer and must stay
     # the same STATE — `details` is deliberately identical, so a client switching on

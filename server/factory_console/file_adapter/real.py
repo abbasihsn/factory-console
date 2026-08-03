@@ -200,11 +200,15 @@ class RealFileAdapter:
         so an ``absent`` ticket can still be deleted).
 
         A third unnamed state can come back:
-        :attr:`~factory_console.domain.run_state.RunState.unreadable`, when the source
-        is THERE and its bytes or entries could not be read at all. It is the only one
-        of the three that BOTH gates refuse — "I could not look" cannot license a write
-        the way "I looked and it does not list you" licenses a delete (T80 amendment 2)
-        — so a caller must not read it as either ``unknown`` or ``absent``.
+        :attr:`~factory_console.domain.run_state.RunState.unreadable`, when the source is
+        THERE and its bytes or entries could not be read at all — OR when every byte of
+        it read fine and what it says about THIS id could not be interpreted: an
+        unrecognised ``status`` in the JSON form (T80 amendment 4), a marker under a
+        state subdirectory outside the four this console can name in the directory form
+        (T92). It is the only one of the three that BOTH gates refuse — neither "I could
+        not look" nor "I looked and did not understand" can license a write the way "I
+        looked and it does not list you" licenses a delete (T80 amendment 2) — so a
+        caller must not read it as either ``unknown`` or ``absent``.
         """
         return probe_ticket_state_from_source(project.runStateSource, ticket_id)
 

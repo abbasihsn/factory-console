@@ -19,6 +19,37 @@ never by string munging, because the factory's ``in_progress`` and the directory
 form's ``in-flight`` differ by exactly the character a ``.replace()`` would
 paper over.
 
+NEITHER TABLE IS CLOSED AGAINST THE FACTORY, which owns both vocabularies and can
+grow either without this console. A name outside them is therefore not silence, it
+is UNAVAILABLE INFORMATION — the factory said something about this ticket in a
+vocabulary this console does not know — so it REFUSES the ids it names rather than
+resolving them mutable. That rule reached the JSON form first (an unrecognised
+``status``, T80 amendment 4) and now covers the directory form too (a state
+SUBDIRECTORY outside :data:`_MARKER_PRECEDENCE`, T92): both are per ID, for exactly
+the ids the unknown name is attached to, and both name what they could not interpret
+in the refusal so an operator is sent to upgrade the console rather than to chmod a
+path that reads fine. "Exactly the ids the name is attached to" is decided by READING
+the unknown state directory, so a directory that cannot be SEARCHED attaches its name
+to every id in the source and refuses all of them (T92 amendment 1) — unsearchable is
+not empty — and that refusal says *unsearchable*, since its fix is a permission bit and
+not a console upgrade.
+
+Those rules are instances, and T92 amendment 2 states the property they are instances of,
+because a list of situations never closes while a property of the function does:
+
+    MONOTONICITY. Resolution must be monotone in information: if input A reveals strictly
+    less than input B, A's answer must be NO MORE PERMISSIVE than B's. There is no
+    filesystem state so degraded that it grants access a better-understood state would
+    refuse.
+
+Two answers changed to satisfy it. A directory entry whose ``stat`` FAILED is recorded as
+an unrecognised state name rather than dropped — dropping it made the collection look
+smaller and cleaner, which reads downstream as MORE information, so that failure inverts
+the signal rather than merely losing it — and a run-state directory whose own listing
+failed now refuses every id in the source instead of letting a readable marker answer,
+since a directory that will not LIST reveals strictly less than one that lists while
+holding a subdirectory that will not OPEN, and the second of those already refuses.
+
 The console MUST NOT write, create, or delete anything here — a guard test
 asserts this module contains no filesystem-mutating call.
 """
@@ -32,6 +63,7 @@ import re
 import stat
 from collections.abc import Callable
 from pathlib import Path
+from typing import NamedTuple
 
 from factory_console.domain import TICKET_ID_PATTERN, RunState
 from factory_console.domain.run_state_source import (
@@ -58,6 +90,33 @@ _LOGGER = logging.getLogger(__name__)
 # the literal directory names under the run-state dir (``in-flight`` hyphenated);
 # each is mapped to its enum member BY VALUE via ``RunState(name)``, never by
 # string guessing. See ARCHITECTURE.md "Factory run-state directory (read-only)".
+#
+# This tuple is the console's WHOLE vocabulary for the directory form, and it is not
+# the factory's: a state subdirectory whose name is not here is a state this console
+# has no name for, not a directory that says nothing. Until T92 both the vacuity scan
+# and the precedence walk iterated ONLY this tuple, so such a directory was never
+# opened, never probed and never logged — the directory form's instance of the
+# fail-open T80 closed for the JSON form's ``status`` values, and the last one of that
+# family. It produced two outcomes, both granting a write BECAUSE the check had no
+# name for what it was looking at: markers living only under, say, ``in_review/``
+# made the source read as VACUOUS, so every ticket in the project resolved the mutable
+# ``unknown`` and the write gate was off project-wide; and an id named only under
+# ``in_review/`` while other ids carried known markers resolved ``absent``, which is
+# in ``DELETABLE_STATES``, so the console would delete a ticket a lane owns.
+#
+# Since T92 every immediate subdirectory of the run-state dir is discovered
+# (:func:`_unrecognised_state_names`) and counted for vacuity
+# (:func:`_directory_lists_any_ticket`), and an id NAMED under a subdirectory outside
+# this tuple resolves the refusing :attr:`RunState.unreadable` before the precedence
+# walk runs (:func:`_unrecognised_state_naming`) — before, and therefore ahead of any
+# known marker, because the unknown state's PRECEDENCE is unknown too: ``merged/<id>``
+# no longer settles the question once ``in_review/<id>`` might outrank it. What the
+# rule deliberately does NOT do is refuse per SOURCE: an unrecognised directory that
+# OPENS and names nobody changes nothing at all, since a misplaced folder must not turn a
+# whole project read-only. One that will not open is the other case, and it does refuse
+# per source (T92 amendment 1): an unsearchable directory is not empty, it is unknown, so
+# no id can be ruled out of it and every id in that source resolves ``unreadable`` until
+# a human fixes the permissions.
 _MARKER_PRECEDENCE = ("merged", "ready", "in-flight", "todo")
 
 # The factory's nine ``FAC_STATES`` mapped to console states, explicitly and
@@ -334,13 +393,357 @@ def _is_ticket_marker_name(name: str) -> bool:
     It is deliberately a name-shape test and not a manifest lookup: this module is
     the read-only run-state prober and has no manifest to consult. A non-dot,
     pattern-matching stray (``README``) still counts as a marker; that is the
-    residual, and it errs toward the pre-amendment behaviour rather than toward a
-    new one.
+    residual, and under the four state names this console can rank it errs toward the
+    pre-amendment behaviour rather than toward a new one.
+
+    T92 WIDENED WHERE THAT RESIDUAL REACHES, and beyond those four it no longer errs
+    toward the old answer. :func:`_directory_lists_any_ticket` now applies this test
+    under EVERY subdirectory of the run-state dir, so a stray ``docs/`` holding a
+    ``README.md`` — a non-dot, pattern-matching name — makes an otherwise VACUOUS source
+    read as listing somebody, and every id in the project resolves :attr:`RunState.absent`
+    (edit refused, delete still permitted) where it used to resolve the mutable
+    ``unknown``. That is the unavoidable price of counting markers under names this
+    console cannot rank: ``in_review/T05`` and ``docs/README.md`` are the SAME SHAPE, and
+    with no manifest to consult nothing here can tell them apart. It errs CLOSED, which is
+    the direction this module takes everywhere else, and the narrower alternative —
+    counting an unrecognised directory only once a KNOWN state already lists somebody —
+    would reopen the exact fail-open T92 closes, since a source whose markers all moved to
+    ``in_review/`` would read vacuous again.
     """
     return not name.startswith(".") and re.fullmatch(TICKET_ID_PATTERN, name) is not None
 
 
-def _directory_lists_any_ticket(run_state_dir: Path) -> bool | None:
+class _StateDirectories(NamedTuple):
+    """The run-state directory's immediate subdirectories this console has NO name for.
+
+    ``unrecognised`` holds every subdirectory name outside :data:`_MARKER_PRECEDENCE`,
+    sorted, de-duplicated by the filesystem itself (one directory entry per name). It is
+    the directory form's answer to :attr:`JsonRunState.unrecognised`: the names the
+    factory used that this console cannot map, collected so the gap is visible rather
+    than merely refused — a console a version behind the factory must be able to say
+    which state it is behind on, and one refused ticket does not say that.
+
+    It holds ONE further class, which is not a name the factory used and not a confirmed
+    subdirectory either: an entry whose ``stat`` FAILED, recorded rather than dropped
+    (amendment 2, finding 1 — see :func:`_unrecognised_state_names`). It is folded in
+    here deliberately, because "could not be identified" and "could not be searched" are
+    the same fact one level apart and want the same refusal, so no consumer of this field
+    needs to tell the two apart. Only the scan's own WARNING does, since the remedy
+    differs — a console upgrade against a filesystem fix.
+
+    ``undiscoverable`` is the tri-state's third leg, hoisted out of the scan: the
+    run-state directory itself could not be ENUMERATED (mode ``0711``, or an
+    ``EACCES`` from any other cause), so which subdirectories exist is unknowable and
+    ``unrecognised`` is empty for want of evidence rather than for want of directories.
+    It must never be read as "there are none": that is the "I could not look" / "there
+    is nothing to find" conflation this module is built to keep apart.
+
+    IT REFUSES EVERY ID IN THAT SOURCE, unconditionally, ahead of the marker walk —
+    :func:`probe_ticket_state` and :func:`run_state_resolver`'s closure both answer
+    :attr:`RunState.unreadable` the moment this is set, exactly as they do for the
+    ``unknown_state`` and ``unprobeable_state`` legs. A directory whose listing failed
+    may hold an ``in_review/<id>`` at a precedence this console cannot rank, and it
+    cannot be enumerated, so no id can be ruled out of it: a readable ``todo/<id>``
+    settles nothing, for the same reason it settles nothing beside an unrecognised
+    directory that will not OPEN (amendment 1).
+
+    THAT REVERSES A RESIDUAL THIS FIELD USED TO DOCUMENT AS PERMANENT, and the old
+    reasoning is kept because it records why the wrong answer was convincing: an id whose
+    known marker still READS could still be answered honestly, so refusing it looked like
+    a project-wide lockout bought for nothing — the same bound :func:`_marker_state`
+    accepts for an unreadable state subdirectory the walk never reached, and the same
+    "a source that can still answer for the ids it names keeps answering" principle.
+
+    Amendment 2 overturns it, on MONOTONICITY: resolution must be monotone in
+    information, and this was the module's clearest violation of it. A run-state
+    directory that will not LIST reveals strictly less than one that lists fine while
+    holding a single unsearchable subdirectory — yet the second refuses every id
+    (amendment 1) and the first was answering markers. Less information, more permissive
+    answer. The principle quoted above is not wrong, it is simply not available here:
+    "the ids it can answer for" presumes the console knows which states could have
+    outranked the marker it found, and an undiscoverable directory is precisely the case
+    where it does not.
+
+    ``test_an_undiscoverable_state_set_is_not_read_as_listing_you`` pins this case (an
+    undiscoverable run-state dir that also holds an unrecognised ``in_review/``) and is
+    the one to read before touching this field. It is NOT interchangeable with
+    ``test_unenumerable_state_dirs_do_not_read_as_vacuous``, which restricts the four
+    state subdirectories this console CAN name while the run-state dir itself still
+    lists: that source is strictly more informative — every state in it has a name and a
+    known rank — so a readable ``merged/<id>`` there still resolves ``merged``, and only
+    an id with NO readable marker is refused. The boundary between the two tests is the
+    boundary of this field.
+    """
+
+    unrecognised: tuple[str, ...]
+    undiscoverable: bool
+
+
+def _unrecognised_state_names(run_state_dir: Path) -> _StateDirectories:
+    """Discover the subdirectories of ``run_state_dir`` outside :data:`_MARKER_PRECEDENCE`.
+
+    NEVER raises: on the TOP-LEVEL listing the two "there is nothing here" errnos are
+    definitive absence and every other ``OSError`` sets ``undiscoverable`` (see
+    :class:`_StateDirectories`), while an ``OSError`` on a single ENTRY is folded into
+    ``unrecognised`` (second bullet below). Neither escapes, because this runs at resolver
+    CONSTRUCTION, outside any per-ticket ``try``, where an escaping error would 500 the
+    request instead of deciding anything.
+
+    Three entry classes are skipped, and none of them can hide a state directory:
+
+    - The four names in :data:`_MARKER_PRECEDENCE`. They are recognised by definition,
+      and :func:`_marker_state` already walks them in precedence order.
+    - Anything that is not a DIRECTORY. ``<run-state>/README`` cannot name a ticket —
+      ``<run-state>/README/<id>`` answers ``ENOTDIR``, i.e. absent — so recording it
+      would only log a stray file as a factory state this console must learn, which is
+      the opposite of making a real gap visible. That skip requires an ANSWER, though:
+      an entry whose type could not be determined at all — :func:`_is_directory` raising
+      ``ELOOP`` on a symlink loop, or ``EACCES`` — is neither skipped NOR dropped. It is
+      recorded in ``unrecognised`` alongside the entries this scan could confirm are
+      directories, because an entry the console could not identify cannot be RULED OUT
+      as the state directory naming this ticket, and "not ruled out" is exactly what
+      ``unrecognised`` already means for a directory that will not open (amendment 1).
+
+      It used to be dropped from the list while setting ``undiscoverable``, and that was
+      the sharpest instance of the MONOTONICITY failure amendment 2 names: discarding
+      what could not be read makes the collection look SMALLER AND CLEANER, which reads
+      downstream as MORE information rather than less — the failure inverts the signal
+      instead of merely losing it. Concretely, a looping ``<run-state>/in_review`` was
+      never handed to :func:`_unrecognised_state_naming`, so it was never probed for any
+      id, so a stale readable ``todo/<id>`` still resolved the MUTABLE ``todo`` beside an
+      entry that might be an ``in_review/`` naming the same id at a precedence this
+      console cannot rank.
+
+      Folding it into ``unrecognised`` needs no new state and no new branch downstream,
+      which is the point: :func:`_unrecognised_state_naming` stats
+      ``<run-state>/<name>/<id>``, raises the same ``OSError`` again, and reports the
+      entry as ``unprobeable_name`` — so it refuses every id in the source, with the
+      message that NAMES it, exactly as a discovered-but-unsearchable directory does.
+      :func:`_directory_lists_any_ticket` likewise ``iterdir()``s it, takes the same
+      error, and answers ``None`` rather than ``False``, so the source is never read as
+      vacuous. ``undiscoverable`` is deliberately NOT set for this entry: that flag means
+      the top-level listing itself failed and there is no name to point an operator at,
+      and here there is one.
+    - Dot-leading names (``.gitkeep`` committed at the top level, ``.DS_Store``, an
+      editor swap directory). The factory's ``FAC_STATES`` contain no such name, and
+      :func:`_is_ticket_marker_name` already excludes the same shape one level down for
+      the same reason: scaffolding must not be read as a claim about a ticket.
+
+    Sorted so that an id named under TWO unrecognised directories is refused with a
+    stable one of them — the refusal's prose is what an operator reads, and it must not
+    change between two requests against an unchanged filesystem just because the
+    directory order did.
+
+    Each distinct name is logged ONCE per scan, matching :func:`read_json_run_state`'s
+    handling of an unrecognised ``status``: the operator action is "teach this console
+    the state the factory is now writing", and the tenth id named under it adds nothing
+    the first did not. :func:`run_state_resolver` scans once per resolver, so a
+    200-ticket projection emits one line per unknown state, not 200.
+
+    The unidentifiable entry of the second bullet is the ONE place that fold does need a
+    branch, and it is here rather than downstream: it gets its own record, because the
+    "does not know" line means UPGRADE THIS CONSOLE and an entry that would not ``stat``
+    has neither been shown to be a state directory nor to carry a name this console
+    lacks — its remedy is a symlink loop or a permission bit. Borrowing that wording
+    would be the third wrong operator instruction this family guards against, alongside
+    "could not be enumerated" for a directory that enumerated fine (criterion 3,
+    amendment 1 change 3). The refusal itself is unchanged and still needs no branch.
+    """
+    unrecognised: list[str] = []
+    # The subset of ``unrecognised`` this scan could NOT confirm is a directory. Carried
+    # only to pick the right WARNING below — every downstream branch treats the two
+    # classes identically, which is the whole point of folding them into one tuple.
+    unidentifiable: set[str] = set()
+    try:
+        entries = list(run_state_dir.iterdir())
+    except (FileNotFoundError, NotADirectoryError):
+        # Definitively nothing to discover — the directory vanished, or a path
+        # component is not a directory. Both are handled as such by every caller
+        # (``unknown``, never ``absent``); no degradation to report.
+        return _StateDirectories(unrecognised=(), undiscoverable=False)
+    except OSError:
+        # It exists and would not be listed. Which states it holds is now unknowable,
+        # which is NOT the same as holding none.
+        return _StateDirectories(unrecognised=(), undiscoverable=True)
+
+    for entry in entries:
+        name = entry.name
+        if name in _MARKER_PRECEDENCE or name.startswith("."):
+            continue
+        try:
+            could_be_a_state_directory = _is_directory(entry)
+        except OSError:
+            # The entry EXISTS and could not be identified (``ELOOP``, ``EACCES``), so it
+            # cannot be ruled out as a state directory naming this project's ids. Recorded
+            # rather than dropped (amendment 2, finding 1) — see the docstring for why
+            # dropping it was worse than losing information, and for how the existing
+            # unprobeable machinery carries it from here without a new flag.
+            could_be_a_state_directory = True
+            unidentifiable.add(name)
+        if not could_be_a_state_directory:
+            continue
+        unrecognised.append(name)
+
+    unrecognised.sort()
+    for name in unrecognised:
+        # ``%r`` for the name, never ``%s`` — the module-wide convention for a value
+        # that reaches a log record from outside (see ``read_json_run_state``): these
+        # are directory names from a tree the console does not own, and the formatter
+        # is one record per line, so an unescaped newline in one would forge log
+        # records.
+        if name in unidentifiable:
+            # The entry could not even be STAT'd, so two of the three claims the sibling
+            # record makes were never established: that this is a state directory at all,
+            # and that the console merely lacks a NAME for it. "Does not know" is this
+            # module's console-upgrade phrasing, reserved for a name read fine and not
+            # mappable, and it is the wrong instruction here — the remedy is a symlink
+            # loop or a permission bit on this one entry. The per-id probe reports the
+            # same entry as ``unprobeable_name`` and refuses every id in the source, so
+            # the scope is stated as "may name" rather than "names".
+            _LOGGER.warning(
+                "run-state: %s holds an entry %r this console could not identify; it "
+                "cannot be ruled out as a state directory, so the ids it may name "
+                "resolve unreadable and are refused a write",
+                run_state_dir,
+                name,
+            )
+            continue
+        _LOGGER.warning(
+            "run-state: %s holds state %r, which this console does not know; the ids it "
+            "names resolve unreadable and are refused a write",
+            run_state_dir,
+            name,
+        )
+    # ``undiscoverable=False`` is a literal rather than a flag the loop above can raise:
+    # the listing SUCCEEDED, so which subdirectories exist IS known, and every entry it
+    # could not identify is carried as a NAME in ``unrecognised`` instead. The flag now
+    # has exactly one origin — the ``iterdir()`` failure above, which is the only case
+    # with no name to give an operator (amendment 2, finding 1).
+    return _StateDirectories(unrecognised=tuple(unrecognised), undiscoverable=False)
+
+
+def _unrecognised_state_naming(
+    run_state_dir: Path, state_dirs: _StateDirectories, ticket_id: str
+) -> tuple[str | None, str | None]:
+    """The unrecognised state directory that NAMES ``ticket_id``, and the one that refused.
+
+    Returns ``(name, unprobeable_name)``: the first unrecognised state directory holding a
+    marker for this id — ``None`` if none does — plus the first one that could not be
+    LOOKED IN for this id, again ``None`` if none refused.
+
+    Both elements are NAMES rather than one name and a flag, and the second one is a name
+    for the same reason the first is (T92 criterion 3, amendment 1 change 3): a refusal
+    that says only "something here could not be read" sends an operator to chmod the
+    run-state directory, which reads fine. They stay SEPARATE elements because they are
+    different operator instructions — ``in_review/`` naming this id means "upgrade this
+    console", ``in_review/`` refusing to open means "fix this directory's permissions" —
+    and collapsing them into one name would lose which fix applies.
+
+    The per-id half of the T92 rule, and the half that keeps it narrow: the scan above
+    settles WHICH directories this console cannot name, once per source; this probes
+    only whether one of them holds a marker for THIS id. A stray or empty unrecognised
+    directory therefore changes nothing — it names nobody, so it refuses nobody — which
+    is the deliberate rejection of the broader rule ("any unrecognised directory makes
+    the source unreadable"), whose failure mode is a misplaced folder turning a whole
+    project read-only. Read "empty" strictly: a directory that OPENED and held no marker
+    for this id. One that would not open is not empty, it is unknown, and it refuses —
+    see the ``unprobeable_name`` paragraphs below, which is where that boundary is argued.
+
+    Callers MUST call it BEFORE :func:`_marker_state` and MUST have validated
+    ``ticket_id`` as a single path-safe segment first (this joins it onto a path). The
+    ordering is the load-bearing half of the decision this ticket carries: an id named
+    under an unknown state is refused EVEN WHEN a recognised marker also names it,
+    because the unknown state's PRECEDENCE is unknown — ``merged/<id>`` can no longer
+    settle the question once ``in_review/<id>`` might outrank it. Run after the walk it
+    would be dead code for every id the known four already answer, which is precisely
+    the ids the fail-open reached.
+
+    ``OSError`` is CAUGHT here and reported as ``unprobeable_name`` rather than
+    propagating — a discoverable but NOT SEARCHABLE unrecognised directory (``0755`` on
+    the run-state dir, ``in_review/`` mode ``0700`` under the factory's uid) raises for
+    every id, and catching it is what lets the refusal carry its OWN message, WITH THE
+    DIRECTORY'S NAME IN IT. Both callers' blanket ``except OSError`` deliberately declines
+    to name which node failed, because it also covers the run-state directory itself and a
+    state subdirectory this console CAN name; this cause can be named exactly, and it
+    needs to be, since ``chmod in_review/`` and ``upgrade this console`` are different
+    instructions to an operator (amendment 1, change 3). Letting it propagate would throw
+    the name away at the one point it is known.
+
+    Only the FIRST refusing name is kept, matching the first-hit rule the definite branch
+    already follows: two unsearchable state directories are one permissions problem to an
+    operator, and a refusal whose prose changed between two requests against an unchanged
+    filesystem — because the iteration order shifted — is the instability
+    :func:`_unrecognised_state_names` sorts its output to prevent. A definite hit still
+    wins outright and returns ``(name, None)``: the id is NAMED under an unknown state, so
+    the console-upgrade instruction is the accurate one and there is nothing left for a
+    permissions note to add.
+
+    CATCHING IT IS NOT WEAKENING IT. ``unprobeable_name`` is refused at the SAME point,
+    and with the same force, as a named ``name``: callers check it immediately after
+    ``unknown_state`` and BEFORE :func:`_marker_state`, so an unsearchable unrecognised
+    directory refuses every id in that source. Which is what this ticket's own rule
+    already required — a directory that cannot be searched is one whose named ids cannot
+    be enumerated, so for ANY id the console cannot rule out that it is named there, and
+    ``todo/<id>`` stops settling the question exactly as it does for an id the console
+    can SEE named under an unknown state, because the unknown state's PRECEDENCE is
+    unknown either way.
+
+    This paragraph used to argue the opposite — that an id whose ``todo/`` marker reads
+    perfectly should still resolve that marker, or one restricted folder becomes the
+    "misplaced-folder lockout" the per-id rule exists to prevent. That was wrong, and
+    amendment 1 names why: it is the fail-open reasoning this family has rejected six
+    times ("an unreadable source should stay editable", "a looping ``merged/`` should
+    fall through to ``todo/``", "an unclassifiable status should resolve mutable"),
+    wearing this ticket's own over-refusal guard as a disguise. THE GUARD DOES NOT COVER
+    THIS CASE. It is about a directory that names NOBODY — empty, and readable enough to
+    know it is empty — and an unsearchable directory is not empty, it is UNKNOWN. That is
+    T80 amendment 4's distinction exactly: absent is not empty, and "unavailable" covers
+    both unread and read-but-uninterpretable. So a project whose run-state directory holds
+    an unsearchable subdirectory does go read-only until a human fixes the permissions,
+    and that is the correct outcome — the console cannot establish who owns those tickets
+    and must not edit tickets a lane may own — as well as a LOUD one, which the fail-open
+    it replaces was not. A refusal is recoverable with one ``chmod``; an unnoticed write
+    to a ticket the factory has moved on from is not.
+
+    What this leg still does NOT do is decide anything about a state directory that was
+    never DISCOVERED. :attr:`_StateDirectories.undiscoverable` — the run-state dir itself
+    would not enumerate, so ``unrecognised`` is empty and this probe never runs — is
+    settled by the CALLERS, before they reach here, and it now reaches the same verdict:
+    every id in that source is refused. Amendment 1 left it weaker (an id with a readable
+    known marker still resolved that marker) and amendment 2 closed the gap, because the
+    two cases were ordered backwards under MONOTONICITY — the undiscoverable source
+    reveals strictly LESS than this one and was answering strictly MORE permissively.
+    What still separates them is only the MESSAGE, and it must stay separate: this case
+    has a named subdirectory to point an operator at and asks for a ``chmod`` on it,
+    while that one has no name to give and asks for a ``chmod`` on the run-state
+    directory itself.
+
+    ONE ENTRY CLASS ARRIVES HERE WITHOUT HAVING BEEN CONFIRMED A DIRECTORY: an entry whose
+    ``stat`` failed during the scan (a symlink loop, ``ELOOP``) is recorded in
+    ``unrecognised`` rather than dropped (amendment 2, finding 1,
+    :func:`_unrecognised_state_names`). It needs no branch of its own — joining
+    ``run_state_dir / name / ticket_id`` onto it raises the same ``OSError`` the scan
+    took, so it lands in ``unprobeable_name`` and refuses the source on exactly the terms
+    argued above. That is the point of recording it as a name: "could not be identified"
+    and "could not be searched" are the same fact about the same directory, one level
+    apart, and they need the same answer.
+
+    Callers MUST consult ``unprobeable_name`` before :func:`_marker_state`; dropping it —
+    or checking it after the walk, which is what "dropping it" degrades into — answers "no
+    unknown state names you" from a probe that never ran.
+    """
+    unprobeable_name: str | None = None
+    for name in state_dirs.unrecognised:
+        try:
+            if _node_exists(run_state_dir / name / ticket_id):
+                return name, None
+        except OSError:
+            if unprobeable_name is None:
+                unprobeable_name = name
+    return None, unprobeable_name
+
+
+def _directory_lists_any_ticket(run_state_dir: Path, state_dirs: _StateDirectories) -> bool | None:
     """Does ``run_state_dir`` hold at least ONE marker, for any id, in any state?
 
     Returns ``True`` (it lists somebody), ``False`` (it definitively lists nobody),
@@ -364,13 +767,48 @@ def _directory_lists_any_ticket(run_state_dir: Path) -> bool | None:
     the question that separates :attr:`RunState.absent` ("the source lists others and
     not you") from :attr:`RunState.unknown` ("the source names nobody, so it makes
     no claim about you"). A run-state directory that exists but contains no marker
-    under any of :data:`_MARKER_PRECEDENCE` is VACUOUS, and a source that names
+    under ANY of its subdirectories is VACUOUS, and a source that names
     nobody says nothing about anybody: every ticket must stay mutable, exactly as
     if there were no source at all. Without this, a freshly created (empty) run-state
     directory would resolve ``absent`` for every ticket and lock the whole project
     read-only — the same project-wide lockout the vanished guard exists to prevent.
     An UNREADABLE source (``None``) is the one case where a project-wide refusal is
     the right answer, which is precisely why it must not be reported as vacuity.
+
+    EVERY subdirectory is counted, not only the four this console can name (T92): the
+    scanned set is :data:`_MARKER_PRECEDENCE` plus ``state_dirs.unrecognised``. A source
+    whose markers all sit under ``in_review/`` LISTS tickets — we simply cannot name
+    their states — so reading it as vacuous answered the mutable ``unknown`` for every
+    id in the project and disabled the write gate exactly where the factory was busiest.
+    Ids named nowhere at all stay ``absent``, unchanged: this widens what counts as a
+    marker's LOCATION, never what counts as a marker.
+
+    ``state_dirs.undiscoverable`` short-circuits to ``None`` BEFORE the scan rather than
+    seeding a flag the scan could overrule: if the top level would not enumerate, WHICH
+    subdirectories exist is unknowable, so neither "lists nobody" nor "lists somebody" is
+    a conclusion that was reached. Seeding a flag is what an earlier revision did, and the
+    loop's early ``return True`` silently discarded it — a source holding a readable
+    ``todo/T01`` alongside an ``in_review/T05`` the scan never saw answered "lists
+    somebody", which is exactly what licenses :attr:`RunState.absent` for T05, and
+    ``absent`` is in ``DELETABLE_STATES``: the console would delete a ticket the factory
+    holds under a state it never got to discover — the second of the two fail-opens T92
+    exists to close, reopened through the flag rather than through the walk. The flag has
+    to win over the scan, so it is settled where the scan cannot reach it.
+
+    NO ID'S ANSWER CAN DEPEND ON THAT SHORT-CIRCUIT SINCE AMENDMENT 2: both callers refuse
+    every id in an undiscoverable source before the vacuity answer is consulted. Note that
+    is a claim about the ANSWER, not about the CALL — :func:`run_state_resolver` still
+    EVALUATES this function at construction, before any id exists, so an undiscoverable
+    source does reach the branch and does set its ``enumeration_failed`` flag; the closure
+    simply returns above the tail that would read it. :func:`probe_ticket_state` returns
+    earlier still and never calls at all. It stays anyway, and not
+    as decoration — this function's contract is "what does this directory list?", answered
+    for whatever :class:`_StateDirectories` it is handed, and the honest answer for an
+    undiscoverable one is "I could not tell". Deleting the branch would make that answer
+    ``False``, i.e. VACUOUS, i.e. the mutable ``unknown`` for every id, so the correctness
+    of this function would rest entirely on a guard living in its callers. The one thing
+    this module has learnt seven times is not to leave a fail-open one deleted caller-side
+    check away.
 
     Each state subdirectory is FILTERED only until its first TICKET marker
     (:func:`_is_ticket_marker_name`), so a populated run-state directory holding
@@ -385,8 +823,13 @@ def _directory_lists_any_ticket(run_state_dir: Path) -> bool | None:
     contributes no evidence either way and does not make the answer ``None``; only
     one that exists and refuses enumeration does.
     """
+    if state_dirs.undiscoverable:
+        # Settled BEFORE the loop, because the loop returns on its first ticket marker
+        # and would discard this. "I could not see which states exist" is not evidence
+        # about who this source lists, in either direction — see the docstring.
+        return None
     saw_unreadable = False
-    for state in _MARKER_PRECEDENCE:
+    for state in (*_MARKER_PRECEDENCE, *state_dirs.unrecognised):
         state_dir = run_state_dir / state
         try:
             for entry in state_dir.iterdir():
@@ -455,6 +898,35 @@ def _marker_state(run_state_dir: Path, ticket_id: str) -> RunState | None:
     fails, ``stat()`` does not) still resolves each ticket the directory names to its
     real state.
 
+    The walk answers for the four states this console CAN name, and it is no longer the
+    first question asked about an id (T92): every caller runs
+    :func:`_unrecognised_state_naming` before it, so an id also named under a state
+    outside :data:`_MARKER_PRECEDENCE` never reaches here — as long as that state was
+    DISCOVERED. That ordering is not an optimisation — it is the only way the precedence
+    claim above stays true. "Highest wins" presumes the console knows every state that
+    could outrank the one it found, and it does not: an ``in_review/<id>`` this console
+    has no name for has no place in this tuple either, so a ``merged`` hit returned ahead
+    of it would be asserting a precedence nobody established.
+
+    THERE IS NO LONGER A QUALIFIER: the "as long as that state was DISCOVERED" clause is
+    now guaranteed rather than hoped for, because a source whose states could not be
+    discovered never reaches this walk at all. Two residuals used to sit here and both are
+    closed. A DISCOVERED unrecognised state directory that would not OPEN went first (T92
+    amendment 1): it refuses every id in the source before this walk, because a directory
+    that cannot be searched cannot be enumerated, so no id can be ruled out of it — and a
+    marker this console CAN read cannot outrank a state whose precedence is unknown, which
+    is the same reason a VISIBLE unknown-state marker outranks one. An UNDISCOVERABLE
+    run-state directory — the top-level listing itself failed, so the scan cannot say which
+    states are there — followed it (amendment 2): it used to let this walk run and return
+    its hit, on the argument that an id whose marker still reads can still be answered
+    honestly, and MONOTONICITY refutes that. A source that will not list reveals strictly
+    less than one that lists while holding an unsearchable subdirectory, so it may not
+    answer more permissively than that one does, and that one refuses everything.
+
+    So every caller of this walk has established, before calling it, that it knows which
+    states exist and can rank all of them. "Highest wins" is a claim about a closed set,
+    and this is the line that keeps the set closed.
+
     Callers MUST have validated ``ticket_id`` as a single path-safe segment first;
     this joins it onto a filesystem path.
     """
@@ -477,6 +949,54 @@ def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
       ``in-flight`` > ``todo``; the first state whose ``<state>/<ticket_id>``
       marker exists (as a file OR a directory) wins, mapped to its enum member
       by value.
+    - BEFORE that walk: if any subdirectory OUTSIDE those four names this id —
+      ``in_review/<ticket_id>``, after the factory grows a tenth ``FAC_STATES``
+      entry — the answer is the refusing :attr:`RunState.unreadable`, and it wins
+      over a recognised marker for the same id (T92). The factory said something
+      about this ticket in a vocabulary this console does not have, which is the
+      RESOLUTION INVARIANT's "read and could not be interpreted", and the unknown
+      state's precedence is unknown too, so ``merged/<ticket_id>`` may no longer
+      settle the question on its own. An unrecognised directory that OPENS and names
+      nobody changes nothing: THIS refusal is per id, not per source, because a
+      misplaced folder must not turn a whole project read-only. Read "names nobody"
+      strictly — a directory that opened and held no marker for this id; one that will
+      not open is the next bullet, and that one IS per source.
+    - A subdirectory outside those four that was DISCOVERED but could not be looked in
+      for this id (it lists from the parent, and stat'ing ``<state>/<ticket_id>`` inside
+      it raises) -> :attr:`RunState.unreadable` as well, on exactly the same terms as the
+      bullet above: checked at the same point, and refusing REGARDLESS of whether a
+      marker this console CAN name also names this id. That is the ``unprobeable_name``
+      leg (:func:`_unrecognised_state_naming`, which catches its own ``OSError`` so the
+      refusal can name this cause precisely rather than being folded into the blanket
+      one below). A directory that would not open cannot be enumerated, so no id in the
+      source can be ruled out of it — and if it does name one, its precedence is unknown,
+      so ``todo/<ticket_id>`` settles nothing. It used to be weaker (an id whose ``todo/``
+      marker read perfectly kept that marker, to stop one restricted folder locking a
+      project out); T92 amendment 1 reversed that as the same fail-open by a shorter
+      route, because the over-refusal guard is about a directory that names NOBODY and an
+      unsearchable directory is not empty, it is unknown. It gets its OWN warning, and
+      that warning NAMES the directory it could not search — ``holds state 'in_review'``,
+      the same slot the bullet above names the state that DID name this id. Neither
+      neighbouring message would do: "could not be enumerated" sends an operator to chmod
+      a run-state directory that enumerated fine, and "does not know" sends them to
+      upgrade a console when the fix is a permission bit on one named subdirectory.
+    - A run-state directory whose OWN listing failed — ``iterdir()`` raised, so WHICH
+      state subdirectories exist is unknowable (:attr:`_StateDirectories.undiscoverable`)
+      -> :attr:`RunState.unreadable` for every id in the source, checked at the same point
+      and with the same force as the two bullets above, and therefore ahead of the marker
+      walk. This bullet used to say the opposite, and the old reasoning is kept because it
+      is what made the old answer convincing: an id with a readable ``todo/<id>`` can
+      still be answered honestly, so refusing it looked like a lockout bought for nothing,
+      and it was called a deliberate, permanent residual. MONOTONICITY (amendment 2)
+      refutes it. A directory that cannot be LISTED reveals strictly less than one that
+      lists fine while holding a single unsearchable subdirectory — and that one refuses
+      every id (previous bullet), so this one may not answer more permissively. Concretely
+      the same argument as amendment 1's, one level out: a listing that failed cannot rule
+      any id out of an ``in_review/`` it never saw, and an unranked state means the
+      readable marker settles nothing. Its warning says the run-state directory itself
+      COULD NOT BE ENUMERATED and names no subdirectory, because none is known — the one
+      distinction left between this case and the previous one is which path an operator
+      has to chmod, so claiming a name here would be inventing one.
     - A present run-state directory that lists at least one OTHER ticket but has no
       matching marker for this one -> :attr:`RunState.absent` (the directory resolved,
       and it does not list this ticket).
@@ -529,7 +1049,73 @@ def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
 
     validate_ticket_id_as_segment(ticket_id)
 
+    # Discovered BEFORE the marker walk, because an id an unknown state names is
+    # refused even when a known marker names it too (T92, and see
+    # ``_unrecognised_state_naming``). That costs one listing of the run-state dir on
+    # the common path, which the vacuity scan below deliberately avoids — the two are
+    # not the same trade: vacuity is only ever needed for an id with NO marker, while
+    # this question has to be settled for every id, since its answer can overturn the
+    # marker. The batch form pays it once per resolver instead of once per id.
+    state_dirs = _unrecognised_state_names(run_state_dir)
+    if state_dirs.undiscoverable:
+        # The run-state directory would not LIST, so which states it holds is unknowable
+        # and no id can be ruled out of any of them. Refused here, before the marker walk,
+        # in the same slot and with the same force as the ``unknown_state`` and
+        # ``unprobeable_state`` legs below — a readable ``todo/<ticket_id>`` cannot settle
+        # a question a state this console never saw might outrank (amendment 2, and see
+        # ``_StateDirectories.undiscoverable`` for why the marker used to win here).
+        #
+        # Placed before ``_unrecognised_state_naming`` for readability only: that probe
+        # iterates ``state_dirs.unrecognised``, which is always EMPTY when this flag is
+        # set, so the two orders cannot behave differently.
+        #
+        # The message names the run-state directory and NO subdirectory — this is the one
+        # refusal in the family with no name to give, since the listing that would have
+        # produced one is exactly what failed, and "holds state 'x'" invented here would
+        # send an operator to chmod a path this console is guessing at. ``%r`` for the id,
+        # never ``%s``, the module-wide convention for a value from outside.
+        _LOGGER.warning(
+            "run-state: %s could not be enumerated, so which states it holds is unknown; "
+            "%r resolves unreadable and is refused a write",
+            run_state_dir,
+            ticket_id,
+        )
+        return RunState.unreadable
+
     try:
+        unknown_state, unprobeable_state = _unrecognised_state_naming(
+            run_state_dir, state_dirs, ticket_id
+        )
+        if unknown_state is not None:
+            return RunState.unreadable
+        if unprobeable_state is not None:
+            # Checked at the SAME point as the bullet above, and for the same reason
+            # (amendment 1): a directory this console could not search is one whose named
+            # ids it cannot enumerate, so for THIS id it cannot rule out that the
+            # directory names it — and an unknown state's precedence is unknown, so a
+            # readable ``todo/<ticket_id>`` no longer settles the question either. Placed
+            # before ``_marker_state`` deliberately: consulted after it, this leg would be
+            # dead for exactly the ids a stale known marker keeps mutable, which is the
+            # fail-open it exists to close.
+            #
+            # It NAMES the directory, in the same slot and the same ``holds state %r``
+            # shape the scan's own unrecognised-name warning uses — criterion 3 applies to
+            # this refusal too. And it says COULD NOT SEARCH, never "does not know": the
+            # two need different fixes, ``chmod in_review/`` against a console upgrade, and
+            # this directory may well be one the console knows perfectly once it opens.
+            # Borrowing the enumeration message would be a third wrong instruction, since
+            # this run-state directory enumerated fine. ``%r`` for the name and the id,
+            # never ``%s`` — the module-wide convention for values that reach a log record
+            # from a tree the console does not own.
+            _LOGGER.warning(
+                "run-state: %s holds state %r, which this console could not look in; "
+                "%r resolves unreadable and is refused a write",
+                run_state_dir,
+                unprobeable_state,
+                ticket_id,
+            )
+            return RunState.unreadable
+
         marker = _marker_state(run_state_dir, ticket_id)
         if marker is not None:
             return marker
@@ -538,7 +1124,9 @@ def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
         # Settled AFTER the marker loop so the common (marker found) path never pays
         # for it: only an id the directory does not name has to ask whether the
         # directory names anybody.
-        lists_any_ticket = _directory_lists_any_ticket(run_state_dir) if readable else False
+        lists_any_ticket = (
+            _directory_lists_any_ticket(run_state_dir, state_dirs) if readable else False
+        )
     except OSError:
         # Something under here EXISTS and cannot be read (EACCES and friends). NOT the
         # same answer as a vanished directory below: that one is "there is nothing to
@@ -549,7 +1137,8 @@ def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
         # The message deliberately does not name WHICH node failed, and deliberately
         # does not say "every ticket" — matching the resolver's twin
         # (:func:`run_state_resolver`), which this must not drift from. This ``except``
-        # covers ``_marker_state`` (a state subdirectory), the ``is_dir()`` re-check
+        # covers ``_marker_state`` (a state subdirectory this console CAN name), the
+        # ``is_dir()`` re-check
         # (the run-state directory itself) and ``_directory_lists_any_ticket``, so
         # attributing an EACCES on the directory to "a state subdirectory" would send
         # an operator to chmod the wrong path. ``_marker_state`` reaches here only for
@@ -838,13 +1427,26 @@ def probe_ticket_state_with_reason(
 ) -> tuple[RunState, str | None]:
     """:func:`probe_ticket_state_from_source`, plus WHY when the reason is nameable.
 
-    Returns ``(state, unclassifiable)``. The second element is set only when a JSON
-    source LISTS ``ticket_id`` under an entry this console could not interpret, and it
-    is the operator-facing description of what the file said (``"status 'in_review'"``,
-    ``"an entry with no status"``) — see :attr:`JsonRunState.unclassifiable`. It is
-    ``None`` everywhere else, including for the OTHER route to
-    :attr:`RunState.unreadable`, a source whose bytes could not be read at all: there
-    is no value to name there, because nothing was parsed.
+    Returns ``(state, unclassifiable)``. The second element is set only when the source
+    LISTS ``ticket_id`` under something this console could not interpret, and it is the
+    operator-facing description of what the source said. BOTH forms can now fill it, and
+    they phrase it the same way — as a noun for the thing that was read:
+
+    - JSON: the entry's description (``"status 'in_review'"``, ``"an entry with no
+      status"``) — see :attr:`JsonRunState.unclassifiable`.
+    - DIRECTORY: ``"state 'in_review'"``, the name of the state subdirectory outside
+      :data:`_MARKER_PRECEDENCE` that names this id (T92). The parallel is deliberate:
+      the JSON refusal names the status VALUE it could not map, so the directory refusal
+      names the state DIRECTORY it could not map, and an operator reads one instruction
+      ("this console is a version behind the factory") from either.
+
+    It is ``None`` everywhere else, including for the OTHER routes to
+    :attr:`RunState.unreadable` — a source that could not be read at all, a directory
+    that could not be enumerated, or an unrecognised state directory that could not be
+    SEARCHED (T92 amendment 1): there is no value to name there, because nothing was
+    read. The last of those has a name and still declines to quote it, deliberately —
+    this field phrases "your console is a version behind the factory", and that refusal
+    means "one directory lost a permission bit", which its own warning says instead.
 
     This exists so
     :class:`~factory_console.file_adapter.write_gate.TicketNotMutable` can NAME the
@@ -854,22 +1456,20 @@ def probe_ticket_state_with_reason(
     :func:`probe_ticket_state_from_source` because only the write gate needs the
     reason; the read projections want the state alone.
 
-    It reads the source ONCE — the same single parse
-    :func:`probe_ticket_state_from_source` performs — by asking
-    :func:`_resolve_json_state` for the state instead of re-deriving it, so the state
-    and the reason are guaranteed to describe the same bytes and the refusal path costs
-    no extra I/O and emits no duplicate warning. A directory source has no per-entry
-    value to misread (a marker either names the id or does not), so it falls through to
-    the ordinary resolver with no reason.
+    It reads the source ONCE, for both forms, because it IS
+    :func:`_run_state_resolver_with_reason` over one id — the same single read
+    :func:`probe_ticket_state_from_source` performs, since that function's resolver is
+    this one with the reason dropped. So the state and the reason are guaranteed to
+    describe the same bytes (or the same directory listing), the refusal path costs no
+    extra I/O and emits no duplicate warning, and the two entry points cannot drift on
+    what they refuse: there is one implementation, and the difference between them is
+    which element of its tuple they keep.
 
     Raises:
         PathTraversal: exactly as :func:`probe_ticket_state_from_source` — only on the
             directory path, and only when that directory is actually probed.
     """
-    if source is not None and source.kind == "json":
-        parsed = read_json_run_state(source.path)
-        return _resolve_json_state(parsed, ticket_id), parsed.unclassifiable.get(ticket_id)
-    return probe_ticket_state_from_source(source, ticket_id), None
+    return _run_state_resolver_with_reason(source)(ticket_id)
 
 
 def probe_ticket_state_from_source(source: RunStateSource | None, ticket_id: str) -> RunState:
@@ -901,6 +1501,26 @@ def probe_ticket_state_from_source(source: RunStateSource | None, ticket_id: str
       walk reached BEFORE the unreadable state answered for this id first (T80
       amendment 3 — an answer already determined by a higher precedence stands;
       anything below one this console could not read is refused), unchanged otherwise.
+      :attr:`RunState.unreadable` ALSO when a subdirectory outside
+      :data:`_MARKER_PRECEDENCE` names this id (T92) — the directory form's mirror of
+      the JSON form's unrecognised ``status``, and like it, refusing per id and ahead of
+      any recognised marker for the same id, since a state this console cannot name has
+      a precedence it cannot rank either. Vacuity counts markers under EVERY
+      subdirectory for the same reason: a source whose markers all live under a name
+      this console does not know still LISTS tickets, so the ids it does not name are
+      ``absent``, not the mutable ``unknown``. One more leg sits alongside that rule, at
+      the same strength since T92 amendment 1: a subdirectory outside the four that was
+      discovered and could not be LOOKED IN (``unprobeable_name``) also answers
+      :attr:`RunState.unreadable`, for EVERY id in that source — ahead of any recognised
+      marker, and ahead of ``lists_someone`` too. It is not enumerable, so no id can be
+      ruled out of it; a marker this console can read cannot outrank a state whose
+      precedence is unknown; and a directory that could not be checked never established
+      the "lists others and provably not you" claim ``absent`` makes, which licenses a
+      DELETE. It used to apply only to ids no recognised marker answered first, which
+      left a stale ``todo/<id>`` reading MUTABLE beside a directory that might name the
+      same id under a state outranking it. Like the leg above it names the directory it
+      could not use — in its log record rather than in the refusal's reason, because the
+      operator instruction is a ``chmod`` and not a console upgrade.
 
     :attr:`RunState.unreadable` is the only one of the three unnamed states that
     BOTH write gates refuse (T80 amendment 2): ``unknown`` and ``absent`` mean the
@@ -928,6 +1548,33 @@ def probe_ticket_state_from_source(source: RunStateSource | None, ticket_id: str
 
 def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunState]:
     """Return a ``ticket_id -> RunState`` resolver bound to ``source``, read ONCE.
+
+    The state-only face of :func:`_run_state_resolver_with_reason` — see there for the
+    whole contract; this drops the second element of its tuple and nothing else. The
+    read projections (list/deps/graph) want the state alone, and only the write gate
+    needs the description a refusal is phrased with, so the reason is opt-in via
+    :func:`probe_ticket_state_with_reason` rather than pushed through every caller.
+
+    Keeping it a wrapper rather than a second implementation is what makes "the batch
+    and single-ticket answers cannot disagree" a property of the code and not of two
+    docstrings promising each other: a state this console refuses for the write gate is
+    the same state it badges in the list, because one function computed both.
+    """
+    resolve = _run_state_resolver_with_reason(source)
+    return lambda ticket_id: resolve(ticket_id)[0]
+
+
+def _run_state_resolver_with_reason(
+    source: RunStateSource | None,
+) -> Callable[[str], tuple[RunState, str | None]]:
+    """Return a ``ticket_id -> (RunState, unclassifiable)`` resolver, source read ONCE.
+
+    The single implementation of every run-state resolution in this module. The second
+    tuple element is the operator-facing description of what the source said that could
+    not be interpreted (``"status 'in_review'"`` from the JSON form, ``"state
+    'in_review'"`` from the directory form), and ``None`` whenever there is no such
+    value to name — see :func:`probe_ticket_state_with_reason`, which is this function
+    applied to one id.
 
     The batch form of :func:`probe_ticket_state_from_source`, for callers that
     resolve run-state for every ticket in a manifest (the list/deps/graph
@@ -962,12 +1609,23 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
     the two forms then diverge in both directions. See the note inside
     ``resolve_directory`` below for the exact residual and for why it cannot reach the
     write gate.
+
+    T92 adds one more source-level question to the "settled once" set: WHICH
+    subdirectories this console has no name for (:func:`_unrecognised_state_names`).
+    It has to be settled once for the same reason vacuity does — it is a listing of the
+    run-state directory, and re-deriving it per id would turn a 200-ticket projection
+    into 200 listings — and it leaves the closure with only the cheap per-id half, one
+    ``stat`` per unknown state name (:func:`_unrecognised_state_naming`), which is the
+    same shape as the marker walk it precedes.
     """
     if source is None:
-        return lambda _ticket_id: RunState.unknown
+        return lambda _ticket_id: (RunState.unknown, None)
     if source.kind == "json":
         parsed = read_json_run_state(source.path)
-        return lambda ticket_id: _resolve_json_state(parsed, ticket_id)
+        return lambda ticket_id: (
+            _resolve_json_state(parsed, ticket_id),
+            parsed.unclassifiable.get(ticket_id),
+        )
 
     try:
         # The directory check alone is not enough: it stats the directory ENTRY from
@@ -997,14 +1655,21 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
             "refused a write",
             source.path,
         )
-        return lambda _ticket_id: RunState.unreadable
+        return lambda _ticket_id: (RunState.unreadable, None)
     if not directory_present:
         # The path is not a directory (any more): nothing is there to be hiding a
         # marker, so this is indistinguishable from a project with no source at all.
         _LOGGER.warning(
             "run-state: %s is not a directory; every ticket resolves unknown", source.path
         )
-        return lambda _ticket_id: RunState.unknown
+        return lambda _ticket_id: (RunState.unknown, None)
+
+    # WHICH subdirectories this console has no name for, settled once per resolver and
+    # logged once per distinct name (T92). It must run BEFORE the vacuity scan, which
+    # counts markers under these directories too — a source whose markers all live under
+    # ``in_review/`` lists tickets, and reading it as vacuous is what disabled the write
+    # gate project-wide.
+    state_dirs = _unrecognised_state_names(source.path)
 
     # The directory form's vacuous question, settled ONCE for the same reason
     # ``readable`` is (and the same reason the JSON form settles it once): a
@@ -1012,7 +1677,7 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
     # to learn what the source lists. ``probe_ticket_state`` keeps its own equivalent
     # checks for direct single-ticket callers; both reach the per-id answer through
     # ``_marker_state``, so the two forms cannot answer differently.
-    lists_any_ticket = _directory_lists_any_ticket(source.path)
+    lists_any_ticket = _directory_lists_any_ticket(source.path, state_dirs)
     # NOTE: a ``False`` (vacuous) answer deliberately does NOT short-circuit to a
     # constant ``unknown`` closure. Vacuity is a statement about what the ENUMERATION
     # found, and enumeration and the marker probe do not recognise the same names:
@@ -1026,20 +1691,29 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
     # through costs one ``exists()`` per state on a directory that is empty by
     # definition, and keeps this form answering through the same ``_marker_state`` as
     # ``probe_ticket_state``, which is what makes the two provably agree.
-    if lists_any_ticket is None:
-        # "I could not tell" — NOT "it lists nobody". Answering a constant ``unknown``
-        # here would put every ticket in the mutable set and silently disable the write
-        # gate on a project whose markers say ``merged``. Fall through to the per-ticket
-        # probe instead: ``_marker_state`` only needs ``+x``, so a ticket the directory
-        # DOES name still resolves its real, read-only state, and only an id with no
-        # marker gets the refusing ``unreadable``. Logged once per resolver, like the
-        # unreadable-source case above.
-        _LOGGER.warning(
-            "run-state: %s could not be enumerated; tickets with no readable marker "
-            "resolve unreadable and are refused a write",
-            source.path,
-        )
-
+    # A ``None`` here is "I could not tell" — NOT "it lists nobody". Answering a constant
+    # ``unknown`` would put every ticket in the mutable set and silently disable the write
+    # gate on a project whose markers say ``merged``. Fall through to the per-ticket probe
+    # instead: ``_marker_state`` only needs ``+x``, so a ticket the directory DOES name
+    # still resolves its real, read-only state, and only an id with no marker gets the
+    # refusing ``unreadable``.
+    #
+    # THE WARNING FOR IT IS EMITTED FROM THE CLOSURE, not here, because ``None`` has THREE
+    # causes and only one of them is the one the message describes. The other two are
+    # already refused, per source, before an id reaches the tail: ``undiscoverable`` (the
+    # top-level listing failed) and ``unprobeable_name`` (a discovered unrecognised state
+    # directory that will not open — mode ``0000`` fails BOTH ``iterdir`` here and the
+    # per-id ``stat``, so it lands in this branch as well). For those two, "could not be
+    # enumerated; tickets with no readable marker" states the wrong CAUSE — the run-state
+    # directory enumerated fine in the second case, which is the chmod-the-wrong-path
+    # instruction criterion 3 exists to prevent — and the wrong SCOPE, since amendment 1
+    # and amendment 2 refuse EVERY id, not only the unmarked ones. Excluding
+    # ``undiscoverable`` alone (as this did) left the ``unprobeable_name`` case emitting a
+    # second, weaker, wrongly-attributed record beside the accurate one. Deciding it in
+    # the closure needs no cause-tracking here: by the time an id reaches the tail, both
+    # other legs have returned, so what is left is a state subdirectory that would not
+    # LIST while its entries still ``stat`` — exactly what the message says, and true
+    # whether or not this console can name that subdirectory.
     lists_someone = lists_any_ticket is True
     # Separate from ``lists_someone``: an unenumerable source cannot answer "does it
     # list you?" at all, so an id with no marker is "I could not look" (refused), not
@@ -1061,14 +1735,115 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
     # operator needs one clear signal. So the degradation is reported once per resolver.
     reported_unreadable = False
     reported_vanished = False
+    # The unrecognised-state probe is per id (it joins the id onto a path), so a state
+    # directory that will not open is discovered once per ticket rather than once per
+    # resolver — but the WARNING still obeys this function's "settled once, logged once"
+    # rule, or a 200-ticket projection emits 200 identical lines.
+    reported_unprobeable = False
+    # An undiscoverable run-state directory is settled ONCE, above, and refuses every id
+    # in the source (amendment 2) — but the refusal still happens inside the closure, per
+    # id, rather than by returning a constant one here, so that every id keeps going
+    # through ``validate_ticket_id_as_segment`` first: a traversal attempt must raise
+    # ``PathTraversal`` whatever the source's health is, and a source-level short-circuit
+    # would answer it a plain ``unreadable`` instead. The WARNING is latched like every
+    # other degradation settled here, for the same reason — one line per resolver, not one
+    # per ticket in a 200-ticket projection.
+    reported_undiscoverable = False
+    # The vacuity scan's ``None`` is settled once, above, but its WARNING is latched here
+    # and emitted from the tail of the closure — see the note at the scan's call site for
+    # why the cause cannot be attributed until the other two legs have declined an id.
+    reported_enumeration_failed = False
 
-    def resolve_directory(ticket_id: str) -> RunState:
-        nonlocal reported_unreadable, reported_vanished
+    def resolve_directory(ticket_id: str) -> tuple[RunState, str | None]:
+        nonlocal reported_unreadable, reported_vanished, reported_unprobeable
+        nonlocal reported_undiscoverable, reported_enumeration_failed
         validate_ticket_id_as_segment(ticket_id)
+        if state_dirs.undiscoverable:
+            # Refused before the marker walk, and before the unrecognised-state probe,
+            # which cannot say anything here anyway (``state_dirs.unrecognised`` is empty
+            # by construction whenever this flag is set, so the ordering between the two
+            # is readability only). The run-state directory would not LIST, so which
+            # states it holds is unknowable and no id can be ruled out of any of them —
+            # a readable ``todo/<id>`` cannot settle a question that a state this console
+            # never saw might outrank. That is amendment 1's argument one level out, and
+            # amendment 2 is what forces the two to agree: the unlistable source reveals
+            # strictly LESS than the source holding an unsearchable subdirectory, so it
+            # must not answer more permissively than that one, which refuses everything.
+            #
+            # The message names the run-state directory and NOT a subdirectory: the
+            # listing that would have produced a name is precisely what failed, and this
+            # is the ONE refusal in this family with nothing to name. It borrows the
+            # enumeration wording deliberately — this really is the directory that could
+            # not be enumerated — and the sibling "could not look in" warning is
+            # unreachable from here, so the two cannot be confused in one log.
+            #
+            # The REASON element stays ``None``, as in the unprobeable leg: nothing was
+            # read, so there is no value for ``TicketNotMutable`` to quote back.
+            if not reported_undiscoverable:
+                reported_undiscoverable = True
+                _LOGGER.warning(
+                    "run-state: %s could not be enumerated, so which states it holds is "
+                    "unknown; every ticket in this source (first: %r) resolves unreadable "
+                    "and is refused a write",
+                    source.path,
+                    ticket_id,
+                )
+            return RunState.unreadable, None
         try:
+            # BEFORE the marker walk, and it can overturn what the walk would have said
+            # (T92). An id named under a state this console cannot name is the directory
+            # form's "read, and could not be interpreted": the factory has claimed
+            # something about this ticket in a vocabulary this console does not have, so
+            # the information the gate needs is UNAVAILABLE even though every byte of it
+            # was there to read. It outranks a recognised marker because a state with no
+            # name has no PRECEDENCE either — ``merged/<id>`` settles the question only
+            # among the four states this tuple ranks. The reason is the state's name, so
+            # the refusal reads "lists T05 under state 'in_review'" and sends an operator
+            # to upgrade the console rather than to hunt a missing entry.
+            unknown_state, unprobeable_state = _unrecognised_state_naming(
+                source.path, state_dirs, ticket_id
+            )
+            if unknown_state is not None:
+                return RunState.unreadable, f"state {unknown_state!r}"
+            if unprobeable_state is not None:
+                # The same point in the order, and the same strength, as the leg above
+                # (amendment 1). A state directory that would not OPEN cannot be asked
+                # whether it names this id, so the console cannot rule out that it does —
+                # and if it does, its precedence is unknown, so no marker among the four
+                # this console CAN name settles the question. Consulted after
+                # ``_marker_state`` (as it was) this leg answered only for ids nothing
+                # else named, which left a stale readable ``todo/<id>`` resolving MUTABLE
+                # beside a directory that might hold the same id under a state outranking
+                # it — the fail-open this family has now rejected seven times.
+                #
+                # The WARNING names the directory, mirroring the ``f"state {unknown_state!r}"``
+                # above (criterion 3, and amendment 1 change 3) — but with "could not look
+                # in" where that one means "does not know", because a ``chmod`` and a
+                # console upgrade are different instructions and this directory may be one
+                # the console knows perfectly once it opens.
+                #
+                # The REASON element still stays ``None``, and that is not an oversight:
+                # it is a different field with a different consumer. It phrases the write
+                # gate's ``TicketNotMutable`` as "the run-state says X, which this console
+                # does not know", which is exactly the sentence that would be FALSE here —
+                # nothing was read, so the console has not failed to understand anything.
+                # The name belongs in the operator-facing log, where it says which
+                # directory to fix, and it is carried there instead.
+                if not reported_unprobeable:
+                    reported_unprobeable = True
+                    _LOGGER.warning(
+                        "run-state: %s holds state %r, which this console could not look "
+                        "in; every ticket in this source (first: %r) resolves unreadable "
+                        "and is refused a write",
+                        source.path,
+                        unprobeable_state,
+                        ticket_id,
+                    )
+                return RunState.unreadable, None
+
             marker = _marker_state(source.path, ticket_id)
             if marker is not None:
-                return marker
+                return marker, None
             # Re-confirm the source is STILL a directory before answering ``absent``.
             # ``lists_someone`` was settled once, at resolver construction; the answer
             # it licenses ("the source lists others, so it definitively does not list
@@ -1106,10 +1881,15 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
             if not reported_unreadable:
                 reported_unreadable = True
                 # Deliberately does not name WHICH node failed: this ``except`` covers
-                # both ``_marker_state`` (a state subdirectory) and the ``is_dir()``
+                # ``_marker_state`` (a state subdirectory this console CAN name) as well
+                # as the ``is_dir()``
                 # re-check (the run-state directory itself), and attributing an EACCES
                 # on the latter to "a state subdirectory" would send an operator to
-                # chmod the wrong path.
+                # chmod the wrong path. A state subdirectory this console CANNOT name no
+                # longer reaches here — ``_unrecognised_state_naming`` catches its own
+                # ``OSError`` and reports it as ``unprobeable_name``, which is refused
+                # with a message that can afford to name BOTH the cause and the directory
+                # precisely, because that route covers exactly one thing.
                 _LOGGER.warning(
                     "run-state: %s could not be read (the directory itself or one of "
                     "its state subdirectories); every ticket with no readable marker "
@@ -1117,7 +1897,10 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
                     source.path,
                     ticket_id,
                 )
-            return RunState.unreadable
+            # No reason to name: nothing was read here, so there is no value to quote.
+            # The T92 refusal above is the opposite case — the directory was read fine
+            # and it is the state's NAME this console cannot use.
+            return RunState.unreadable, None
         if not still_a_directory:
             # Logged once per resolver, like every other degradation settled here: a
             # 200-ticket projection must not emit 200 identical lines.
@@ -1129,14 +1912,57 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
                     source.path,
                     ticket_id,
                 )
-            return RunState.unknown
+            return RunState.unknown, None
         # No marker: ``absent`` only when the source is known to list SOMEONE. When
         # the enumeration FAILED this is the refusing ``unreadable`` — the marker this
         # id needs may be in the subdirectory that would not open — and when the source
         # genuinely lists nobody it is the mutable ``unknown``. All three match
         # ``probe_ticket_state``'s tail, which the two forms must not drift apart on.
+        #
+        # The unprobeable leg used to be combined in here, as a term that suppressed
+        # ``lists_someone`` and joined ``enumeration_failed``. It no longer appears at
+        # all, because amendment 1 moved it to the top of this closure: an unsearchable
+        # unrecognised state directory now refuses every id in the source before a marker
+        # is even probed, so no id reaches this tail with it set. That is a simplification
+        # of the SAME rule, not a relaxation of it — the claim ``absent`` makes ("the
+        # source lists others and provably not you", the one that licenses a DELETE) is
+        # still never made from a directory that could not be checked.
+        #
+        # ``enumeration_failed`` survives that, and amendment 2's undiscoverable refusal
+        # at the top of this closure, because the two have DIFFERENT sources.
+        # ``undiscoverable`` is the top-level ``iterdir()`` failing; ``enumeration_failed``
+        # is ``_directory_lists_any_ticket`` answering ``None``, which it also does when
+        # the run-state directory lists perfectly well and one STATE subdirectory will not
+        # enumerate (mode ``0711`` — ``iterdir()`` fails while every ``stat()`` inside
+        # succeeds, which is ``test_unenumerable_state_dirs_do_not_read_as_vacuous``).
+        # That source is strictly more informative: every state in it has a name this
+        # console can rank, so a readable ``merged/<id>`` is a complete answer for that id
+        # and only the ids with NO marker reach here needing the refusal. Folding the two
+        # together in either direction would break monotonicity in one direction or lock
+        # a project out in the other.
         if lists_someone:
-            return RunState.absent
-        return RunState.unreadable if enumeration_failed else RunState.unknown
+            return RunState.absent, None
+        if enumeration_failed:
+            # Reached only by an id the ``undiscoverable`` and ``unprobeable_state`` legs
+            # both declined, which is what makes both halves of the message true. The
+            # surviving cause is a state subdirectory that would not LIST while its
+            # entries still ``stat`` (mode ``0711``/``0100``) — RECOGNISED or not: an
+            # unrecognised one at ``0100`` is discovered, fails ``iterdir`` here, and
+            # still answers the per-id ``stat``, so it never reaches ``unprobeable_name``.
+            # Either way the run-state directory itself enumerated, and an id with a
+            # readable marker was answered before this tail, so "could not be enumerated"
+            # names the right cause and "every ticket with no readable marker" the right
+            # scope. Latched like every other degradation settled by this resolver: one
+            # line, not one per ticket in a 200-ticket projection.
+            if not reported_enumeration_failed:
+                reported_enumeration_failed = True
+                _LOGGER.warning(
+                    "run-state: %s could not be enumerated; every ticket with no readable "
+                    "marker (first: %r) resolves unreadable and is refused a write",
+                    source.path,
+                    ticket_id,
+                )
+            return RunState.unreadable, None
+        return RunState.unknown, None
 
     return resolve_directory

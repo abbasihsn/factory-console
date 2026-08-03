@@ -113,8 +113,13 @@ class RealFileWriter:
         permits ``absent``, so what create mints can always be un-created (T80's
         amendment, gap 2) — with one exception, since ``ensure_deletable`` still
         refuses :attr:`~factory_console.domain.run_state.RunState.unreadable`: in a
-        project whose source is there and cannot be READ, a freshly created ticket can
-        be neither edited nor deleted until that source's permissions are fixed
+        project whose source is there and cannot be READ — or that names this id under
+        something the console cannot interpret, an unrecognised ``status`` (T80
+        amendment 4) or a state subdirectory outside the four the directory form can
+        name (T92) — a freshly created ticket can be neither edited nor deleted until
+        that source is readable AND speaks a vocabulary this console knows: the remedy
+        is a permissions fix for the first cause and a console upgrade for the second,
+        which is why the 409 names which one it hit
         (T80 amendment 2). The split is called out here because this docstring once
         claimed the mutable ``unknown`` for every project. Raises
         :class:`~factory_console.file_adapter.path_safety.PathTraversal` for an
