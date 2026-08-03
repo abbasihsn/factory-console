@@ -22,6 +22,7 @@ describe('NavSearch', () => {
 		expect(screen.getByRole('link', { name: 'Graph' }).getAttribute('href')).toBe('/graph');
 		expect(screen.getByRole('link', { name: 'Roadmap' }).getAttribute('href')).toBe('/roadmap');
 		expect(screen.getByRole('link', { name: 'Spend' }).getAttribute('href')).toBe('/spend');
+		expect(screen.getByRole('link', { name: 'Runs' }).getAttribute('href')).toBe('/runs');
 	});
 
 	it('navigates to /search with the encoded term on submit', async () => {
