@@ -34,8 +34,11 @@ class RunRecord(BaseModel):
     Both artifacts are carried as the reader's own :class:`ArtifactRead`
     VERBATIM, and that is the whole point of this type. Each ``ArtifactRead``
     already pairs "here is the object" with, on the other branch, exactly WHY
-    there is none — ``absent`` (the factory never wrote it), ``unreadable`` (it
-    is there and this console would not or could not read it), ``unparseable``
+    there is none — ``absent`` (the factory never wrote it), ``unreadable``
+    (nothing was read: the bytes would not come, or the path could not be proven
+    safe to read at all, so existence is NOT established — see
+    :data:`~factory_console.domain.runs.ArtifactSkipReason`, which forbids
+    inferring it), ``unparseable``
     (it answered, unintelligibly) or ``too_large``. Collapsing the pair into a
     summary — a ``hasResult`` boolean, a count of missing sources, a bare
     ``None`` — would put back precisely the ambiguity T88 built the type to

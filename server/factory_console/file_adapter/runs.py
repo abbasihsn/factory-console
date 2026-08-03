@@ -179,6 +179,29 @@ def _read_ticket_artifact(project_root: Path, relative_dir: Path, ticket_id: str
     return _read_json_artifact(safe)
 
 
+def refusal_path(project_root: Path, relative_dir: Path, ticket_id: str) -> Path:
+    """The path an :class:`ArtifactRead` reports when this module REFUSED an id.
+
+    The public spelling of :func:`_artifact_candidate` composed with
+    :func:`_reportable_path`, for the one refusal this module cannot make itself:
+    :func:`validate_ticket_id_as_segment` RAISES on a path-unsafe id, so a caller
+    looping over a whole manifest catches
+    :class:`~factory_console.file_adapter.path_safety.PathTraversal` and reports
+    ``unreadable`` on its own — see
+    :class:`~factory_console.file_adapter.run_artifacts.RealRunArtifactReader`.
+
+    It exists so that caller does not re-derive the join. ``_artifact_candidate``'s
+    docstring already states why the join has exactly one owner ("they were
+    previously spelled out twice, which is a layout change away from disagreeing"),
+    and ``_reportable_path``'s states why every refusal reports a RESOLVED path
+    ("a caller keying artifacts by it gets two keys for one file whenever the
+    project root is relative or symlinked"). Both invariants are module-wide, not
+    function-wide, so the refusal made one layer up must go through them rather
+    than around them.
+    """
+    return _reportable_path(_artifact_candidate(project_root, relative_dir, ticket_id))
+
+
 def _reportable_path(candidate: Path) -> Path:
     """The path an :class:`ArtifactRead` carries when the read never got started.
 

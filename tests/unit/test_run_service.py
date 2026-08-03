@@ -1,10 +1,18 @@
-"""Unit tests for :class:`RunService` over a :class:`FakeFileAdapter` + real files.
+"""Unit tests for :class:`RunService` over its two ports.
 
-The manifest is faked (the seeded adapter answers ``list_tickets``) and the
-artifacts are REAL: each case writes ``.factory/results/<id>.json`` and
-``.factory/receipts/<id>.json`` under ``tmp_path`` and lets T88's readers do the
-reading, because what is under test is precisely the composition of on-disk
-evidence onto the manifest — stubbing the reads would test the stub.
+The manifest is faked (the seeded :class:`FakeFileAdapter` answers
+``list_tickets``) and the artifacts are read through the REAL
+:class:`RealRunArtifactReader` against files each case writes under ``tmp_path``:
+what is under test is precisely the composition of on-disk evidence onto the
+manifest, so stubbing the reads would test the stub.
+
+That the reads go through the
+:class:`~factory_console.file_adapter.run_artifacts.RunArtifactReader` port rather
+than around it is itself covered — see
+``test_the_service_is_substitutable_over_both_ports``, which composes a POPULATED
+record with no filesystem at all. That case is unreachable without the port, and
+its absence is what let a fake-backed caller answer ``absent`` for every source
+while appearing to be under test.
 
 Every absence assertion is made PER SOURCE, never as a count: "one artifact is
 missing" is not an answer an operator can act on, and a record that said only
@@ -17,9 +25,20 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+from _read_only_guard import (
+    assert_module_carries_read_only_header,
+    assert_module_is_read_only,
+)
 
 from factory_console.domain import Project, Ticket
+from factory_console.domain.runs import ArtifactRead
 from factory_console.file_adapter import FakeFileAdapter
+from factory_console.file_adapter import run_artifacts as run_artifacts_module
+from factory_console.file_adapter.run_artifacts import (
+    FakeRunArtifactReader,
+    RealRunArtifactReader,
+    RunArtifactReader,
+)
 from factory_console.file_adapter.runs import RECEIPTS_RELATIVE_DIR, RESULTS_RELATIVE_DIR
 from factory_console.services.run_service import RunService
 
@@ -52,9 +71,16 @@ def _make_ticket(ticket_id: str) -> Ticket:
 
 
 def _service(root: Path, ticket_ids: list[str]) -> tuple[RunService, Project]:
+    """A service reading the REAL artifacts under ``root`` for a faked manifest."""
+    return _service_with(root, ticket_ids, RealRunArtifactReader())
+
+
+def _service_with(
+    root: Path, ticket_ids: list[str], artifacts: RunArtifactReader
+) -> tuple[RunService, Project]:
     project = _make_project(root)
     fake = FakeFileAdapter(project=project, tickets=[_make_ticket(i) for i in ticket_ids])
-    return RunService(fake), project
+    return RunService(fake, artifacts), project
 
 
 def _write_artifact(project_root: Path, relative: Path, text: str) -> Path:
@@ -225,9 +251,65 @@ def test_a_path_unsafe_manifest_id_degrades_only_its_own_record(
     assert refused.receipt.reason == "unreadable"
     assert refused.result.data is None
     assert refused.receipt.data is None
-    # Each refusal names its OWN artifact. Asserted because the reader and the
-    # directory are passed as two separate arguments on this branch, so a crossed
-    # pair would report the receipt's path under the result and be invisible to any
+    # Each refusal names its OWN artifact. Asserted because the two sources are
+    # refused by one shared helper parameterized by directory, so a crossed pair
+    # would report the receipt's path under the result and be invisible to any
     # assertion that only checks the reason.
-    assert refused.result.path.parent == tmp_path / RESULTS_RELATIVE_DIR
-    assert refused.receipt.path.parent == tmp_path / RECEIPTS_RELATIVE_DIR
+    #
+    # Compared against the RESOLVED directory, per the convention every other
+    # ``ArtifactRead.path`` assertion follows (``tests/unit/test_runs.py``): a
+    # refusal reports the path through ``runs.refusal_path``, so on a platform whose
+    # temp dir is a symlink (macOS) the unresolved spelling would not match.
+    assert refused.result.path.parent == (tmp_path / RESULTS_RELATIVE_DIR).resolve()
+    assert refused.receipt.path.parent == (tmp_path / RECEIPTS_RELATIVE_DIR).resolve()
+
+
+# --------------------------------------------------------------------------- #
+# The service reads through its ports, not around them
+# --------------------------------------------------------------------------- #
+
+
+def test_the_service_is_substitutable_over_both_ports() -> None:
+    """Handed two fakes, the service composes a POPULATED record and touches no disk.
+
+    The point of the :class:`RunArtifactReader` port. ``rootPath`` here is
+    ``/proj`` — the house convention for fake-backed service tests, and a path that
+    does not exist — so a service that called T88's readers directly would answer
+    ``absent`` for every source no matter what it was seeded with, and this
+    assertion could never pass. It passing is what proves the reads go through the
+    seam.
+    """
+    project = _make_project(Path("/proj"))
+    result = ArtifactRead(path=Path("/proj/.factory/results/T89.json"), data={"status": "ready"})
+    artifacts = FakeRunArtifactReader(results={"T89": result})
+    service = RunService(FakeFileAdapter(project=project, tickets=[_make_ticket("T89")]), artifacts)
+
+    (record,) = service.list_run_records(project)
+
+    assert record.result.data == {"status": "ready"}, "the seeded artifact reached the record"
+    assert record.result.reason is None
+    # The unseeded source still answers with a NAMED reason rather than a bare blank,
+    # and ``absent`` is what the real reader answers for a file that is not there.
+    assert record.receipt.reason == "absent"
+    assert record.receipt.data is None
+
+
+def test_both_implementations_satisfy_the_port() -> None:
+    # ``@runtime_checkable``, so structural conformance is assertable — the same
+    # guarantee ``FakeFileAdapter``/``FileAdapter`` and ``FakeFileWriter``/``FileWriter``
+    # already carry.
+    assert isinstance(RealRunArtifactReader(), RunArtifactReader)
+    assert isinstance(FakeRunArtifactReader(), RunArtifactReader)
+
+
+# --------------------------------------------------------------------------- #
+# GUARD: the read-only invariant on the new file_adapter module
+# --------------------------------------------------------------------------- #
+
+
+def test_run_artifacts_module_source_has_no_filesystem_mutation() -> None:
+    assert_module_is_read_only(run_artifacts_module)
+
+
+def test_run_artifacts_module_source_carries_the_read_only_header() -> None:
+    assert_module_carries_read_only_header(run_artifacts_module)
