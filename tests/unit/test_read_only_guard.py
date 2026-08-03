@@ -1,8 +1,14 @@
 """Tests for the shared read-only AST guard itself.
 
 The guard in ``tests/_read_only_guard.py`` is what pins the READ-ONLY contract on
-``file_adapter.run_state``, ``ledger``, ``runs``, ``fake_writer`` and
-``watcher_real``. It had no tests of its own, and its failure mode is SILENCE: a
+every module that calls it — grep for ``assert_module_is_read_only`` for the
+current adopters, which is the pointer that module gives in place of a list, and
+for the reason it gives: an enumeration here "was already stale by three modules",
+and "a maintainer reading a stale list as exhaustive concludes a module is covered
+when nothing checks it". This docstring carried exactly such a list, and it went
+stale again the moment ``file_adapter.run_artifacts`` adopted the guard.
+
+The guard had no tests of its own, and its failure mode is SILENCE: a
 mutation form it does not recognise makes every one of those modules' guard tests
 pass green while the contract is broken. That is not hypothetical — the guard
 recognised only the builtin ``open(file, mode)`` form, so ``path.open("w")`` in a

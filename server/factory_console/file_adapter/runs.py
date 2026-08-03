@@ -106,12 +106,22 @@ LAST_STOP_RELATIVE_PATH = Path(".factory") / "last-stop.json"
 MAX_ARTIFACT_BYTES = 1 * 1024 * 1024
 
 
-def _artifact_candidate(project_root: Path, relative_dir: Path, ticket_id: str) -> Path:
+def artifact_candidate(project_root: Path, relative_dir: Path, ticket_id: str) -> Path:
     """The path ``<project_root>/<relative_dir>/<ticket_id>.json`` names, unresolved.
 
     The single owner of that join, so the path a refusal REPORTS and the path the
     gates were applied to cannot be derived differently — they were previously
     spelled out twice, which is a layout change away from disagreeing.
+
+    PUBLIC, unlike the rest of this module's path helpers, for the one caller that
+    needs the join WITHOUT the resolution :func:`refusal_path` applies:
+    :class:`~factory_console.file_adapter.run_artifacts.FakeRunArtifactReader`
+    reports unresolved paths on purpose (resolving would be I/O, and performing
+    none is that class's whole reason to exist). It re-spelled this join inline
+    until it was pointed at here — which is precisely the "layout change away from
+    disagreeing" this function exists to prevent, one seam further out: a change to
+    the artifact filename convention would otherwise move the real reader and leave
+    the fake, and every fake-backed test, asserting the old shape.
     """
     return project_root / relative_dir / f"{ticket_id}.json"
 
@@ -141,7 +151,7 @@ def _safe_artifact_path(project_root: Path, relative_dir: Path, ticket_id: str) 
             BEFORE any filesystem read.
     """
     validate_ticket_id_as_segment(ticket_id)
-    resolved = resolve_or_none(_artifact_candidate(project_root, relative_dir, ticket_id))
+    resolved = resolve_or_none(artifact_candidate(project_root, relative_dir, ticket_id))
     if resolved is None:
         return None
     # ``within_root`` is three-valued and both of its non-yes answers refuse here:
@@ -162,7 +172,7 @@ def _read_ticket_artifact(project_root: Path, relative_dir: Path, ticket_id: str
     """
     safe = _safe_artifact_path(project_root, relative_dir, ticket_id)
     if safe is None:
-        candidate = _artifact_candidate(project_root, relative_dir, ticket_id)
+        candidate = artifact_candidate(project_root, relative_dir, ticket_id)
         # The path did not resolve, the ROOT did not resolve, or it resolved outside
         # the root — three ways of not landing on a readable in-project file, and the
         # message names all of them rather than only the artifact: pointing an operator
@@ -179,6 +189,56 @@ def _read_ticket_artifact(project_root: Path, relative_dir: Path, ticket_id: str
     return _read_json_artifact(safe)
 
 
+def refusal_path(project_root: Path, relative_dir: Path, ticket_id: str) -> Path:
+    """The path an :class:`ArtifactRead` reports when this module REFUSED an id.
+
+    The resolved, root-clamped spelling of :func:`artifact_candidate` composed with
+    :func:`_reportable_path`, for the one refusal this module cannot make itself:
+    :func:`validate_ticket_id_as_segment` RAISES on a path-unsafe id, so a caller
+    looping over a whole manifest catches
+    :class:`~factory_console.file_adapter.path_safety.PathTraversal` and reports
+    ``unreadable`` on its own — see
+    :class:`~factory_console.file_adapter.run_artifacts.RealRunArtifactReader`.
+
+    It exists so that caller does not re-derive the join. :func:`artifact_candidate`'s
+    docstring already states why the join has exactly one owner ("they were
+    previously spelled out twice, which is a layout change away from disagreeing"),
+    and ``_reportable_path``'s states why a refusal reports a RESOLVED path
+    ("a caller keying artifacts by it gets two keys for one file whenever the
+    project root is relative or symlinked"). Both invariants are module-wide, not
+    function-wide, so the refusal made one layer up must go through them rather
+    than around them.
+
+    CLAMPED to the project, and that gate is load-bearing rather than belt-and-braces.
+    This is the one path helper reached AFTER
+    :func:`~factory_console.file_adapter.path_safety.validate_ticket_id_as_segment`
+    has REFUSED the id, so it is the one that must not join that id and hand back
+    wherever it lands. Both of the validator's rules arrive here, and only the bare
+    ``.``/``..`` one is harmless: the ``.json`` suffix turns those into the ordinary
+    in-root names ``..json``/``...json``. A TICKET_ID_PATTERN violation is the live
+    case — the port
+    (:class:`~factory_console.file_adapter.run_artifacts.RunArtifactReader`) types its
+    id ``str`` and promises totality for a "path-unsafe" one, so a caller handing it
+    ``../../../../etc/passwd`` would otherwise get ``/etc/passwd.json`` — resolved,
+    symlinks followed — inside :attr:`~factory_console.domain.runs.ArtifactRead.path`,
+    a field built to be SHOWN. That is exactly what
+    :class:`~factory_console.file_adapter.path_safety.PathTraversal` forbids in its own
+    docstring: an unsafe id is answered with the id, "never a resolved absolute path,
+    which would disclose the server's filesystem layout".
+
+    So an id that cannot form an in-root filename is answered with the artifact
+    DIRECTORY. Note the containment test must fail CLOSED: ``within_root`` is
+    three-valued, and ``None`` ("could not be decided", an unresolvable root) clamps
+    here exactly like a proven escape. Reporting the directory also keeps the
+    out-of-root spelling meaning ONE thing — ``_reportable_path``'s case 2, a PROVEN
+    containment escape — instead of two conditions that a reader could not tell apart.
+    """
+    reported = _reportable_path(artifact_candidate(project_root, relative_dir, ticket_id))
+    if within_root(reported, project_root) is True:
+        return reported
+    return _reportable_path(project_root / relative_dir)
+
+
 def _reportable_path(candidate: Path) -> Path:
     """The path an :class:`ArtifactRead` carries when the read never got started.
 
@@ -187,7 +247,8 @@ def _reportable_path(candidate: Path) -> Path:
     answers and another on two of them — and a caller keying artifacts by it gets two
     keys for one file whenever the project root is relative or symlinked.
 
-    THREE refusal conditions arrive here. They are the three sub-cases
+    THREE CONTAINMENT refusals arrive here, plus one ID refusal added later (case 4).
+    The first three are the sub-cases
     :data:`~factory_console.domain.runs.ArtifactSkipReason` names in the SECOND of its two
     routes to ``unreadable`` — "the path could not be PROVEN to resolve inside the project
     root", i.e. an unresolvable path, an unresolvable root, or a resolved path that
@@ -208,6 +269,13 @@ def _reportable_path(candidate: Path) -> Path:
        The candidate itself resolves fine, so the retry succeeds here too — but what it
        returns is an ordinary CONTAINED path, not an escape target. Only case 2 proves an
        escape, and only case 2 may be read as reporting one.
+    4. the ID was refused as a path segment one layer up, so NOTHING was gated: the caller
+       came through :func:`refusal_path`. This is not a containment sub-case at all. What
+       arrives is either the ordinary contained candidate (a bare ``.``/``..`` id, whose
+       ``.json`` suffix makes an in-root filename) or, when the id could not form an in-root
+       name, the artifact DIRECTORY — because :func:`refusal_path` clamps first, precisely so
+       this case can never borrow case 2's out-of-root spelling for something it has not
+       proven. Like case 3, it must NOT be read as an escape target.
 
     An earlier revision of this docstring described only cases 1 and 2, which read case 3's
     perfectly ordinary path as "the escape target" — the same conflation of "provably
@@ -215,9 +283,11 @@ def _reportable_path(candidate: Path) -> Path:
     :func:`~factory_console.file_adapter.path_safety.within_root` returns three values to
     keep apart.
 
-    ``tests/unit/test_runs.py`` pins the reported path on all three. Do not "simplify"
-    this to an unconditional :meth:`Path.absolute` on the reading that resolution has
-    already failed — it has not, on cases 2 and 3, and that would silently change what
+    ``tests/unit/test_runs.py`` pins the reported path on cases 1-3;
+    ``tests/unit/test_run_service.py`` pins case 4 through
+    :class:`~factory_console.file_adapter.run_artifacts.RealRunArtifactReader`. Do not
+    "simplify" this to an unconditional :meth:`Path.absolute` on the reading that resolution
+    has already failed — it has not, on cases 2 and 3, and that would silently change what
     they report.
     """
     resolved = resolve_or_none(candidate)
