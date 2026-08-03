@@ -192,7 +192,9 @@ describe('runs page', () => {
 	});
 
 	it('renders the no-run-data explanation, NOT an empty table, when every record is absent', () => {
-		render(Page, { props: { data: data(rowsOf([neverRan('T88'), neverRan('T89')], 'todo')) } });
+		// `unknown` on every row: no run-state source EITHER, so the whole-page claim
+		// that this project has no run data is actually true. The fresh-clone case.
+		render(Page, { props: { data: data(rowsOf([neverRan('T88'), neverRan('T89')], 'unknown')) } });
 
 		// The bug this asserts against is a table of rows with empty cells, which reads
 		// as "the factory ran and recorded nothing" — so assert the explanatory content
@@ -206,6 +208,21 @@ describe('runs page', () => {
 
 		expect(screen.queryByRole('table')).toBeNull();
 		expect(screen.queryByTestId('run-row-T88')).toBeNull();
+	});
+
+	it('keeps the table when the artifacts are all absent but the run-state source is not', () => {
+		// The run-state column is fed from the project's run-state source, NOT from
+		// `.factory/results|receipts` — and one of those sources (`docs/planning/
+		// .run-state`) is committed, so it survives the fresh clone the artifacts do
+		// not. Claiming "no factory run data in this project" off the artifacts alone
+		// would hide a full board of real badges behind a banner denying it exists.
+		render(Page, { props: { data: data(rowsOf([neverRan('T88'), neverRan('T89')], 'merged')) } });
+
+		expect(screen.queryByTestId('no-run-data')).toBeNull();
+		expect(screen.getByRole('table')).toBeTruthy();
+		expect(normalized(screen.getByTestId('run-row-T88'))).toMatch(/Merged/);
+		// …and the absent artifacts are still named per source rather than left blank.
+		expect(screen.getByTestId('receipt-T88').getAttribute('data-reason')).toBe('absent');
 	});
 
 	it('renders the table with no banner when only some tickets have artifacts', () => {
@@ -238,6 +255,50 @@ describe('runs page', () => {
 		expect(bad.getAttribute('data-degraded')).toBe('true');
 		expect(normalized(absent)).toBe('—');
 		expect(absent.getAttribute('data-degraded')).toBeNull();
+	});
+
+	// Every member of `ArtifactSkipReason`, so a transposed label or title cannot ship
+	// green. The component's `Record<ArtifactSkipReason, …>` maps make a NEW member a
+	// build error; this makes a WRONG member a test failure.
+	it.each([
+		['absent', '—', false],
+		['unreadable', 'Unreadable', true],
+		['unparseable', 'Unparseable', true],
+		['too_large', 'Too large', true]
+	] as const)('labels the %s reason as "%s"', (reason, label, degraded) => {
+		const row = record(
+			'T88',
+			read(`${RESULTS_DIR}/T88.json`, { status: 'ready' }),
+			skipped(`${RECEIPTS_DIR}/T88.json`, reason)
+		);
+		render(Page, { props: { data: data(rowsOf([row])) } });
+
+		const cell = screen.getByTestId('receipt-T88');
+		expect(normalized(cell)).toBe(label);
+		expect(cell.getAttribute('data-reason')).toBe(reason);
+		expect(cell.getAttribute('title')).toBeTruthy();
+		expect(cell.getAttribute('data-degraded')).toBe(degraded ? 'true' : null);
+	});
+
+	it('distinguishes an absent artifact from one that was read and says nothing', () => {
+		// Both render the same `—` glyph, so the DOM is the only thing that can carry
+		// the difference — and they are different facts: "the factory never wrote this"
+		// versus "the factory wrote it and named no value here". A `title` alone is
+		// invisible to a screen reader and to anyone not hovering.
+		const readEmpty = record(
+			'T88',
+			read(`${RESULTS_DIR}/T88.json`, {}),
+			read(`${RECEIPTS_DIR}/T88.json`, { verdict: 'approved' })
+		);
+		render(Page, { props: { data: data(rowsOf([readEmpty, neverRan('T89')])) } });
+
+		const wasRead = screen.getByTestId('outcome-T88');
+		const neverWritten = screen.getByTestId('outcome-T89');
+		expect(normalized(wasRead)).toBe('—');
+		expect(normalized(neverWritten)).toBe('—');
+		// Identical text, so this attribute is what makes them tellable apart.
+		expect(wasRead.getAttribute('data-reason')).toBeNull();
+		expect(neverWritten.getAttribute('data-reason')).toBe('absent');
 	});
 
 	it('marks the PR and outcome cells degraded when the RESULT itself could not be parsed', () => {
@@ -274,22 +335,82 @@ describe('runs page', () => {
 		expect(normalized(screen.getByTestId('outcome-T88'))).toBe('ready');
 	});
 
-	it('renders no link for a pr_url that is not an http(s) url', () => {
-		// `data` is whatever another process wrote into a local JSON file; a
-		// `javascript:` href would be handed straight to the browser as a link.
-		render(Page, {
-			props: { data: data(rowsOf([finished('T88', { pr_url: 'javascript:alert(1)' })])) }
-		});
+	// `data` is whatever another process wrote into a local JSON file, so every one of
+	// these is untrusted input that must not reach an `href`. Each is `pr_url`
+	// RECORDED-BUT-UNUSABLE, which is a different fact from `pr_url` absent — so the
+	// cell must not fall through to the "carries no PR url" wording that the
+	// names-no-pr_url case above owns.
+	it.each<[string, unknown]>([
+		// Handed straight to the browser as a clickable link if the scheme is not checked.
+		['a javascript: scheme', 'javascript:alert(1)'],
+		['a data: scheme', 'data:text/html,<script>alert(1)</script>'],
+		// Reaches the `catch`: `new URL` with no base throws on a relative reference.
+		['a relative reference', 'example/pull/1'],
+		['unparseable junk', 'not a url at all'],
+		// Reads as github.com but resolves to evil.test — the link's text is the fixed
+		// words "Pull request", so the operator never sees where it actually goes.
+		['a deceptive userinfo host', 'https://github.com%2Fexample%2Fpull%2F1@evil.test/'],
+		// Would send these credentials to the host on click.
+		['embedded credentials', 'https://user:pass@example.test/pull/1'],
+		// Present, but not a string at all.
+		['a non-string value', 42],
+		['an all-whitespace string', '   ']
+	])('refuses to link %s, and says the url is unusable rather than missing', (_label, prUrl) => {
+		render(Page, { props: { data: data(rowsOf([finished('T88', { pr_url: prUrl })])) } });
 
 		expect(screen.queryByTestId('pr-link-T88')).toBeNull();
-		expect(normalized(screen.getByTestId('pr-T88'))).toBe('—');
+		const cell = screen.getByTestId('pr-T88');
+		expect(normalized(cell)).toBe('Unusable PR url');
+		expect(cell.getAttribute('data-degraded')).toBe('true');
+		expect(cell.getAttribute('title')).toMatch(/will not link/i);
+		// `data-reason` is the ARTIFACT-level vocabulary (`ArtifactSkipReason`). This is
+		// a FIELD-level fact about an artifact that read fine, so it must not borrow it —
+		// pinned here so the two vocabularies cannot quietly merge.
+		expect(cell.getAttribute('data-reason')).toBeNull();
 	});
 
-	it('renders no outcome value when the result carries a non-string status', () => {
-		render(Page, { props: { data: data(rowsOf([finished('T88', { status: 42 })])) } });
+	it('links a normalized http(s) url and exposes its destination', () => {
+		render(Page, { props: { data: data(rowsOf([finished('T88', { pr_url: PR_URL })])) } });
 
-		expect(normalized(screen.getByTestId('outcome-T88'))).toBe('—');
-		expect(screen.getByTestId('outcome-T88').getAttribute('title')).toMatch(/names no status/i);
+		const link = screen.getByTestId('pr-link-T88');
+		// The href is the string that was VALIDATED (`URL.href`), not the raw input.
+		expect(link.getAttribute('href')).toBe(new URL(PR_URL).href);
+		// The link text is fixed prose, so the destination has to be visible somewhere.
+		expect(link.getAttribute('title')).toBe(PR_URL);
+	});
+
+	// The same unusable-field classes the PR column above is swept over, so the two
+	// columns cannot drift apart on what `readField` calls usable.
+	it.each<[string, unknown]>([
+		['a non-string value', 42],
+		['an all-whitespace string', '   ']
+	])('says the status is unusable, not missing, when it is %s', (_label, status) => {
+		render(Page, { props: { data: data(rowsOf([finished('T88', { status })])) } });
+
+		// The factory DID record a status. Rendering the same `—` as a result that
+		// recorded none would report a value that exists as one that does not — and
+		// would leave this column disagreeing with the PR column beside it, which
+		// makes the same three-way distinction over the same untyped object.
+		const cell = screen.getByTestId('outcome-T88');
+		expect(normalized(cell)).toBe('Unusable status');
+		expect(cell.getAttribute('data-degraded')).toBe('true');
+		expect(cell.getAttribute('title')).toMatch(/not as a string/i);
+		// Field-level, so it does not wear the artifact-level `data-reason`.
+		expect(cell.getAttribute('data-reason')).toBeNull();
+	});
+
+	it('says the status is missing when the result names none at all', () => {
+		const noStatus = record(
+			'T88',
+			read(`${RESULTS_DIR}/T88.json`, { pr_url: PR_URL }),
+			read(`${RECEIPTS_DIR}/T88.json`, { verdict: 'approved' })
+		);
+		render(Page, { props: { data: data(rowsOf([noStatus])) } });
+
+		const cell = screen.getByTestId('outcome-T88');
+		expect(normalized(cell)).toBe('—');
+		expect(cell.getAttribute('data-degraded')).toBeNull();
+		expect(cell.getAttribute('title')).toMatch(/names no status/i);
 	});
 
 	it('says the manifest is empty rather than claiming there is no run data', () => {

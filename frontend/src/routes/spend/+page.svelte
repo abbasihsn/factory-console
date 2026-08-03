@@ -77,8 +77,12 @@
 	{#if !hasLedger}
 		<!-- The no-ledger case renders the explanation and NOTHING else: no totals,
 		     no zeroed tables. A table of zeros is a claim, and this project has not
-		     been measured at all. (T83's shared SourcesBanner does not exist yet, so
-		     the explanation is inline here rather than in a second banner component.) -->
+		     been measured at all. (T83 has since added `SourcesBanner`, but it says one
+		     thing — "no factory run data", naming the two artifact directories it
+		     probed — and cannot state this one, which is about the ledger. Reusing it
+		     would need it generalized over its headline and probed paths first; until
+		     then the explanation stays inline here rather than misreported by a
+		     component that names the wrong source.) -->
 		<div class="space-y-2 rounded-lg border border-slate-200 bg-surface px-4 py-6">
 			<p class="font-medium text-text">No spend ledger for this project.</p>
 			<p class="text-sm text-muted">
