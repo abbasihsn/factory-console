@@ -71,6 +71,7 @@ from factory_console.file_adapter.discovery import ProjectNotFound, discover_pro
 from factory_console.file_adapter.manifest import MalformedManifest
 from factory_console.file_adapter.real import RealFileAdapter
 from factory_console.file_adapter.real_writer import RealFileWriter
+from factory_console.file_adapter.run_artifacts import RealRunArtifactReader
 from factory_console.file_adapter.watcher_real import RealFileWatcher
 from factory_console.logging import LOG_LEVELS, configure_logging, normalize_log_level
 
@@ -251,6 +252,7 @@ def main(
         project_root=root,
         file_watcher=RealFileWatcher(root),
         file_writer=RealFileWriter(),
+        run_artifact_reader=RealRunArtifactReader(),
         write_token=write_token,
     )
 
