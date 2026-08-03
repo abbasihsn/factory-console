@@ -16,6 +16,8 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 from factory_console.domain import Project, Ticket
 from factory_console.file_adapter import FakeFileAdapter
 from factory_console.file_adapter.runs import RECEIPTS_RELATIVE_DIR, RESULTS_RELATIVE_DIR
@@ -184,3 +186,48 @@ def test_an_artifact_with_no_manifest_ticket_yields_no_record(tmp_path: Path) ->
 def test_an_empty_manifest_yields_no_records(tmp_path: Path) -> None:
     service, project = _service(tmp_path, [])
     assert service.list_run_records(project) == []
+
+
+# --------------------------------------------------------------------------- #
+# A path-unsafe manifest id degrades that ONE record, never the whole listing
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("unsafe_id", [".", ".."])
+def test_a_path_unsafe_manifest_id_degrades_only_its_own_record(
+    tmp_path: Path, unsafe_id: str
+) -> None:
+    """A bare ``.``/``..`` id is reported as unreadable, not raised past its neighbours.
+
+    ``TICKET_ID_PATTERN`` is ``^[A-Za-z0-9_.-]+$``, so a dot-only id satisfies the
+    model boundary and reaches the readers, which reject it as a single-segment
+    traversal. Degrading is what keeps one malformed manifest entry from deleting
+    every healthy ticket's record — the same trade ``RealFileAdapter._safe_run_state``
+    already makes for this id class on the ``list_tickets`` path.
+    """
+    _write_both(tmp_path, "T88")
+    service, project = _service(tmp_path, ["T88", unsafe_id])
+
+    records = service.list_run_records(project)
+
+    assert [record.ticketId for record in records] == ["T88", unsafe_id], (
+        "the malformed id gets a record like any other manifest ticket, and its "
+        "healthy neighbour survives"
+    )
+    healthy = records[0]
+    assert healthy.result.reason is None, "the neighbour's artifacts are still read"
+    assert healthy.receipt.reason is None
+
+    refused = records[1]
+    # ``unreadable``, per source: the console refused to look. NOT ``absent``, which
+    # would claim the factory wrote nothing — a fact nothing here established.
+    assert refused.result.reason == "unreadable"
+    assert refused.receipt.reason == "unreadable"
+    assert refused.result.data is None
+    assert refused.receipt.data is None
+    # Each refusal names its OWN artifact. Asserted because the reader and the
+    # directory are passed as two separate arguments on this branch, so a crossed
+    # pair would report the receipt's path under the result and be invisible to any
+    # assertion that only checks the reason.
+    assert refused.result.path.parent == tmp_path / RESULTS_RELATIVE_DIR
+    assert refused.receipt.path.parent == tmp_path / RECEIPTS_RELATIVE_DIR
