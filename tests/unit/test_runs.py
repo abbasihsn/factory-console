@@ -33,9 +33,11 @@ from factory_console.file_adapter.runs import (
     MAX_ARTIFACT_BYTES,
     RECEIPTS_RELATIVE_DIR,
     RESULTS_RELATIVE_DIR,
+    artifact_candidate,
     read_last_stop,
     read_receipt,
     read_result,
+    refusal_path,
 )
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "runs"
@@ -997,6 +999,87 @@ def test_read_last_stop_takes_no_ticket_id_so_it_cannot_traverse(tmp_path: Path)
     # No id, no traversal surface, and therefore no PathTraversal path at all —
     # the call is total for every project root.
     assert read_last_stop(tmp_path).reason == "absent"
+
+
+# --------------------------------------------------------------------------- #
+# refusal_path: the path reported for an id this module REFUSED
+# --------------------------------------------------------------------------- #
+
+
+def test_refusal_path_reports_the_resolved_in_root_artifact_path(tmp_path: Path) -> None:
+    # The ordinary case: a well-formed id resolves and stays in the root, so the
+    # refusal reports the artifact itself, normalized like every other read's path.
+    assert (
+        refusal_path(tmp_path, RESULTS_RELATIVE_DIR, TICKET_ID)
+        == (tmp_path / RESULTS_RELATIVE_DIR / f"{TICKET_ID}.json").resolve()
+    )
+
+
+@pytest.mark.parametrize("dot_id", [".", ".."])
+def test_refusal_path_reports_the_artifact_for_a_bare_dot_id(tmp_path: Path, dot_id: str) -> None:
+    # A bare ``.``/``..`` is refused as a SEGMENT, but the ``.json`` suffix makes it
+    # an ordinary in-root filename (``..json`` / ``...json``) — nothing escapes, so
+    # the clamp must NOT fire and swap in the directory.
+    reported = refusal_path(tmp_path, RESULTS_RELATIVE_DIR, dot_id)
+    assert reported == (tmp_path / RESULTS_RELATIVE_DIR / f"{dot_id}.json").resolve()
+    assert reported.parent == (tmp_path / RESULTS_RELATIVE_DIR).resolve()
+
+
+@pytest.mark.parametrize(
+    "unsafe_id",
+    [
+        "../../etc/passwd",  # climbs out of .factory/results, but lands back INSIDE the root
+        "../" * 8 + "etc/passwd",  # climbs past the root
+        "/etc/passwd",  # absolute: the join discards the root entirely
+        "..%2f..%2fetc",
+        "a/b",
+    ],
+)
+def test_refusal_path_never_reports_a_path_outside_the_root(tmp_path: Path, unsafe_id: str) -> None:
+    """No id, however malformed, makes a refusal name a path outside the project.
+
+    These all violate ``TICKET_ID_PATTERN``, so ``validate_ticket_id_as_segment``
+    refuses them and a caller reports the refusal through here. Unclamped, the last
+    two would answer an absolute path outside the project — resolved, with symlinks
+    followed — inside ``ArtifactRead.path``, a field built to be SHOWN.
+    ``PathTraversal``'s own docstring forbids exactly that: an unsafe id is answered
+    with the id, "never a resolved absolute path, which would disclose the server's
+    filesystem layout".
+
+    Containment is the invariant worth pinning, so it is asserted for EVERY id rather
+    than only the ones that happen to escape today. Note the first id does not escape
+    at all — ``.factory/results`` is two levels deep, so ``../..`` lands back on the
+    root — which is why the clamp is stated as "never outside" and not "always the
+    directory": see the companion test for the ids that do escape.
+    """
+    root = tmp_path.resolve()
+    reported = refusal_path(root, RESULTS_RELATIVE_DIR, unsafe_id)
+
+    assert reported.is_relative_to(root), "a refusal must never name a path outside the project"
+
+
+@pytest.mark.parametrize("escaping_id", ["../" * 8 + "etc/passwd", "/etc/passwd"])
+def test_refusal_path_clamps_an_escaping_id_to_the_artifact_directory(
+    tmp_path: Path, escaping_id: str
+) -> None:
+    # An id that cannot form an in-root filename has no artifact path to name, so the
+    # refusal reports the artifact DIRECTORY. Reporting the resolved target instead
+    # would also collide with ``_reportable_path``'s case 2, where an out-of-root
+    # answer means a PROVEN containment escape — which nothing here established.
+    root = tmp_path.resolve()
+    assert (
+        refusal_path(root, RESULTS_RELATIVE_DIR, escaping_id)
+        == (root / RESULTS_RELATIVE_DIR).resolve()
+    )
+
+
+def test_refusal_path_composes_the_single_owned_join(tmp_path: Path) -> None:
+    # ``artifact_candidate`` owns the join; ``refusal_path`` is its resolved spelling.
+    # Pinned so a change to the filename convention cannot move one without the other.
+    assert (
+        refusal_path(tmp_path, RECEIPTS_RELATIVE_DIR, TICKET_ID)
+        == artifact_candidate(tmp_path, RECEIPTS_RELATIVE_DIR, TICKET_ID).resolve()
+    )
 
 
 # --------------------------------------------------------------------------- #

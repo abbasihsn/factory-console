@@ -19,8 +19,16 @@ What they are good for is the one thing T88's reader actually asks of them: each
 is **a valid JSON object**, so a test can point `read_result`/`read_receipt` at
 it and assert the successful-parse case against real bytes on disk. T88 reads
 these artifacts as untyped `dict[str, Any]` and models no field, so the specific
-keys are immaterial to what is under test. Modelling named fields is T89's job,
-and it needs a real captured artifact first.
+keys are immaterial to what is under test.
+
+T89 has since composed these reads into `domain/run_record.py`'s `RunRecord`, and
+it deliberately did **not** model named fields: the record names the two *sources*
+(`result`, `receipt`) and carries each `ArtifactRead` verbatim, reason and all,
+while `data` stays `dict[str, Any]`. So the payload is still untyped, for the
+reason stated above — no real captured artifact exists to verify field names
+against, and a schema built from these illustrative shapes would silently reject
+what the factory actually writes. Do not read `RunRecord` as the place a field
+schema already lives.
 
 **Read-only** — tests may read these but must never mutate them. Tests that need
 one at an artifact *location* copy it under `tmp_path`.

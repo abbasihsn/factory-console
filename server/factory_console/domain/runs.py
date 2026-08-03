@@ -97,9 +97,12 @@ class ArtifactRead(BaseModel):
     knows how to answer "does this artifact exist and is it a JSON object", and
     it has no captured real artifact to verify field names against — modeling
     fields from guesswork would ship a schema that silently rejects what the
-    factory actually writes. Composing these into a per-ticket record, with named
-    fields, is T89's job and belongs there. Do not "improve" this into a typed
-    schema without re-reading that split.
+    factory actually writes. Composing these into a per-ticket record is
+    :class:`~factory_console.domain.run_record.RunRecord`'s job (T89), and it
+    named the two SOURCES rather than their fields: it carries each
+    :class:`ArtifactRead` verbatim, so ``data`` is still untyped there and this
+    paragraph still governs it. Do not "improve" this into a typed schema — here
+    or there — until a real captured artifact exists to verify against.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")

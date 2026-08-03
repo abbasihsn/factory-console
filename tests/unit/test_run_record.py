@@ -61,7 +61,15 @@ def test_record_forbids_extra_fields() -> None:
 
 
 def test_ticket_id_is_pattern_constrained() -> None:
-    # A path separator in the id is refused at the model boundary, which is what
-    # makes the service's artifact reads unable to raise PathTraversal.
+    # The id is TICKET_ID_PATTERN-constrained on the record too, like every other id
+    # on the domain surface, so a path separator is refused at the model boundary.
+    #
+    # This is NOT what keeps PathTraversal off the read path, and must not be read as
+    # such. The record is built AFTER both reads (its arguments are evaluated first),
+    # so its own boundary cannot gate what the readers see; and the pattern admits a
+    # bare "." / "..", which reaches the readers and DOES raise. That is why
+    # RealRunArtifactReader._read catches PathTraversal and degrades — see
+    # test_a_path_unsafe_manifest_id_degrades_only_its_own_record. Do not delete that
+    # degrade as unreachable on the strength of this test.
     with pytest.raises(ValidationError):
         _record(ticketId="../etc/passwd")

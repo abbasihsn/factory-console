@@ -294,6 +294,81 @@ def test_the_service_is_substitutable_over_both_ports() -> None:
     assert record.receipt.data is None
 
 
+def test_both_fake_sources_can_be_seeded_independently() -> None:
+    """Seeding BOTH maps populates both fields — per source, like every absence assertion.
+
+    ``results`` alone is not enough to pin the fake: ``read_result`` and
+    ``read_receipt`` share one helper parameterized by map and directory, so a fake
+    that returned the results map for both sources would satisfy a results-only test
+    and hand every receipt assertion the wrong artifact.
+    """
+    project = _make_project(Path("/proj"))
+    result = ArtifactRead(path=Path("/proj/.factory/results/T89.json"), data={"status": "ready"})
+    receipt = ArtifactRead(path=Path("/proj/.factory/receipts/T89.json"), data={"verdict": "pass"})
+    artifacts = FakeRunArtifactReader(results={"T89": result}, receipts={"T89": receipt})
+    service = RunService(FakeFileAdapter(project=project, tickets=[_make_ticket("T89")]), artifacts)
+
+    (record,) = service.list_run_records(project)
+
+    assert record.result.data == {"status": "ready"}
+    assert record.receipt.data == {"verdict": "pass"}, "the receipt map is not the result map"
+    assert record.result.reason is None
+    assert record.receipt.reason is None
+
+
+@pytest.mark.parametrize("unsafe_id", [".", ".."])
+def test_the_fake_refuses_a_path_unsafe_id_with_the_real_readers_reason(unsafe_id: str) -> None:
+    """The fake answers ``unreadable`` for the ids the real reader refuses, not ``absent``.
+
+    The fake's contract is that every reason it gives is one the real reader would
+    give for the same id — otherwise a fake-backed test of exactly the case
+    ``test_a_path_unsafe_manifest_id_degrades_only_its_own_record`` pins would pass
+    green on ``absent``, claiming the factory wrote nothing when the console merely
+    refused to look. Validating an id costs no I/O, so the fake can honour this
+    without becoming filesystem-backed.
+    """
+    project = _make_project(Path("/proj"))
+    service = RunService(
+        FakeFileAdapter(project=project, tickets=[_make_ticket(unsafe_id)]),
+        FakeRunArtifactReader(),
+    )
+
+    (record,) = service.list_run_records(project)
+
+    assert record.result.reason == "unreadable"
+    assert record.receipt.reason == "unreadable"
+    assert record.result.data is None
+    assert record.receipt.data is None
+    # The bare-dot id forms an ordinary in-directory filename, so the fake names the
+    # artifact — unresolved, per this fake's documented path divergence.
+    assert record.result.path == Path("/proj") / RESULTS_RELATIVE_DIR / f"{unsafe_id}.json"
+
+
+@pytest.mark.parametrize("escaping_id", ["../../etc/passwd", "/etc/passwd"])
+def test_the_fake_never_reports_a_refusal_path_that_escapes_the_project(escaping_id: str) -> None:
+    """The fake's refusal path is clamped like the real reader's, not a raw join.
+
+    ``RealRunArtifactReader`` reports these through
+    :func:`~factory_console.file_adapter.runs.refusal_path`, which clamps to the
+    project. A fake that re-joined the id instead would hand a test
+    ``/proj/.factory/results/../../etc/passwd.json`` — a path that RESOLVES outside the
+    project, which the console provably never produces. The fake's paths are
+    unresolved by design, but they must still be paths the real reader could name.
+    """
+    project = _make_project(Path("/proj"))
+    artifacts = FakeRunArtifactReader()
+
+    read = artifacts.read_result(project, escaping_id)
+
+    assert read.reason == "unreadable"
+    # The artifact DIRECTORY, with no component of the refused id in it — asserted as
+    # an exact value rather than as "is inside /proj", which a raw join like
+    # ``/proj/.factory/results/../../etc/passwd.json`` would satisfy lexically while
+    # naming a file outside the project.
+    assert read.path == Path("/proj") / RESULTS_RELATIVE_DIR
+    assert escaping_id.strip("/") not in str(read.path)
+
+
 def test_both_implementations_satisfy_the_port() -> None:
     # ``@runtime_checkable``, so structural conformance is assertable — the same
     # guarantee ``FakeFileAdapter``/``FileAdapter`` and ``FakeFileWriter``/``FileWriter``

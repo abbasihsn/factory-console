@@ -42,10 +42,11 @@ from typing import Protocol, runtime_checkable
 
 from factory_console.domain import Project
 from factory_console.domain.runs import ArtifactRead
-from factory_console.file_adapter.path_safety import PathTraversal
+from factory_console.file_adapter.path_safety import PathTraversal, validate_ticket_id_as_segment
 from factory_console.file_adapter.runs import (
     RECEIPTS_RELATIVE_DIR,
     RESULTS_RELATIVE_DIR,
+    artifact_candidate,
     read_receipt,
     read_result,
     refusal_path,
@@ -163,8 +164,13 @@ class RealRunArtifactReader:
 
         The reported path goes through :func:`~factory_console.file_adapter.runs.refusal_path`
         rather than being re-joined here, so a refused record's ``path`` is
-        normalized exactly like every other :class:`ArtifactRead`'s — see that
-        function for why both halves of that are module-wide invariants.
+        normalized exactly like every other :class:`ArtifactRead`'s AND is clamped to
+        the project — see that function for why both halves of that are module-wide
+        invariants, and why the clamp matters on a path built from an id that has just
+        FAILED validation. Re-joining here would hand a caller of this port an absolute
+        path outside the root for a pattern-violating id, which is what
+        :class:`~factory_console.file_adapter.path_safety.PathTraversal` refuses to
+        disclose.
         """
         try:
             return reader(project_root, ticket_id)
@@ -191,19 +197,27 @@ class FakeRunArtifactReader:
 
     An unseeded ticket answers ``absent``, which is the REASON the real reader gives
     for a file that is not there; a fake whose unseeded case answered anything else
-    would let a caller pass a test the real reader fails.
+    would let a caller pass a test the real reader fails. For the same reason it
+    applies the id gate before the seeded lookup and answers ``unreadable`` for a
+    path-unsafe id, exactly as :class:`RealRunArtifactReader` does — see
+    :meth:`_seeded_or_absent`. Every REASON this fake gives is therefore one the real
+    reader would give for the same id.
 
     The path it answers with is the UNRESOLVED join, and that is the one shape in
     which this fake deliberately differs from
-    :class:`RealRunArtifactReader` — which reports resolved paths throughout, per
-    :func:`~factory_console.file_adapter.runs.refusal_path`. Resolving here would
+    :class:`RealRunArtifactReader` — which reports resolved paths, per
+    :func:`~factory_console.file_adapter.runs.refusal_path` (itself resolved or, where
+    resolution fails, :meth:`~pathlib.Path.absolute`). Resolving here would
     mean a filesystem lookup, and performing no I/O is this class's whole reason to
     exist; the difference is also unobservable in the use it is built for, since
     fake-backed tests seed a synthetic ``rootPath`` (``/proj``) that exists on no
     disk, and resolving a path with no existing components yields exactly this join.
     Do not "fix" this by calling :meth:`~pathlib.Path.resolve` — assert on
     ``reason``/``data`` here, and let ``RealRunArtifactReader``'s own tests pin path
-    normalization.
+    normalization. The join itself comes from
+    :func:`~factory_console.file_adapter.runs.artifact_candidate` rather than being
+    re-spelled here, so this fake cannot drift from the real reader's filename
+    convention.
     """
 
     def __init__(
@@ -234,8 +248,57 @@ class FakeRunArtifactReader:
         relative_dir: Path,
         ticket_id: str,
     ) -> ArtifactRead:
-        """The seeded read for ``ticket_id``, else ``absent`` at its unresolved path."""
+        """The seeded read for ``ticket_id``, else ``absent`` at its unresolved path.
+
+        The id gate runs FIRST, before the seeded lookup, because that is the order
+        :class:`RealRunArtifactReader` refuses in: it never reaches the file either.
+        Without it this fake answered ``absent`` for a bare ``.``/``..`` id where the
+        real reader answers ``unreadable`` — the exact absent/unreadable collapse
+        :data:`~factory_console.domain.runs.ArtifactSkipReason` forbids, and the exact
+        failure this class's own docstring promises not to have ("a fake whose unseeded
+        case answered anything else would let a caller pass a test the real reader
+        fails"). A fake-backed test of the path-unsafe manifest id — the case
+        ``test_a_path_unsafe_manifest_id_degrades_only_its_own_record`` exists to pin —
+        would have gone green on the wrong reason. Validating costs no I/O, so it does
+        not touch this class's no-filesystem property.
+
+        A refused id reports the artifact only when the id forms a single name INSIDE
+        the artifact directory — the bare ``.``/``..`` case, whose ``.json`` suffix
+        makes the ordinary filename ``..json``/``...json``. Anything else reports the
+        DIRECTORY. Without that, this fake would answer a path that RESOLVES outside
+        the project (``/etc/passwd.json`` for an absolute id) where the real reader,
+        clamped by :func:`~factory_console.file_adapter.runs.refusal_path`, provably
+        cannot — handing a test a path the console would never produce.
+
+        This is STRICTER than the real reader rather than identical to it, and the
+        difference is stated because it is real: ``refusal_path`` clamps only what
+        leaves the ROOT, so a nested-but-contained id (``a/b``) reports
+        ``<results>/a/b.json`` there and the bare directory here. Both answers are
+        inside the project — the property that matters — and the fake's paths are
+        already documented as the unresolved, do-not-assert-on half of this pair. The
+        strictness is deliberate: matching ``refusal_path`` exactly would need a
+        containment decision, and deciding containment honestly needs ``resolve()``,
+        which is the I/O this class exists not to do.
+
+        The test is pure path algebra on the UNRESOLVED join — no ``resolve()``, so
+        still no I/O — and it deliberately does not restate the id rules
+        :func:`~factory_console.file_adapter.path_safety.validate_ticket_id_as_segment`
+        owns: a copied rule is one a future tightening applies to some call sites and
+        not others, which is the drift ``path_safety`` exists to prevent. It asks only
+        "did this id add path components", which is a property of the join itself.
+        """
+        try:
+            validate_ticket_id_as_segment(ticket_id)
+        except PathTraversal:
+            candidate = artifact_candidate(project_root, relative_dir, ticket_id)
+            in_directory = candidate.parent == project_root / relative_dir
+            return ArtifactRead(
+                path=candidate if in_directory else project_root / relative_dir,
+                reason="unreadable",
+            )
         found = seeded.get(ticket_id)
         if found is not None:
             return found
-        return ArtifactRead(path=project_root / relative_dir / f"{ticket_id}.json", reason="absent")
+        return ArtifactRead(
+            path=artifact_candidate(project_root, relative_dir, ticket_id), reason="absent"
+        )
