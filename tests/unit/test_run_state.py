@@ -785,6 +785,23 @@ def test_an_undiscoverable_state_set_is_not_read_as_listing_you(
     # the console would have deleted a ticket the factory holds under `in_review/`, the
     # very fail-open this ticket exists to close, reopened through the flag rather than
     # through the walk.
+    #
+    # THIS TEST USED TO ASSERT THE OPPOSITE FOR CAD-1, and the reasoning is kept because
+    # it records why the wrong answer was convincing: CAD-1's `todo/` marker still reads
+    # (the dir is traversable, so `exists()` works even though `iterdir()` does not), so
+    # the source could still answer honestly for it, and refusing it looked like a
+    # project-wide lockout bought for an id whose state was never in doubt — "a source
+    # that can still answer for the ids it names keeps answering", documented on
+    # `_StateDirectories.undiscoverable` as a deliberate, permanent residual.
+    #
+    # T92 amendment 2 overturns it, on MONOTONICITY: a run-state dir that will not LIST
+    # reveals strictly LESS than one that lists fine while holding a single unsearchable
+    # subdirectory — and that one refuses every id (the test below), so this one may not
+    # answer more permissively. The state was in doubt after all: an `in_review/CAD-1`
+    # could be sitting behind the listing that failed, at a precedence this console cannot
+    # rank, which is the same clause that already makes a VISIBLE `in_review/CAD-1`
+    # outrank `todo/CAD-1`. A refusal costs one chmod; a write to a ticket a lane owns
+    # does not come back.
     run_state_dir = tmp_path / "run-state"
     _place_marker(run_state_dir, "todo", "CAD-1", as_dir=False)
     _place_marker(run_state_dir, "in_review", "CAD-2", as_dir=False)
@@ -793,19 +810,62 @@ def test_an_undiscoverable_state_set_is_not_read_as_listing_you(
     try:
         resolved = run_state_resolver(source)("CAD-2")
         probed = probe_ticket_state(run_state_dir, "CAD-2")
-        # The residual `_StateDirectories` documents, asserted so it stays bounded: an id
-        # whose KNOWN marker still reads answers that marker rather than being swept into
-        # a project-wide refusal.
+        # An id whose KNOWN marker still reads: refused too, now — and pinned through BOTH
+        # entry points, because one filesystem must not answer two ways.
         marked = probe_ticket_state(run_state_dir, "CAD-1")
+        marked_resolved = run_state_resolver(source)("CAD-1")
     finally:
         run_state_dir.chmod(0o755)
 
-    for state in (resolved, probed):
+    for state in (resolved, probed, marked, marked_resolved):
         assert state is RunState.unreadable
         assert state not in write_gate.MUTABLE_STATES
         # The concrete loss: `absent` would have permitted the DELETE.
         assert state not in write_gate.DELETABLE_STATES
-    assert marked is RunState.todo
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
+def test_an_undiscoverable_run_state_dir_is_reported_once_and_names_no_state(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The refusal above has to leave ONE trace per resolver, the discipline every
+    # settled-once answer in this module obeys, and it has to say the right thing. This is
+    # the one refusal in the family with NO subdirectory to name: the listing that would
+    # have produced a name is exactly what failed, so the message must point at the
+    # run-state directory itself and must not borrow the sibling's `holds state 'x'` shape,
+    # which would send an operator to chmod a path this console is guessing at. It says
+    # "could not be enumerated" for the same reason — that is literally what happened here,
+    # while the sibling's directory enumerated fine and only refused to be looked IN.
+    # Asserted on ONE resolver reused across ids, the only shape that can observe the
+    # `reported_undiscoverable` latch at all, and the latch matters MORE since amendment 2
+    # because every id in a projection now reaches this leg rather than only the unmarked
+    # tail.
+    run_state_dir = tmp_path / "run-state"
+    _place_marker(run_state_dir, "todo", "CAD-1", as_dir=False)
+    source = RunStateSource(kind="directory", path=run_state_dir)
+    run_state_dir.chmod(0o111)
+    try:
+        with caplog.at_level("WARNING", logger=run_state_module._LOGGER.name):
+            resolve = run_state_resolver(source)
+            ids = ("CAD-1", *(f"CAD-{n}" for n in range(90, 96)))
+            refused = [resolve(ticket_id) for ticket_id in ids]
+            probed = probe_ticket_state(run_state_dir, "CAD-99")
+    finally:
+        run_state_dir.chmod(0o755)
+
+    assert all(state is RunState.unreadable for state in refused)
+    assert probed is RunState.unreadable
+    enumeration = [r for r in caplog.records if "could not be enumerated" in r.getMessage()]
+    # Seven refused ids through the resolver, one through the single-ticket prober: the
+    # resolver's latch collapses its seven to one, and the prober — which has no resolver
+    # to latch on — accounts for the other.
+    assert len(enumeration) == 2
+    # No invented directory name, in either form the module uses elsewhere.
+    assert not any("holds state" in r.getMessage() for r in enumeration)
+    assert not any("could not look in" in r.getMessage() for r in enumeration)
+    # And the construction-time enumeration warning must not ALSO fire: it promises that
+    # only tickets with no readable marker are refused, which stopped being true here.
+    assert not [r for r in caplog.records if "with no readable marker" in r.getMessage()]
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
@@ -921,10 +981,27 @@ def test_a_looping_unrecognised_entry_is_not_read_as_no_unknown_states(tmp_path:
     # `_ABSENT_ERRNOS`: the entry EXISTS and could not be RESOLVED).
     #
     # Skipping such an entry instead of degrading is the fail-open this asserts against:
-    # `undiscoverable` would stay False, the vacuity scan would find `todo/CAD-1`, answer
-    # "this source lists somebody", and hand CAD-99 the `absent` that is in
+    # nothing would record `in_review` at all, the vacuity scan would find `todo/CAD-1`,
+    # answer "this source lists somebody", and hand CAD-99 the `absent` that is in
     # DELETABLE_STATES — the console deleting a ticket the factory may hold under the
     # very state directory it could not look at.
+    #
+    # THIS TEST USED TO ASSERT THE OPPOSITE FOR CAD-1, and the reasoning is kept because
+    # it records why the wrong answer was convincing: CAD-1's `todo/` marker reads
+    # perfectly, so answering it was the "a source that can still answer for the ids it
+    # names keeps answering" residual this module documented everywhere, and refusing it
+    # looked like the misplaced-folder lockout the per-id rule exists to prevent.
+    #
+    # T92 amendment 2 overturns it, and names the mechanism precisely: the entry was
+    # DROPPED rather than recorded, which is the sharpest MONOTONICITY failure there is —
+    # discarding what could not be read leaves a collection that looks smaller and
+    # cleaner, and downstream reads that as MORE information rather than less. So
+    # `_unrecognised_state_naming` was never given `in_review` to probe, and a stale
+    # `todo/CAD-1` answered MUTABLE beside an entry that may be an `in_review/` naming
+    # CAD-1 at a rank this console cannot compare. Recorded instead, the entry needs no
+    # new machinery: the per-id stat raises ELOOP again, lands in `unprobeable_name`, and
+    # refuses every id in the source exactly as a discovered-but-unsearchable directory
+    # does — the case the test above pins.
     run_state_dir = tmp_path / "run-state"
     _place_marker(run_state_dir, "todo", "CAD-1", as_dir=False)
     try:
@@ -933,11 +1010,10 @@ def test_a_looping_unrecognised_entry_is_not_read_as_no_unknown_states(tmp_path:
         pytest.skip("platform does not support symlinks")
     source = RunStateSource(kind="directory", path=run_state_dir)
 
-    # The residual this module documents everywhere: an id whose KNOWN marker still reads
-    # answers that marker rather than being swept into a project-wide refusal.
-    assert probe_ticket_state(run_state_dir, "CAD-1") is RunState.todo
-    assert run_state_resolver(source)("CAD-1") is RunState.todo
     for state in (
+        # The id with a perfectly readable known marker: refused too, now.
+        probe_ticket_state(run_state_dir, "CAD-1"),
+        run_state_resolver(source)("CAD-1"),
         probe_ticket_state(run_state_dir, "CAD-99"),
         run_state_resolver(source)("CAD-99"),
     ):
