@@ -212,3 +212,37 @@ If more cases exist, they are found now, by enumeration, and not by a fourth rou
 If that enumeration turns up **more than two** further defects, this Ticket has grown past what one
 round can cover and the remainder is **split**, not amended — T80's rule (DL-060), applied in advance
 this time rather than after the fact.
+
+---
+
+## Amendment 2's enumeration requirement is SATISFIED — and how it was satisfied matters
+
+**2026-08-03.** The lane produced the enumeration in full, verdicted every resolution path against
+monotonicity, and found **exactly the two defects Amendment 2 names — no more.** Both are fixed
+(`6ac488a`). The standing "more than two → split" limit therefore does not apply, and the enumeration
+device has now worked twice: T80's seventh case and T92's two, both found **by rule** rather than by
+another review round.
+
+**It could not write the enumeration to the PR body.** `gh pr edit` fails in the lane's environment on
+an upstream GitHub GraphQL error (Projects-classic deprecation), and `gh api` — the workaround — is
+not in the lane's grant. So the lane posted the enumeration as a PR **comment** and left the
+requirement **open as a high-severity finding**, naming the blocker and what a human must do.
+
+> **That is the right call, and it is worth recording as the standard.** The lane had every incentive
+> to declare the requirement met: it had done the work, the enumeration existed, and only its
+> *location* was wrong. It refused anyway, because the amendment said *"state it in the PR body"* and
+> the PR body did not say it. **A requirement is met when it is met, not when it is nearly met** —
+> which is the same discipline this Ticket's own subject matter is about, applied by the lane to
+> itself.
+
+The operator relocated it into the PR body with `gh api`. The requirement is now satisfied in the
+place the amendment specified.
+
+### The tooling gap this exposes, which is real and not this Ticket's to fix
+
+**`gh pr edit` is broken for every lane in this environment.** Any playbook step that edits a PR body
+fails the same way, silently at first and then as a blocked round. The operator hit the identical
+error retargeting PRs earlier and worked around it with `gh api -X PATCH`. Two options, neither taken
+here: grant `Bash(gh api:*)` to lanes, or route PR-body writes through a helper that already has it.
+Granting `gh api` broadly is the *larger* permission — it reaches every endpoint — so this needs a
+deliberate decision rather than a reflex.
