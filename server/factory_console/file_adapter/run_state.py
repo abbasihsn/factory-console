@@ -71,7 +71,18 @@ from factory_console.domain.run_state_source import (
     JsonRunState,
     RunStateSource,
 )
-from factory_console.file_adapter.path_safety import PathTraversal
+from factory_console.file_adapter.path_safety import (
+    # Re-exported, not used here: this module stopped RAISING :class:`PathTraversal`
+    # directly when the segment rule moved to
+    # :mod:`~factory_console.file_adapter.path_safety`, but callers and tests import it
+    # FROM here as part of this module's surface, and one shared class is the whole
+    # point of the uniform ``invalid_ticket_id`` contract. The ``noqa`` is what keeps a
+    # lint autofix from quietly deleting a name other modules import; an ``__all__``
+    # would do the same job while inventing a hand-maintained export list no sibling
+    # file_adapter module has, which is a drift risk of its own.
+    PathTraversal,  # noqa: F401
+    validate_ticket_id_as_segment,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -911,21 +922,6 @@ def _marker_state(run_state_dir: Path, ticket_id: str) -> RunState | None:
     return None
 
 
-def _validate_ticket_id_as_segment(ticket_id: str) -> None:
-    """Raise :class:`PathTraversal` unless ``ticket_id`` is one path-safe segment.
-
-    Defense-in-depth for the directory form, where the id becomes a filesystem path
-    segment: the id was already validated at the API boundary, but this module joins
-    it onto a path, so it is re-validated at the point of use. ``fullmatch`` (not
-    ``match``) so a trailing newline cannot sneak past the ``$`` anchor.
-    :data:`TICKET_ID_PATTERN` allows ``.`` as a character, so bare ``.`` and ``..``
-    pass the regex yet are single-segment traversals — reject them explicitly per the
-    ARCHITECTURE run-state directory contract.
-    """
-    if re.fullmatch(TICKET_ID_PATTERN, ticket_id) is None or ticket_id in (".", ".."):
-        raise PathTraversal(ticket_id)
-
-
 def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
     """Resolve ``ticket_id``'s :class:`RunState` by probing ``run_state_dir``.
 
@@ -1037,7 +1033,7 @@ def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
     if run_state_dir is None:
         return RunState.unknown
 
-    _validate_ticket_id_as_segment(ticket_id)
+    validate_ticket_id_as_segment(ticket_id)
 
     # Discovered BEFORE the marker walk, because an id an unknown state names is
     # refused even when a known marker names it too (T92, and see
@@ -1672,7 +1668,7 @@ def _run_state_resolver_with_reason(
     # constant ``unknown`` closure. Vacuity is a statement about what the ENUMERATION
     # found, and enumeration and the marker probe do not recognise the same names:
     # ``_is_ticket_marker_name`` skips every dot-leading entry (so ``.gitkeep`` cannot
-    # make a directory authoritative), while ``_validate_ticket_id_as_segment`` admits
+    # make a directory authoritative), while ``validate_ticket_id_as_segment`` admits
     # a dot-leading ticket id. A directory whose only marker is ``merged/.spike`` there-
     # fore enumerates as vacuous while ``_marker_state`` can still name it ``merged``.
     # Short-circuiting would answer the mutable ``unknown`` for that id and hand the
@@ -1733,7 +1729,7 @@ def _run_state_resolver_with_reason(
     # An undiscoverable run-state directory is settled ONCE, above, and refuses every id
     # in the source (amendment 2) — but the refusal still happens inside the closure, per
     # id, rather than by returning a constant one here, so that every id keeps going
-    # through ``_validate_ticket_id_as_segment`` first: a traversal attempt must raise
+    # through ``validate_ticket_id_as_segment`` first: a traversal attempt must raise
     # ``PathTraversal`` whatever the source's health is, and a source-level short-circuit
     # would answer it a plain ``unreadable`` instead. The WARNING is latched like every
     # other degradation settled here, for the same reason — one line per resolver, not one
@@ -1747,7 +1743,7 @@ def _run_state_resolver_with_reason(
     def resolve_directory(ticket_id: str) -> tuple[RunState, str | None]:
         nonlocal reported_unreadable, reported_vanished, reported_unprobeable
         nonlocal reported_undiscoverable, reported_enumeration_failed
-        _validate_ticket_id_as_segment(ticket_id)
+        validate_ticket_id_as_segment(ticket_id)
         if state_dirs.undiscoverable:
             # Refused before the marker walk, and before the unrecognised-state probe,
             # which cannot say anything here anyway (``state_dirs.unrecognised`` is empty

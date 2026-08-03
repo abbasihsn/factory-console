@@ -8,13 +8,20 @@ the quoted line are filled in: the session id (redacted at the source) and the
 three ``by_model`` sub-objects the quote shows as ``{...}``.
 
 Covers the parse of a real multi-model entry, forward compatibility
-(``extra="ignore"``), the three per-line skip reasons alongside good lines, the
-bounded read, the no-ledger vs empty-ledger distinction, and the read-only guard.
+(``extra="ignore"``), the three per-line skip reasons alongside good lines,
+non-finite money refused per line rather than poisoning the bill, the bounded
+read, the no-ledger vs empty-ledger distinction, the third answer
+:func:`find_ledger_path` gives when it could not look at all, and the read-only
+guard.
 """
 
+import errno
+import math
+import os
 from datetime import timedelta
 from pathlib import Path
 
+import pytest
 from _read_only_guard import (
     assert_module_carries_read_only_header,
     assert_module_is_read_only,
@@ -212,6 +219,42 @@ def test_invalid_entry_line_is_skipped_with_its_own_reason(tmp_path: Path) -> No
     assert skip.reason == "invalid_entry", "valid JSON that fails validation is not 'not_json'"
 
 
+def test_a_non_finite_cost_costs_its_own_line_and_not_the_whole_bill(tmp_path: Path) -> None:
+    # ``json.loads`` accepts the bare literals NaN/Infinity (Python's own
+    # json.dumps writes them for non-finite floats) and pydantic admits them into
+    # a float by default. Left alone, one such line validates and math.fsum then
+    # carries the NaN into the project total, every ticket row that entry touches,
+    # and the by-cost ordering — a poisoned figure presented as MEASURED, with an
+    # empty ``skipped`` list saying nothing was wrong. So the line is refused at
+    # parse time, where it becomes a visible skip like any other bad line.
+    for literal in ("NaN", "Infinity", "-Infinity"):
+        poisoned = REAL_ENTRY_LINE.replace('"cost_usd":5.740558350000003', f'"cost_usd":{literal}')
+        assert poisoned != REAL_ENTRY_LINE, "the fixture's cost field must have been substituted"
+        path = _write_ledger(tmp_path, f"{REAL_ENTRY_LINE}\n{poisoned}\n")
+
+        result = read_ledger(path)
+
+        assert len(result.entries) == 1, f"the good line still parses alongside {literal}"
+        assert math.isfinite(result.entries[0].cost_usd)
+        (skip,) = result.skipped
+        assert skip.line_no == 2
+        assert skip.reason == "invalid_entry", f"{literal} is a corrupt value, not a syntax error"
+
+
+def test_a_non_finite_by_model_cost_is_refused_the_same_way(tmp_path: Path) -> None:
+    # The per-model figures are summed into the by-model cut exactly as the
+    # entry's own cost is summed into the total, so they take the same guard.
+    poisoned = REAL_ENTRY_LINE.replace('"cost_usd":5.02143785', '"cost_usd":NaN')
+    assert poisoned != REAL_ENTRY_LINE, "the fixture's by_model cost must have been substituted"
+    path = _write_ledger(tmp_path, f"{poisoned}\n")
+
+    result = read_ledger(path)
+
+    assert result.entries == []
+    (skip,) = result.skipped
+    assert skip.reason == "invalid_entry"
+
+
 def test_truncated_final_line_without_newline_is_a_partial_line(tmp_path: Path) -> None:
     # The live-append case: the factory was mid-write when the console read.
     truncated = REAL_ENTRY_LINE[:120]
@@ -304,6 +347,55 @@ def test_find_ledger_path_ignores_a_directory_at_the_ledger_path(tmp_path: Path)
     (tmp_path / _LEDGER_RELATIVE).mkdir(parents=True)
 
     assert find_ledger_path(tmp_path) is None, "a directory is not a readable ledger"
+
+
+def test_a_file_where_a_parent_directory_belongs_is_absence_not_a_failure(tmp_path: Path) -> None:
+    # ENOTDIR: ``.factory/metrics`` is a regular file, so the ledger path cannot
+    # resolve a directory component. That is a definitive "not there" — it is in
+    # ``_ABSENT_ERRNOS`` — and must NOT reach the caller as the raise below.
+    metrics = tmp_path / ".factory" / "metrics"
+    metrics.parent.mkdir(parents=True)
+    metrics.write_text("not a directory", encoding="utf-8")
+
+    assert find_ledger_path(tmp_path) is None
+
+
+def test_a_probe_that_could_not_look_raises_rather_than_reporting_absence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # THE reason this function stat()s by hand instead of calling Path.is_file().
+    # An unsearchable .factory/ is "I could not look", and ``None`` here is what a
+    # caller renders as "$0.00, no ledger" — so collapsing the two would be a false
+    # statement about real money. Path.is_file() cannot carry the distinction
+    # across the supported interpreter range (it re-raises EACCES through 3.12 and
+    # swallows every OSError from 3.13), which is exactly why this is asserted at
+    # the reader, not only through the endpoint that catches it.
+    ledger = _write_ledger(tmp_path, REAL_ENTRY_LINE + "\n")
+    real_stat = Path.stat
+
+    def deny(self: Path, *args: object, **kwargs: object) -> os.stat_result:
+        if self == ledger:
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", deny)
+
+    with pytest.raises(PermissionError):
+        find_ledger_path(tmp_path)
+
+
+def test_a_path_the_os_cannot_even_encode_is_absence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Parity with Path.is_file(), which reads a non-encodable path as absent
+    # rather than as a failure to look. ValueError is not an OSError, so it needs
+    # its own arm; without one it would escape as an unmapped 500.
+    def unencodable(self: Path, *args: object, **kwargs: object) -> os.stat_result:
+        raise ValueError("embedded null byte")
+
+    monkeypatch.setattr(Path, "stat", unencodable)
+
+    assert find_ledger_path(tmp_path) is None
 
 
 def test_no_ledger_and_an_empty_ledger_are_distinguishable(tmp_path: Path) -> None:

@@ -88,3 +88,21 @@ export type DiffPreview = components['schemas']['DiffPreview'];
 
 /** A single file's planned or applied change as a unified diff, inside {@link DiffPreview}. */
 export type FileDiff = components['schemas']['FileDiff'];
+
+/**
+ * `GET /api/v1/spend` — totals, the three cuts, and how the ledger was read.
+ *
+ * `source.found` (NOT a zero total) is what says whether the project has a ledger
+ * at all, and `attribution` names the rule under which {@link TicketSpend} rows
+ * may sum to more than `totals.costUsd`.
+ */
+export type SpendResponse = components['schemas']['SpendResponse'];
+
+/** One ticket id's attributed spend, inside a {@link SpendResponse}'s `byTicket`. */
+export type TicketSpend = components['schemas']['TicketSpend'];
+
+/** One model id's project-wide share of the bill, inside `byModel`. */
+export type ModelSpend = components['schemas']['ModelSpend'];
+
+/** One agent level's share of the bill, inside `byLevel`. */
+export type LevelSpend = components['schemas']['LevelSpend'];
