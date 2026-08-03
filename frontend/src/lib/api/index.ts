@@ -29,6 +29,9 @@ export {
 // `getSpend` lives in its own module rather than in `client.ts`; it is re-exported
 // here so every caller still reaches the client through this one barrel.
 export { getSpend } from './spend';
+// `getRuns` likewise lives in its own module, re-exported here so the barrel stays
+// the one way in.
+export { getRuns } from './runs';
 export { ApiError } from './errors';
 export type { ApiErrorInit } from './errors';
 export type {
@@ -56,5 +59,9 @@ export type {
 	SpendResponse,
 	TicketSpend,
 	ModelSpend,
-	LevelSpend
+	LevelSpend,
+	RunListResponse,
+	RunRecord,
+	ArtifactRead,
+	ArtifactSkipReason
 } from './models';
