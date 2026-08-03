@@ -33,10 +33,14 @@ served last, unchanged from the walking skeleton.
 :func:`create_dev_app` is the zero-arg factory ``scripts/dev.sh``'s
 ``uvicorn --factory`` invocation targets; it discovers the project root and
 instantiates the filesystem-backed ``RealFileAdapter``, the watchdog-backed
-``RealFileWatcher``, the ``RealFileWriter``, and the ``RealRunArtifactReader``
-lazily, so importing this module never imports ``real.py``, ``watcher_real.py``, or
-``real_writer.py`` (and never pulls in ``watchdog``) — their only runtime users are
-this dev shortcut and T25's production CLI.
+``RealFileWatcher``, and the ``RealFileWriter`` lazily, so importing this module
+never imports ``real.py``, ``watcher_real.py``, or ``real_writer.py`` (and never
+pulls in ``watchdog``) — their only runtime users are this dev shortcut and T25's
+production CLI. It also instantiates the ``RealRunArtifactReader``, imported the
+same lazy way for SYMMETRY rather than for isolation: that concrete lives in
+``run_artifacts.py``, which this module already imports at module scope for the
+``RunArtifactReader`` port in :func:`create_app`'s signature, so — unlike the three
+above — deferring it keeps nothing new out of the import graph.
 """
 
 from __future__ import annotations

@@ -3,10 +3,11 @@
 Extends the T06 walking skeleton into the production launcher and is the ONLY
 place in the codebase that constructs the concrete
 :class:`~factory_console.file_adapter.real.RealFileAdapter`,
-:class:`~factory_console.file_adapter.watcher_real.RealFileWatcher`, and
-:class:`~factory_console.file_adapter.real_writer.RealFileWriter` for a
+:class:`~factory_console.file_adapter.watcher_real.RealFileWatcher`,
+:class:`~factory_console.file_adapter.real_writer.RealFileWriter`, and
+:class:`~factory_console.file_adapter.run_artifacts.RealRunArtifactReader` for a
 production boot (the dev loop's :func:`~factory_console.app.create_dev_app` is the
-other, sole runtime user of all three). The watcher is handed to ``create_app`` and
+other, sole runtime user of all four). The watcher is handed to ``create_app`` and
 started/stopped entirely by the app lifespan — this module never touches it
 directly. It wires, in a deliberate cheap-input-first order, the full CLI contract
 from ``ARCHITECTURE.md``:
@@ -153,10 +154,14 @@ def main(
     configured and the project root is
     discovered from ``path`` (an explicit path wins, else an upward walk from the
     cwd) — a missing project exits 1. The concrete
-    :class:`~factory_console.file_adapter.real.RealFileAdapter` and a
+    :class:`~factory_console.file_adapter.real.RealFileAdapter`, a
     :class:`~factory_console.file_adapter.watcher_real.RealFileWatcher` rooted at
-    that project are wired into :func:`~factory_console.app.create_app` (the app
-    lifespan starts/stops the watcher), and the manifest is force-parsed once so a
+    that project, a :class:`~factory_console.file_adapter.real_writer.RealFileWriter`
+    and a
+    :class:`~factory_console.file_adapter.run_artifacts.RealRunArtifactReader` are
+    wired into :func:`~factory_console.app.create_app` (the app lifespan
+    starts/stops the watcher; the writer and the artifact reader are stateless and
+    drive no lifespan), and the manifest is force-parsed once so a
     malformed ``tickets.json`` exits 3 before a port is bound. The port is then
     resolved via a probe socket (an in-use explicit ``--port`` exits 2), the exact
     contract line is printed to stdout, and Uvicorn serves the app.

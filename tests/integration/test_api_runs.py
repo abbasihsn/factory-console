@@ -34,6 +34,7 @@ from factory_console.app import create_app
 from factory_console.domain import Project, Ticket
 from factory_console.domain.runs import ArtifactRead
 from factory_console.file_adapter import FakeFileAdapter
+from factory_console.file_adapter.real import RealFileAdapter
 from factory_console.file_adapter.run_artifacts import (
     FakeRunArtifactReader,
     RealRunArtifactReader,
@@ -43,6 +44,10 @@ from factory_console.file_adapter.runs import RECEIPTS_RELATIVE_DIR, RESULTS_REL
 from factory_console.services.run_service import RunService
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "runs"
+
+# The checked-in fixture project, located as ``test_api_tickets.py`` does: a real
+# manifest of three tickets and no ``.factory/`` at all — a fresh clone, exactly.
+MINIMAL_PROJECT = Path(__file__).resolve().parents[1] / "fixtures" / "projects" / "minimal"
 
 # The house convention for fake-backed tests: a root that exists on no disk, so a
 # handler that read the filesystem instead of the injected port could not pass.
@@ -225,6 +230,40 @@ def test_a_project_with_no_artifacts_names_every_absent_source(tmp_path: Path) -
         # act on — so the path travels on the empty outcome too.
         assert record["result"]["path"].endswith(f"{record['ticketId']}.json")
         assert record["receipt"]["path"].endswith(f"{record['ticketId']}.json")
+
+
+def test_a_real_fixture_project_with_no_artifacts_is_200_over_the_real_adapter() -> None:
+    """The ticket's headline case, over BOTH real collaborators rather than a fake one.
+
+    Every other case in this file seeds a :class:`FakeFileAdapter`, whose
+    ``load_project`` ignores the root it is handed and returns its seeded project —
+    so ``ProjectNotFound`` (the only route to a 404 on this endpoint) is structurally
+    unreachable in them, and their "not a 404" assertions cannot fail for the reason
+    they name. This one runs the pairing the two production entry points actually
+    wire, :class:`RealFileAdapter` + :class:`RealRunArtifactReader`, over the
+    checked-in ``minimal`` fixture: a real manifest with three tickets and no
+    ``.factory/`` directory at all. That is the fresh clone the ticket is about, and
+    it must answer 200 with three fully-named absences.
+    """
+    app = create_app(
+        RealFileAdapter(),
+        version="0.0.0",
+        project_root=MINIMAL_PROJECT,
+        run_artifact_reader=RealRunArtifactReader(),
+    )
+    resp = TestClient(app).get("/api/v1/runs")
+
+    assert resp.status_code == 200, "a real project with no .factory/ is not a 404"
+    body = resp.json()
+    assert [record["ticketId"] for record in body["items"]] == ["TM-001", "TM-015", "TM-028"], (
+        "one record per MANIFEST ticket, in the real manifest's order"
+    )
+    assert body["total"] == 3
+    for record in body["items"]:
+        assert record["result"]["reason"] == "absent"
+        assert record["result"]["data"] is None
+        assert record["receipt"]["reason"] == "absent"
+        assert record["receipt"]["data"] is None
 
 
 def test_an_empty_manifest_is_the_only_way_to_an_empty_list() -> None:

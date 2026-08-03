@@ -10,7 +10,14 @@ failure is a named reason rather than a failed request) belongs to the service a
 tested there, so a decision taken here would be a second copy of a rule with one
 owner.
 
-There is therefore no error handling to do and no error branch to take. Both of a
+There is therefore no ARTIFACT-level error handling to do here. The two calls the
+handler does make can still fail, and both are left to propagate exactly as on the
+sibling endpoints: a :class:`~factory_console.file_adapter.discovery.ProjectNotFound`
+from ``load_project``, or a
+:class:`~factory_console.file_adapter.manifest.MalformedManifest` from the service's
+``list_tickets``, reaches the domain-error handler ``create_app`` registers
+(:func:`~factory_console.api.error_handlers.register_error_handlers`) and is rendered
+at the status it declares. What cannot fail the listing is an ARTIFACT. Both of a
 record's :class:`~factory_console.domain.runs.ArtifactRead` fields are TOTAL by the
 :class:`~factory_console.file_adapter.run_artifacts.RunArtifactReader` port's
 contract — a missing, unreadable, malformed, oversized or path-unsafe artifact
