@@ -151,3 +151,64 @@ an unnoticed fail-open is not.
    valuable part of a superseded test, because it records why the wrong answer was convincing.
 5. The empty-but-readable stray-directory case is unchanged, and a test asserts that converse
    explicitly — this amendment must not be read as licence to refuse whenever anything is unfamiliar.
+
+---
+
+## Amendment 2 — MONOTONICITY, and the enumeration that must precede any further round
+
+**Decided 2026-08-03, on round 3's two open highs (confidence 88 and 80).**
+
+| # | Finding |
+|---|---|
+| 1 | An unrecognised state-directory entry whose `stat` fails (ELOOP) is **dropped** from `state_dirs.unrecognised` instead of recorded, so `_unrecognised_state_naming` never probes it and a stale readable `todo/<id>` still resolves **mutable**. |
+| 2 | When the run-state directory itself **cannot be enumerated**, a known marker still resolves mutable ahead of the vacuity check. |
+
+Round 3's own words for the second one are the most useful sentence written about this codebase all
+week:
+
+> **"A less-informative filesystem state answers more permissively than a more-informative one."**
+
+### That is the invariant. Everything before it was an instance.
+
+T80 took four amendments and closed six cases. T92 has now taken two and found three more. Each was
+stated as a rule about a *situation* — an unreadable source, a looping directory, an unclassifiable
+status, an unsearchable directory. Situations are unbounded, so the list never closed.
+
+**State it as a property of the function instead:**
+
+> **MONOTONICITY. Resolution must be monotone in information: if input A reveals strictly less than
+> input B, A's answer must be **no more permissive** than B's. There is no filesystem state so
+> degraded that it grants access a better-understood state would refuse.**
+
+Both findings are corollaries, and so is every case T80 closed:
+
+- a source that cannot be read reveals less than one that can → must not be more permissive **(T80 A2)**
+- a looping directory reveals less than a readable one → must not fall through to a stale marker **(T80 A3)**
+- an unclassifiable status reveals less than a known one → must not resolve mutable **(T80 A4)**
+- an unsearchable directory reveals less than a searchable one → must refuse **(T92 A1)**
+- an entry that cannot be `stat`ed reveals less than one that can → **must not be dropped** (finding 1)
+- an unenumerable directory reveals less than an enumerable one → **must not be answered by a marker
+  found before the check** (finding 2)
+
+**Dropping an entry is the sharpest instance and deserves naming on its own:** discarding what you
+could not read makes the collection look *smaller and cleaner*, which reads downstream as **more
+information, not less** — the failure inverts the signal instead of merely losing it.
+
+### Required before any further review round
+
+The same step-4 device that worked on T80, where the enumeration found the seventh case **by rule**
+rather than by a seventh round. **State in the PR body the enumeration is complete**, listing every
+resolution path with its verdict under monotonicity. For each, answer one question:
+
+> *Is there a strictly-less-informative input that produces a strictly-more-permissive output?*
+
+Anywhere the answer is yes, or unknown, is a defect. **A path that cannot be decided is a defect**,
+because an undecidable answer to this question is itself less information.
+
+If more cases exist, they are found now, by enumeration, and not by a fourth round.
+
+### And the standing limit
+
+If that enumeration turns up **more than two** further defects, this Ticket has grown past what one
+round can cover and the remainder is **split**, not amended — T80's rule (DL-060), applied in advance
+this time rather than after the fact.
