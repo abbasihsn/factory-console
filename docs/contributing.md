@@ -44,6 +44,17 @@ The pre-commit hook — configured in
 eslint + prettier checks; CI re-runs them so a commit that skipped the local hook
 is still caught.
 
+**`make lint` delegating to `pre-commit run --all-files` is the point, not an
+implementation detail.** The `Makefile` used to enumerate its own set of checks, and
+that list drifted from `.pre-commit-config.yaml` in **both** directions: a hook
+configured for pre-commit but absent from the `Makefile` meant `make lint` passed
+locally while CI's pre-commit job failed, and a check the `Makefile` ran but
+pre-commit did not meant the reverse — a local failure CI would never have caught,
+which is just as bad, because a gate that disagrees with CI cannot be trusted in
+either direction. One gate now: `make lint` runs exactly what CI runs, so **hooks are
+added to `.pre-commit-config.yaml` only**, and there is no second list to keep in
+sync.
+
 ## Packaging
 
 ```
