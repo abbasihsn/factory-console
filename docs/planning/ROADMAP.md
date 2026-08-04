@@ -10,6 +10,7 @@ timeline
     MVP : Ticket list & detail : Dependency neighborhood : Local read-only viewer (127.0.0.1)
     v1 : Rendered dependency graph : Full-text search : File-watcher live updates : Roadmap/milestone view
     v2 : Safe editing of todo tickets : Manifest + roadmap co-writer : Loopback write token
+    v2.1 : Real run-state source & vocabulary : Corrected write gate : Runs view : Spend view : One lint gate
     v3.0 : Multi-project registry : Switchable project view : GitHub PR status & links
     v3.1 : serve mode + username/password : Tailscale remote access (phone + laptop)
     v3.2 : Live log streaming : All-projects dashboard
@@ -85,7 +86,7 @@ Still read-only, single-process, 127.0.0.1. Adds a dependency-graph view, a road
 
 ## v2 — safe editing of todo tickets
 
-`in_flight` / `ready` / `merged` tickets remain read-only (matching how `/factory-reconcile-plan` treats them). Build in dependency order — write core → backend → frontend → tests/devops:
+A ticket a factory lane owns remains read-only (matching how `/factory-reconcile-plan` treats them). Build in dependency order — write core → backend → frontend → tests/devops:
 
 - [ ] **T55** — Write-path domain models (TicketDraft, TicketEdit, DiffPreview, WriteResult) → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T55-write-domain-models.md`
 - [ ] **T56** — RunStateGate — todo-only mutability → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T56-run-state-gate.md`
@@ -110,6 +111,20 @@ Still read-only, single-process, 127.0.0.1. Adds a dependency-graph view, a road
 - [ ] **T75** — Editing e2e (part 2): delete-confirm + non-todo banner → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T75-editing-e2e-delete-guardrails.md`
 - [ ] **T76** — Signed releases + sigstore attestations → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T76-signed-releases-sigstore.md`
 - [ ] **T77** — v2 docs + README refresh → `/ai-gh-orchestrate-plan docs/planning/tickets/v2/T77-v2-docs-refresh.md`
+
+## v2.1 — read what the factory actually writes
+
+A correction milestone. The console was built against a run-state contract that described a directory the factory does not write, and against a vocabulary the factory does not use; v2.1 reads the real source (`.factory/run-state.json`), models the factory's nine real states, splits the write gate so "no run-state source" and "absent from a source that exists" stop being the same answer, and surfaces the factory's other read-only artifacts as run and spend views. Build in dependency order — read layer → gate → API → SPA → devops/docs:
+
+- [ ] **T78** — Read the run-state the factory actually writes, and model the states it actually has → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.1/T78-run-state-json-source.md`
+- [ ] **T79** — Ledger reader — typed spend records from `.factory/metrics/ledger.jsonl` → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.1/T79-ledger-reader.md`
+- [ ] **T80** — Write gate: split 'no run-state source' from 'absent from a source that exists' → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.1/T80-write-gate-absent-vs-unsourced.md`
+- [ ] **T81** — GET /api/v1/runs — what the factory did, per ticket → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.1/T81-runs-endpoint.md`
+- [ ] **T82** — GET /api/v1/spend — what the factory cost → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.1/T82-spend-endpoint.md`
+- [ ] **T83** — /runs — the run view → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.1/T83-runs-view.md`
+- [ ] **T84** — /spend — the cost view → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.1/T84-spend-view.md`
+- [ ] **T85** — One lint gate — `make lint` must run what CI runs → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.1/T85-lint-gate-parity.md`
+- [ ] **T86** — v2.1 docs — run-state source, runs, spend, and the one lint gate → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.1/T86-v2.1-docs.md`
 
 ## v3 — Mission control: hosted multi-project console (epic-level)
 
