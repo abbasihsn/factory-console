@@ -24,6 +24,16 @@ running, which shapes the whole reader:
   label — a bad line in the middle gets the same treatment under its own reason.
 - The read is bounded: a file over :data:`MAX_LEDGER_BYTES` is not read, and the
   cap is reported as a ``file_too_large`` skip rather than short-read in silence.
+- The file is OPENED ONCE and every gate — node type, size, byte bound — is applied
+  to the OPENED DESCRIPTOR, exactly as :func:`~factory_console.file_adapter.runs.
+  _read_json_artifact` does and for the same threat model: ``.factory/`` is written
+  by a process the console does not control, so a ``stat`` and a later ``open`` of
+  the same NAME are two independent lookups with a swap in between. Deciding from
+  the name meant a FIFO substituted after the probe stat'd as ``st_size == 0``,
+  sailed past the cap, and blocked the read FOREVER — and because ``get_spend`` is
+  ``async`` and does this I/O on the event loop, that hung every route in the app,
+  not just ``/spend``. ``O_NONBLOCK`` makes the open total, ``os.fstat`` +
+  ``S_ISREG`` refuse the non-regular node, and the bound is applied at the read.
 
 The console MUST NOT write, create, or delete anything here — a guard test
 asserts this module contains no filesystem-mutating call.
@@ -31,9 +41,9 @@ asserts this module contains no filesystem-mutating call.
 
 from __future__ import annotations
 
-import errno
 import json
 import logging
+import os
 import re
 import stat
 from pathlib import Path
@@ -41,6 +51,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from factory_console.domain.ledger import LedgerEntry, LedgerRead, SkippedLine, SkipReason
+from factory_console.file_adapter.path_safety import ABSENT_ERRNOS, resolve_or_none
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -80,10 +91,12 @@ _REDACTIONS: tuple[re.Pattern[str], ...] = (
 _REDACTED = '"session_id":"<redacted>"'
 
 # The errnos that mean the node is definitively NOT THERE, as opposed to "I could
-# not look". Kept identical to ``run_state.py``'s set of the same name, since both
-# encode the same claim about the same syscall. ``ELOOP`` is deliberately absent: a
-# symlink loop is a path that cannot be resolved, not a path known to be missing.
-_ABSENT_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR, errno.EBADF})
+# not look" — IMPORTED, not restated. This module and ``run_state.py`` used to hold
+# byte-identical copies under a comment promising to keep them in step by hand, which
+# is precisely the drift ``path_safety`` exists to prevent: a future tightening applied
+# to one copy and not the other leaves the write gate and this endpoint disagreeing
+# about the same syscall on the same tree. See there for why ``ELOOP`` is excluded.
+_ABSENT_ERRNOS = ABSENT_ERRNOS
 
 
 def find_ledger_path(project_root: Path) -> Path | None:
@@ -153,32 +166,116 @@ def read_ledger(path: Path) -> LedgerRead:
     COUNTED in ``skipped_omitted`` rather than dropped, so the number of
     unreadable lines stays exact even when their excerpts do not.
     """
+    # Resolved for the OPEN only; ``path`` stays the reported one, because
+    # ``source.path`` is a contract with the caller about WHERE the console looked,
+    # not about where the filesystem sent it. Resolving first is also what keeps a
+    # legitimately symlinked ledger (a shared artefacts mount) readable while
+    # ``O_NOFOLLOW`` below still refuses a symlink swapped in AFTER this line — the
+    # same order :func:`~factory_console.file_adapter.runs._read_json_artifact`
+    # uses. A path that will not resolve is opened by its original name and left to
+    # fail there, rather than being called absent here.
+    target = resolve_or_none(path) or path
+
     try:
-        size = path.stat().st_size
+        # ``O_NONBLOCK`` is the load-bearing one: on a FIFO the open returns instead
+        # of blocking forever, so the ``S_ISREG`` gate below gets to run and reject
+        # it. ``O_NOFOLLOW`` refuses a symlink swapped in as the final component
+        # after the resolve above. Both are absent on some platforms; ``getattr``
+        # degrades to 0 rather than raising AttributeError.
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        descriptor = os.open(target, flags)
     except OSError as error:
         # ``%r`` on the cause, per the rule spelled out in ``run_state.py``: an
         # OSError's text carries the offending filename, the log formatter is one
         # record per line, and an unescaped newline in it would forge a record.
-        _LOGGER.warning("ledger: %s could not be stat'd: %r", path, error)
-        return _whole_file_skip(path, "unreadable", "ledger file could not be stat'd")
-    if size > MAX_LEDGER_BYTES:
+        _LOGGER.warning("ledger: %r could not be opened: %r", path, error)
+        return _whole_file_skip(path, "unreadable", "ledger file could not be opened")
+    except ValueError:
+        # A path that cannot be encoded (an embedded NUL). ``os.open`` raises this
+        # rather than an OSError, so the clause above does not cover it, and this
+        # function's NEVER-raises contract is stated without exceptions.
+        _LOGGER.warning("ledger: a ledger path could not be encoded; it is not read")
+        return _whole_file_skip(path, "unreadable", "ledger file could not be opened")
+
+    try:
+        try:
+            info = os.fstat(descriptor)
+        except OSError as error:
+            _LOGGER.warning("ledger: %r could not be stat'd: %r", path, error)
+            return _whole_file_skip(path, "unreadable", "ledger file could not be stat'd")
+
+        if not stat.S_ISREG(info.st_mode):
+            # Asked of the OPENED file, so a later swap cannot invalidate the answer.
+            # A size bounds a regular file and nothing else — a FIFO and a character
+            # device both stat as ``st_size == 0`` and would sail past the cap below,
+            # and ``/dev/zero`` reached this way never sees EOF. This is also the ONLY
+            # thing that settles the DIRECTORY case: ``O_RDONLY`` does not fail on a
+            # directory (EISDIR is for ``O_WRONLY``/``O_RDWR``), so do not remove this
+            # as redundant with the open.
+            _LOGGER.warning("ledger: %r is not a regular file; it is not read", path)
+            return _whole_file_skip(
+                path,
+                "unreadable",
+                "ledger is not a regular file; not read",
+            )
+
+        size = info.st_size
+        if size > MAX_LEDGER_BYTES:
+            _LOGGER.warning(
+                "ledger: %r is %d bytes, over the %d-byte cap; not read",
+                path,
+                size,
+                MAX_LEDGER_BYTES,
+            )
+            return _whole_file_skip(
+                path,
+                "file_too_large",
+                f"ledger is {size} bytes, over the {MAX_LEDGER_BYTES}-byte cap; not read",
+            )
+
+        try:
+            with os.fdopen(descriptor, "rb", closefd=False) as handle:
+                # Bounded at the READ, not merely at the fstat above: the factory
+                # APPENDS to this file while the console is running, so that size is
+                # already stale. Reading ``MAX + 1`` makes the cap a property of this
+                # call and keeps the one byte that distinguishes "exactly at the cap"
+                # from "over it".
+                raw = handle.read(MAX_LEDGER_BYTES + 1)
+        except OSError as error:
+            # Note ``absent`` is not reachable here: the file is open, so it cannot
+            # vanish mid-read — unlinking drops the name, not the inode.
+            _LOGGER.warning("ledger: %r could not be read: %r", path, error)
+            return _whole_file_skip(path, "unreadable", "ledger file could not be read")
+    finally:
+        # ``closefd=False`` above so this one owner closes the descriptor on every
+        # path, including the early returns that never reach ``fdopen``. Guarded,
+        # because raising from a ``finally`` would REPLACE the LedgerRead already
+        # computed and break the NEVER-raises contract; a failed close cannot change
+        # the answer, only lose the descriptor.
+        try:
+            os.close(descriptor)
+        except OSError as error:
+            _LOGGER.warning("ledger: %r could not be closed: %r", path, error)
+
+    if len(raw) > MAX_LEDGER_BYTES:
+        # The file GREW past the cap between the fstat and the read. Reported, never
+        # parsed from the truncated prefix: a short read of a growing ledger is a
+        # smaller, wrong BILL, which is the one thing this module must never produce.
         _LOGGER.warning(
-            "ledger: %s is %d bytes, over the %d-byte cap; not read",
+            "ledger: %r grew past the %d-byte cap while being read; not read",
             path,
-            size,
             MAX_LEDGER_BYTES,
         )
         return _whole_file_skip(
             path,
             "file_too_large",
-            f"ledger is {size} bytes, over the {MAX_LEDGER_BYTES}-byte cap; not read",
+            f"ledger grew past the {MAX_LEDGER_BYTES}-byte cap while being read; not read",
         )
-
-    try:
-        raw = path.read_bytes()
-    except OSError as error:
-        _LOGGER.warning("ledger: %s could not be read: %r", path, error)
-        return _whole_file_skip(path, "unreadable", "ledger file could not be read")
     # Decode with replacement rather than strictly: a byte-level corruption in one
     # line must cost that line (it will not be JSON) instead of the whole file,
     # which is the same bargain every other failure mode here strikes.

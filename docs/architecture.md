@@ -63,10 +63,10 @@ fleshed out here as each track lands.
   authoritative rules, and the record of the correction, live in
   [`planning/ARCHITECTURE.md`](planning/ARCHITECTURE.md).
 - **Other factory artefacts** (read-only) — the spend ledger
-  (`.factory/metrics/ledger.jsonl`), per-ticket lane results (`.factory/results/<id>.json`)
-  and receipts (`.factory/receipts/<id>.json`), and `.factory/last-stop.json`, behind
-  `GET /api/v1/spend` and `GET /api/v1/runs`. `.factory/` is gitignored, so every one of
-  them is optional and a missing one renders as **missing** — never as zero and never as
-  empty.
+  (`.factory/metrics/ledger.jsonl`) behind `GET /api/v1/spend`, and per-ticket lane results
+  (`.factory/results/<id>.json`) and receipts (`.factory/receipts/<id>.json`) behind
+  `GET /api/v1/runs`. `.factory/last-stop.json` has a reader but is not yet surfaced by any
+  endpoint. `.factory/` is gitignored, so every one of them is optional and a missing one
+  renders as **missing** — never as zero and never as empty.
 - **CLI contract** — the `factory-console [PATH] [flags]` surface, its exit codes,
   and its path-resolution rules. See [`usage.md`](usage.md) for the flags.

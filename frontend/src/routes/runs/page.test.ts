@@ -338,8 +338,8 @@ describe('runs page', () => {
 	// `data` is whatever another process wrote into a local JSON file, so every one of
 	// these is untrusted input that must not reach an `href`. Each is `pr_url`
 	// RECORDED-BUT-UNUSABLE, which is a different fact from `pr_url` absent — so the
-	// cell must not fall through to the "carries no PR url" wording that the
-	// names-no-pr_url case above owns.
+	// cell must not fall through to the "names no PR url under any key this console
+	// recognises" wording that the names-no-pr_url case above owns.
 	it.each<[string, unknown]>([
 		// Handed straight to the browser as a clickable link if the scheme is not checked.
 		['a javascript: scheme', 'javascript:alert(1)'],
@@ -410,7 +410,12 @@ describe('runs page', () => {
 		const cell = screen.getByTestId('outcome-T88');
 		expect(normalized(cell)).toBe('—');
 		expect(cell.getAttribute('data-degraded')).toBeNull();
+		// The claim is BOUNDED to the keys this console knows to look under. The key
+		// names are a guess (`tests/fixtures/runs/README.md` disclaims them), so an
+		// unqualified "names no status" would report the console's own vocabulary gap
+		// as a fact about the artifact — the absent-vs-unread collapse, one level down.
 		expect(cell.getAttribute('title')).toMatch(/names no status/i);
+		expect(cell.getAttribute('title')).toMatch(/this console recognises/i);
 	});
 
 	it('says the manifest is empty rather than claiming there is no run data', () => {

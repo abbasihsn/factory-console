@@ -18,9 +18,15 @@ from __future__ import annotations
 import json
 import math
 from decimal import Decimal, localcontext
+from pathlib import Path
 
-from factory_console.domain.ledger import LedgerEntry
-from factory_console.domain.spend import ATTRIBUTION_RULE, COST_DECIMAL_PLACES
+from factory_console.domain.ledger import LedgerEntry, LedgerRead, SkippedLine
+from factory_console.domain.spend import (
+    ATTRIBUTION_RULE,
+    COST_DECIMAL_PLACES,
+    WHOLE_FILE_REASONS,
+    was_read,
+)
 from factory_console.domain.spend_calc import aggregate
 
 # A real ledger line, verbatim — the same fixture ``tests/unit/test_ledger.py``
@@ -336,3 +342,38 @@ def test_output_size_is_bounded_by_ticket_and_model_counts_not_ledger_length() -
     assert len(report.byTicket) == 1
     assert len(report.byModel) == 3
     assert len(report.byLevel) == 1
+
+
+# --------------------------------------------------------------------------- #
+# "Was the source measured?" — decided in the domain, tested without HTTP
+# --------------------------------------------------------------------------- #
+
+
+def test_an_empty_ledger_was_read_and_a_whole_file_failure_was_not() -> None:
+    # THE pair `source.read` exists to separate, and both produce zero dollars: an
+    # empty ledger is a MEASURED zero, a ledger that could not be opened is an
+    # UNKNOWN bill. Asserted here rather than only through the endpoint, because
+    # this is a domain question decided in domain vocabulary.
+    empty = LedgerRead(path=Path("/p/.factory/metrics/ledger.jsonl"))
+
+    assert was_read(empty) is True
+
+    for reason in WHOLE_FILE_REASONS:
+        unread = LedgerRead(
+            path=Path("/p/.factory/metrics/ledger.jsonl"),
+            skipped=[SkippedLine(line_no=0, reason=reason, excerpt="")],
+        )
+        assert was_read(unread) is False, f"{reason} is a whole-file failure"
+
+
+def test_a_per_line_skip_still_counts_as_read() -> None:
+    # A partial read is still a read: some lines parsed, so the figures came from
+    # actually reading a file. Keyed on the REASON, not on `line_no == 0`, so a
+    # per-line reason landing at line 0 cannot turn a partial read into an unread
+    # one — which is the regression this asserts against.
+    partial = LedgerRead(
+        path=Path("/p/.factory/metrics/ledger.jsonl"),
+        skipped=[SkippedLine(line_no=0, reason="not_json", excerpt="nope")],
+    )
+
+    assert was_read(partial) is True

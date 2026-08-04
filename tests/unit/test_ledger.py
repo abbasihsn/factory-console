@@ -459,6 +459,36 @@ def test_over_cap_file_is_reported_not_silently_short_read(tmp_path: Path) -> No
     assert str(MAX_LEDGER_BYTES) in skip.excerpt
 
 
+def test_a_fifo_at_the_ledger_path_is_refused_rather_than_blocking_forever(
+    tmp_path: Path,
+) -> None:
+    # THE reason the reader opens once and interrogates the DESCRIPTOR. A FIFO
+    # stat's as ``st_size == 0``, so a size check made by NAME waves it past the
+    # cap, and the read that follows blocks FOREVER waiting for a writer that never
+    # comes. ``get_spend`` is async and does this I/O on the event loop, so that
+    # hung every route in the app, not just /spend — an unauthenticated permanent
+    # denial of service for anything that can write .factory/metrics/.
+    #
+    # O_NONBLOCK makes the open total and S_ISREG refuses the node, so the answer is
+    # a named `unreadable` skip: found, not read, bill UNKNOWN — never $0.00.
+    #
+    # If this test ever HANGS instead of failing, that is the regression.
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("platform has no FIFOs")
+    path = tmp_path / _LEDGER_RELATIVE
+    path.parent.mkdir(parents=True)
+    os.mkfifo(path)
+
+    result = read_ledger(path)
+
+    assert result.entries == []
+    (skip,) = result.skipped
+    assert skip.line_no == 0, "a whole-file failure belongs to no line"
+    assert skip.reason == "unreadable", (
+        "a non-regular node is unreadable — not an empty, measured ledger"
+    )
+
+
 def test_an_unreadable_file_is_reported_as_unreadable_not_as_bad_json(tmp_path: Path) -> None:
     # A directory stat's fine and then fails to read — the shape of any I/O
     # failure (permission denied, deleted mid-read). The reason must say the file

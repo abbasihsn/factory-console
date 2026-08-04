@@ -4,7 +4,7 @@ Design decision — a member's string VALUE mirrors the name the SOURCE that
 contributed it uses, not one canonical spelling:
 
 - The legacy run-state *directory* (``.factory/run-state/<state>/<id>``, see
-  ``ARCHITECTURE.md`` "Factory run-state directory (read-only)") names ``todo``,
+  ``ARCHITECTURE.md`` "Factory run-state source (read-only)") names ``todo``,
   ``in-flight`` (hyphenated), ``ready``, ``merged``.
 - The factory's ``.factory/run-state.json`` names the nine ``FAC_STATES``:
   ``todo in_progress ready in_part in_submilestone merged flagged failed

@@ -9,7 +9,7 @@ Run-state is authoritative for whether a ticket is mutable and drives the
    "parts_landed": object}``, with ``status`` drawn from the factory's nine
    ``FAC_STATES``.
 2. The legacy run-state DIRECTORY of per-state marker subdirectories (see
-   ``ARCHITECTURE.md`` "Factory run-state directory (read-only)").
+   ``ARCHITECTURE.md`` "Factory run-state source (read-only)").
 
 :func:`find_run_state_source` resolves WHICH form a project has;
 :func:`probe_ticket_state_from_source` dispatches on it. Every external name —
@@ -56,7 +56,6 @@ asserts this module contains no filesystem-mutating call.
 
 from __future__ import annotations
 
-import errno
 import json
 import logging
 import re
@@ -80,6 +79,7 @@ from factory_console.file_adapter.path_safety import (
     # lint autofix from quietly deleting a name other modules import; an ``__all__``
     # would do the same job while inventing a hand-maintained export list no sibling
     # file_adapter module has, which is a drift risk of its own.
+    ABSENT_ERRNOS,
     PathTraversal,  # noqa: F401
     validate_ticket_id_as_segment,
 )
@@ -89,7 +89,7 @@ _LOGGER = logging.getLogger(__name__)
 # On-disk run-state directory names in precedence order, highest wins. These are
 # the literal directory names under the run-state dir (``in-flight`` hyphenated);
 # each is mapped to its enum member BY VALUE via ``RunState(name)``, never by
-# string guessing. See ARCHITECTURE.md "Factory run-state directory (read-only)".
+# string guessing. See ARCHITECTURE.md "Factory run-state source (read-only)".
 #
 # This tuple is the console's WHOLE vocabulary for the directory form, and it is not
 # the factory's: a state subdirectory whose name is not here is a state this console
@@ -168,7 +168,7 @@ FACTORY_STATUS_ALIASES: dict[str, RunState] = {
 # truth for WHERE the run-state dir can live: :func:`find_run_state_dir` probes
 # these under a project root, and the T40 ``RealFileWatcher`` derives its
 # run-state scope prefixes from the same tuple so the prober and the watcher
-# cannot drift. See ARCHITECTURE.md "Factory run-state directory (read-only)".
+# cannot drift. See ARCHITECTURE.md "Factory run-state source (read-only)".
 RUN_STATE_RELATIVE_LOCATIONS: tuple[Path, ...] = tuple(
     relative for kind, relative in RUN_STATE_SOURCE_LOCATIONS if kind == "directory"
 )
@@ -191,22 +191,13 @@ RUN_STATE_JSON_RELATIVE_LOCATIONS: tuple[Path, ...] = tuple(
 )
 
 
-# The errno set that means "this node definitively is not there". DELIBERATELY NARROWER
-# than CPython's ``pathlib._ignore_error``, which also swallows ``ELOOP``: a symlink loop
-# — or a chain past ``MAXSYMLINKS`` — means the entry EXISTS and could not be RESOLVED,
-# which is "I could not look", not "there is nothing to find". Nothing is lost by
-# excluding it, because a DANGLING symlink already answers ``ENOENT`` on its own.
-# Swallowing ``ELOOP`` reopened T80 amendment 3's fail-open through the errno table
-# rather than through the walk: a looping ``merged/<id>`` answered ``False`` instead of
-# raising, so :func:`_marker_state` stepped over it and returned a stale ``todo`` marker
-# — the MUTABLE state — for a ticket the factory had merged; and a looping run-state
-# directory answered ``False`` from :func:`_is_directory`, which :func:`run_state_resolver`
-# reads as "not a directory" and turns into the mutable ``unknown`` for EVERY ticket in
-# the project. ``EBADF`` stays: a path-based ``stat()`` cannot raise it, so it is inert
-# either way, and dropping it would only invite someone to re-add ``ELOOP`` alongside it.
-# Everything else (``EACCES`` above all) means "it may well be there and I could not
-# look", which is the distinction T80's second amendment turns on.
-_ABSENT_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR, errno.EBADF})
+# The errno set that means "this node definitively is not there", and the rationale for
+# how narrow it is, now live in :mod:`~factory_console.file_adapter.path_safety` beside
+# the containment rules — the ledger reader needs the SAME set, and the two copies this
+# module and ``ledger.py`` used to hold were kept in step only by a comment asking future
+# editors to. Bound to the module-private name so every reference below, and the
+# ``:data:`_ABSENT_ERRNOS``` cross-references in this file's docstrings, still resolve.
+_ABSENT_ERRNOS = ABSENT_ERRNOS
 
 
 def _node_exists(path: Path) -> bool:

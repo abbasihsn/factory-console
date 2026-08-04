@@ -322,21 +322,27 @@ def test_an_unprobeable_ledger_is_found_but_unread_rather_than_missing(
 def test_an_unreadable_ledger_file_is_found_but_reports_that_it_was_not_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The other member of _WHOLE_FILE_REASONS, and the sibling of the over-cap case
+    # The other member of `domain.spend.WHOLE_FILE_REASONS`, and the sibling of the over-cap case
     # above: the file is probeable but cannot be OPENED. Asserting only the over-cap
     # member would let a future edit narrow that frozenset and still ship green.
     # Monkeypatched rather than chmod'd for the reason given in the test above.
+    #
+    # Injected at ``os.open`` because that is the syscall the reader actually makes:
+    # it opens ONCE and interrogates the descriptor, so there is no ``Path.stat`` or
+    # ``Path.read_bytes`` in the read path to deny. Patching a call the reader no
+    # longer makes would leave this test green against a ledger that read fine.
     ledger = _write_ledger(tmp_path, REAL_ENTRY_LINE + "\n")
     client = TestClient(_make_app(tmp_path))
 
-    real_read_bytes = Path.read_bytes
+    real_open = os.open
+    denied = ledger.resolve()
 
-    def deny_the_ledger(self: Path, *args: object, **kwargs: object) -> bytes:
-        if self == ledger:
-            raise PermissionError(13, "Permission denied", str(self))
-        return real_read_bytes(self, *args, **kwargs)
+    def deny_the_ledger(path: object, *args: object, **kwargs: object) -> int:
+        if isinstance(path, (str, Path)) and Path(path) == denied:
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, *args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(Path, "read_bytes", deny_the_ledger)
+    monkeypatch.setattr(os, "open", deny_the_ledger)
 
     resp = client.get("/api/v1/spend")
     assert resp.status_code == 200

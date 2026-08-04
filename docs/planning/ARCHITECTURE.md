@@ -283,7 +283,13 @@ none of them, and it models no field inside them beyond what it has verified.
 | Spend ledger | `<root>/.factory/metrics/ledger.jsonl` | `GET /api/v1/spend` |
 | Lane results | `<root>/.factory/results/<ticketId>.json` | `GET /api/v1/runs` |
 | Lane receipts | `<root>/.factory/receipts/<ticketId>.json` | `GET /api/v1/runs` |
-| Last stop | `<root>/.factory/last-stop.json` | `GET /api/v1/runs` |
+| Last stop | `<root>/.factory/last-stop.json` | *not yet surfaced by any endpoint* |
+
+The file-adapter reader for last stop exists (`read_last_stop`), but nothing composes it into a
+response yet: it carries no ticket id — it is one artefact per PROJECT saying why the last run
+stopped — so it does not belong on the per-ticket `RunRecord`, and `GET /api/v1/runs` therefore
+carries only `result` and `receipt` (see "REST v1" above, which is authoritative for what is on the
+wire). Whichever ticket surfaces last stop owns where it belongs.
 
 **The rule that governs all of them: `.factory/` is gitignored, so every source is OPTIONAL, and a
 missing one renders as MISSING — never as zero and never as empty.** Having no artefacts is the

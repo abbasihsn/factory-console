@@ -65,7 +65,7 @@ from factory_console.file_adapter.run_state import probe_ticket_state_with_reaso
 # that DID say something about this ticket that could not be interpreted, which is
 # ``unreadable`` and refuses (see the module docstring). Every other state is
 # read-only. Single source of truth for the write-authorization decision — see
-# ARCHITECTURE.md "Factory run-state directory (read-only)".
+# ARCHITECTURE.md "Factory run-state source (read-only)".
 MUTABLE_STATES = (RunState.todo, RunState.unknown)
 
 # The DELETE-path allowlist: everything editable, PLUS ``absent``. Deliberately a
