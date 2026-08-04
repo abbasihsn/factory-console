@@ -119,8 +119,11 @@ A correction milestone. The console was built against a run-state contract that 
 - [ ] **T78** — Read the run-state the factory actually writes, and model the states it actually has → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.1/T78-run-state-json-source.md`
 - [ ] **T79** — Ledger reader — typed spend records from `.factory/metrics/ledger.jsonl` → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.1/T79-ledger-reader.md`
 - [ ] **T80** — Write gate: split 'no run-state source' from 'absent from a source that exists' → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.1/T80-write-gate-absent-vs-unsourced.md`
-- [ ] **T81** — GET /api/v1/runs — what the factory did, per ticket → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.1/T81-runs-endpoint.md`
+- [ ] **T81** — GET /api/v1/runs — what the factory did, per ticket — **superseded** by T88+T89+T90 (four lane runs did not converge; work re-split rather than resumed) → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.1/T81-runs-endpoint.md`
 - [ ] **T82** — GET /api/v1/spend — what the factory cost → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.1/T82-spend-endpoint.md`
+- [ ] **T88** — Runs reader — typed per-ticket result/receipt reads (T81's split, part 1) → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.1/T88-runs-reader.md`
+- [ ] **T89** — RunRecord domain shape (T81's split, part 2) → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.1/T89-run-record-domain.md`
+- [ ] **T90** — GET /api/v1/runs endpoint (T81's split, part 3) → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.1/T90-runs-endpoint.md`
 - [ ] **T83** — /runs — the run view → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.1/T83-runs-view.md`
 - [ ] **T84** — /spend — the cost view → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.1/T84-spend-view.md`
 - [ ] **T85** — One lint gate — `make lint` must run what CI runs → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.1/T85-lint-gate-parity.md`
