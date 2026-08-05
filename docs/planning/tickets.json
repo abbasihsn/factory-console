@@ -1321,6 +1321,34 @@
       "path": "docs/planning/tickets/v2.1/T96-name-the-cause-class-wide.md",
       "status": "todo",
       "source": "T88 review round 3 of resumption, 2026-08-02"
+    },
+    {
+      "id": "T97",
+      "title": "One bounded artifact read, not three copies of it",
+      "track": "backend",
+      "milestone": "v2.2",
+      "depends_on": [
+        "T86"
+      ],
+      "provides": "ledger.read_ledger and runs._read_json_artifact each independently implement the identical open/fstat/S_ISREG/cap/bounded-read sequence, differing only in byte cap and log text, and both docstrings acknowledge mirroring each other. The same drift hazard path_safety.py was created to remove, one layer up and doing more work.",
+      "path": "docs/planning/tickets/v2.2/T97-one-bounded-artifact-read-not-three.md",
+      "status": "todo",
+      "source": "T86 deep review round 2, 2026-08-05",
+      "review_finding": "37a4d62a4014"
+    },
+    {
+      "id": "T98",
+      "title": "Every v1 handler is async and touches the filesystem",
+      "track": "backend",
+      "milestone": "v2.2",
+      "depends_on": [
+        "T86"
+      ],
+      "provides": "list_runs is async def, so its two synchronous os.open+read calls per manifest ticket run on the asyncio event loop with no pagination, stalling every other route including the SSE stream. A house-wide pattern that /runs makes acute by doing roughly twice the per-ticket I/O of its peers.",
+      "path": "docs/planning/tickets/v2.2/T98-blocking-io-on-the-event-loop.md",
+      "status": "todo",
+      "source": "T86 deep review round 2, 2026-08-05",
+      "review_finding": "e22915783d59"
     }
   ]
 }
