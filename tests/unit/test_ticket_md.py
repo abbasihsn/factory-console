@@ -168,8 +168,14 @@ def test_symlink_escaping_root_raises_path_traversal(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def _make_stub() -> Ticket:
-    """A manifest stub: empty body/html, ``raw`` holding the manifest fields."""
+def _make_stub(file_path: Path | None = None) -> Ticket:
+    """A manifest stub: empty body/html, ``raw`` holding the manifest fields.
+
+    ``file_path`` is where the manifest says this ticket's ``.md`` lives. It used
+    to be an ignored placeholder because ``enrich_ticket`` re-derived the location
+    from the id; it is now the authority, which is what lets a real repository put
+    tickets under a milestone directory with a slug in the filename.
+    """
     return Ticket(
         id="T7",
         title="Stub title",
@@ -179,7 +185,7 @@ def _make_stub() -> Ticket:
         dependsOn=["T6"],
         provides=["parser"],
         files=["server/factory_console/file_adapter/ticket_md.py"],
-        filePath=Path("unresolved-placeholder"),
+        filePath=file_path if file_path is not None else Path("unresolved-placeholder"),
         bodyMarkdown="",
         bodyHtml="",
         raw={"id": "T7", "title": "Stub title", "status": "todo"},
@@ -190,7 +196,7 @@ def test_enrich_ticket_merges_body_front_matter_and_keeps_manifest_fields(
     tmp_path: Path,
 ) -> None:
     project = _make_project(tmp_path)
-    stub = _make_stub()
+    stub = _make_stub(project.ticketsDir / "T7.md")
     _write_ticket(
         project,
         "T7",

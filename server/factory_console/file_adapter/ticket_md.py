@@ -85,10 +85,28 @@ def _safe_resolve(project: Project, ticket_id: str) -> Path:
     """
     if _TICKET_ID_RE.fullmatch(ticket_id) is None:
         raise PathTraversal.from_pattern_violation(ticket_id)
-    candidate = (project.ticketsDir / f"{ticket_id}.md").resolve(strict=False)
-    if not candidate.is_relative_to(project.rootPath.resolve()):
+    return _contained(project, ticket_id, project.ticketsDir / f"{ticket_id}.md")
+
+
+def _contained(project: Project, ticket_id: str, candidate: Path) -> Path:
+    """Resolve ``candidate`` and refuse it if it escapes the project root.
+
+    Split out of :func:`_safe_resolve` because the candidate no longer always
+    comes from the id. A manifest-declared ``path`` is repository data, not user
+    input, but it is still data — a ``path`` of ``../../../etc/passwd`` must be
+    refused exactly as a traversing id is, and it would be worse to trust it
+    merely because it arrived by a different route.
+    """
+    # A RELATIVE candidate is resolved against the PROJECT ROOT, not the process
+    # working directory. `Path.resolve` would use the cwd, which makes the answer
+    # depend on where the server happened to be started from — and a manifest's
+    # `path` is root-relative by definition, so the cwd was never the right base.
+    root = project.rootPath.resolve()
+    absolute = candidate if candidate.is_absolute() else root / candidate
+    resolved = absolute.resolve(strict=False)
+    if not resolved.is_relative_to(root):
         raise PathTraversal(ticket_id, reason=_ID_ESCAPES_ROOT)
-    return candidate
+    return resolved
 
 
 def _split_front_matter(text: str) -> tuple[str | None, str]:
@@ -112,7 +130,9 @@ def _split_front_matter(text: str) -> tuple[str | None, str]:
     return None, text
 
 
-def read_ticket_md(project: Project, ticket_id: str) -> tuple[dict[str, Any], str]:
+def read_ticket_md(
+    project: Project, ticket_id: str, path: Path | None = None
+) -> tuple[dict[str, Any], str]:
     """Read a ticket ``.md`` and return ``(front_matter, body_markdown)``.
 
     Front-matter is the parsed leading YAML mapping; ``body_markdown`` is the
@@ -127,9 +147,22 @@ def read_ticket_md(project: Project, ticket_id: str) -> tuple[dict[str, Any], st
     or non-UTF-8 bytes) — so every read failure surfaces as a mapped envelope
     rather than escaping as an unmapped 500.
     """
-    path = _safe_resolve(project, ticket_id)
+    # `path` is the file the MANIFEST declared for this ticket, passed by
+    # enrich_ticket. Without it this function re-derived <ticketsDir>/<id>.md and
+    # ignored what the manifest said, which is why every ticket-detail request
+    # 404'd against a real factory repository (tickets live under a milestone
+    # directory with a slug in the name). Absent, the flat form is still the
+    # fallback — a hand-written manifest need not declare paths. Either way the
+    # id is re-validated and the result is contained, so honouring the manifest
+    # widens where a ticket may live, never whether it may escape the root.
+    if path is None:
+        resolved = _safe_resolve(project, ticket_id)
+    else:
+        if _TICKET_ID_RE.fullmatch(ticket_id) is None:
+            raise PathTraversal.from_pattern_violation(ticket_id)
+        resolved = _contained(project, ticket_id, path)
     try:
-        text = path.read_text(encoding="utf-8")
+        text = resolved.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         raise TicketFileMissing(ticket_id) from exc
     except (OSError, UnicodeDecodeError) as exc:
@@ -162,12 +195,15 @@ def enrich_ticket(project: Project, stub: Ticket) -> Ticket:
     returned :class:`Ticket` is a distinct frozen instance produced via
     ``model_copy``; the stub's id already validated, so no re-validation runs.
     """
-    front_matter, body = read_ticket_md(project, stub.id)
+    front_matter, body = read_ticket_md(project, stub.id, stub.filePath)
     new_raw = {**stub.raw, "frontMatter": front_matter}
     return stub.model_copy(
         update={
             "bodyMarkdown": body,
-            "filePath": _safe_resolve(project, stub.id),
+            # The stub's filePath, contained — NOT a re-derivation. Recomputing it
+            # here is what made the enriched ticket disagree with the stub it came
+            # from about where its own file is.
+            "filePath": _contained(project, stub.id, stub.filePath),
             "raw": new_raw,
         }
     )
