@@ -43,7 +43,7 @@ from factory_console.domain import (
 from factory_console.domain.graph import TicketGraph
 from factory_console.domain.search import SearchHit
 from factory_console.errors import FactoryConsoleError
-from factory_console.file_adapter.discovery import find_project_root
+from factory_console.file_adapter.discovery import MANIFEST_RELPATH, find_project_root
 from factory_console.file_adapter.graph import build_graph
 from factory_console.file_adapter.manifest import iter_ticket_stubs
 from factory_console.file_adapter.markdown_render import render_markdown, render_ticket_html
@@ -65,8 +65,19 @@ from factory_console.file_adapter.ticket_md import (
 
 _LOGGER = logging.getLogger(__name__)
 
-_ROADMAP_RELPATHS = (Path("ROADMAP.md"), Path("docs") / "ROADMAP.md")
-"""Documented roadmap locations, probed in order: project root, then ``docs/``."""
+_ROADMAP_RELPATHS = (
+    # BESIDE THE MANIFEST FIRST, derived from discovery's own constant rather than
+    # spelled out, so the two cannot drift apart. This is where the App Factory
+    # actually puts it — `docs/planning/ROADMAP.md`, in the same directory as the
+    # `tickets.json` discovery already located — and it was the one place this
+    # probe did not look. The result was `roadmapPath: null` and a `/roadmap` page
+    # reading "This project has no roadmap" for a repository with a 22KB roadmap
+    # sitting next to the manifest that had just been parsed successfully.
+    MANIFEST_RELPATH.parent / "ROADMAP.md",
+    Path("ROADMAP.md"),
+    Path("docs") / "ROADMAP.md",
+)
+"""Roadmap locations, probed in order: beside the manifest, root, then ``docs/``."""
 
 
 class RoadmapUnreadable(FactoryConsoleError):

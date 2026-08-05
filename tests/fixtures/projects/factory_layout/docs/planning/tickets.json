@@ -1,0 +1,36 @@
+{
+  "project": "factory-layout-fixture",
+  "schemaVersion": 1,
+  "tickets": [
+    {
+      "id": "T01",
+      "title": "The base ticket everything depends on",
+      "track": "backend",
+      "milestone": "v1",
+      "depends_on": [],
+      "provides": "A foundation.",
+      "path": "docs/planning/tickets/v1/T01-the-base-ticket.md",
+      "status": "todo"
+    },
+    {
+      "id": "T02",
+      "title": "Depends on T01, in the same milestone",
+      "track": "backend",
+      "milestone": "v1",
+      "depends_on": ["T01"],
+      "provides": "A thing built on the foundation.",
+      "path": "docs/planning/tickets/v1/T02-depends-on-t01.md",
+      "status": "todo"
+    },
+    {
+      "id": "T03",
+      "title": "Depends on both, in a LATER milestone directory",
+      "track": "frontend",
+      "milestone": "v2",
+      "depends_on": ["T01", "T02"],
+      "provides": "The view.",
+      "path": "docs/planning/tickets/v2/T03-a-later-milestone.md",
+      "status": "todo"
+    }
+  ]
+}

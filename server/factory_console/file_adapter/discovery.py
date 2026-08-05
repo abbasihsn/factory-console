@@ -13,7 +13,13 @@ from pathlib import Path
 
 from factory_console.errors import FactoryConsoleError
 
-_MANIFEST_RELPATH = Path("docs/planning/tickets.json")
+MANIFEST_RELPATH = Path("docs/planning/tickets.json")
+"""Where a project's manifest lives, relative to its root.
+
+Public because it is no longer only discovery's business: ``real._ROADMAP_RELPATHS``
+derives the roadmap's primary location from this constant's parent, so the two
+cannot drift into disagreeing about where a project's planning directory is.
+"""
 
 
 class ProjectNotFound(FactoryConsoleError):
@@ -28,7 +34,7 @@ class ProjectNotFound(FactoryConsoleError):
         super().__init__(
             code="project_not_found",
             message=(
-                f"No App Factory project found for {starting_dir}: missing {_MANIFEST_RELPATH}."
+                f"No App Factory project found for {starting_dir}: missing {MANIFEST_RELPATH}."
             ),
             status=404,
         )
@@ -45,7 +51,7 @@ def find_project_root(start: Path) -> Path:
     """
     resolved = start.resolve(strict=False)
     for candidate in (resolved, *resolved.parents):
-        if (candidate / _MANIFEST_RELPATH).is_file():
+        if (candidate / MANIFEST_RELPATH).is_file():
             return candidate
     raise ProjectNotFound(resolved)
 
@@ -58,7 +64,7 @@ def discover_project(explicit: Path | None, cwd: Path) -> Path:
     ``None`` the discovery falls back to :func:`find_project_root` from ``cwd``.
     """
     if explicit is not None:
-        if (explicit / _MANIFEST_RELPATH).is_file():
+        if (explicit / MANIFEST_RELPATH).is_file():
             return explicit
         raise ProjectNotFound(explicit)
     return find_project_root(cwd)

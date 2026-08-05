@@ -137,7 +137,57 @@ def load_manifest(manifest_path: Path) -> tuple[str | None, list[dict[str, Any]]
     return schema_version_str, tickets
 
 
-def manifest_entry_to_ticket_stub(entry: dict[str, Any], tickets_dir: Path) -> Ticket:
+def _entry_depends_on(entry: dict[str, Any]) -> list[str]:
+    """Read an entry's dependency ids, accepting both spellings of the key.
+
+    THE FACTORY WRITES ``depends_on``; this reader only ever looked for
+    ``dependsOn``. Every real manifest therefore parsed with an EMPTY dependency
+    list and no error anywhere — the graph rendered every ticket as an unconnected
+    node, and dep-neighborhood reported ``depCount: 0`` for a 101-ticket DAG.
+    Measured on this repository: 101 nodes, 0 edges.
+
+    Nothing caught it because ``tests/fixtures/projects/*`` were authored with
+    ``dependsOn``, so the fixtures agreed with the reader and neither agreed with
+    the producer. This is the defect v2.1 was entirely about — *"built against a
+    contract that describes something the factory does not write"* — surviving in
+    a second reader because only run-state was ever checked against reality.
+
+    ``depends_on`` wins when both are present: it is what the producer writes, and
+    a manifest carrying both is likelier mid-migration than deliberately split.
+    """
+    for key in ("depends_on", "dependsOn"):
+        value = entry.get(key)
+        if value:
+            return list(value)
+    return []
+
+
+def ticket_file_path(entry: dict[str, Any], tickets_dir: Path, root: Path | None = None) -> Path:
+    """Where this ticket's ``.md`` lives.
+
+    THE MANIFEST ALREADY SAYS, and nothing read it. Real manifests carry a
+    root-relative ``path`` (``docs/planning/tickets/v2.1/T84-spend-view.md``)
+    because the factory files tickets under a milestone directory with a slug in
+    the filename. This module assumed a flat ``<ticketsDir>/<id>.md`` and computed
+    that instead, so every ticket-detail request 404'd — all 101 of them on this
+    repository — while the correct path sat unread in the same entry.
+
+    The flat form remains the fallback for a manifest with no ``path``, which is
+    what the fixtures use and what a hand-written manifest may reasonably be.
+    Containment against the project root is NOT enforced here: this returns a
+    candidate, and the reader that opens it (``ticket_md``) is the one place that
+    can refuse an escaping path with the right error.
+    """
+    declared = entry.get("path")
+    if declared and root is not None:
+        candidate = Path(str(declared))
+        return candidate if candidate.is_absolute() else root / candidate
+    return tickets_dir / f"{entry['id']}.md"
+
+
+def manifest_entry_to_ticket_stub(
+    entry: dict[str, Any], tickets_dir: Path, root: Path | None = None
+) -> Ticket:
     """Build a bare :class:`Ticket` stub from one manifest entry.
 
     Maps the entry's camelCase fields onto the model with sensible defaults and
@@ -155,10 +205,10 @@ def manifest_entry_to_ticket_stub(entry: dict[str, Any], tickets_dir: Path) -> T
         status=entry.get("status", ""),
         track=entry.get("track"),
         milestone=entry.get("milestone"),
-        dependsOn=entry.get("dependsOn", []),
+        dependsOn=_entry_depends_on(entry),
         provides=_provides_to_list(entry.get("provides")),
         files=entry.get("files", []),
-        filePath=tickets_dir / f"{entry_id}.md",
+        filePath=ticket_file_path(entry, tickets_dir, root),
         bodyMarkdown="",
         bodyHtml="",
         raw=entry,
@@ -186,6 +236,6 @@ def iter_ticket_stubs(project: Project) -> Iterator[Ticket]:
     _schema_version, entries = load_manifest(manifest_path)
     for entry in entries:
         try:
-            yield manifest_entry_to_ticket_stub(entry, project.ticketsDir)
+            yield manifest_entry_to_ticket_stub(entry, project.ticketsDir, project.rootPath)
         except (KeyError, ValidationError) as exc:
             raise MalformedManifest(manifest_path, cause=exc) from exc
