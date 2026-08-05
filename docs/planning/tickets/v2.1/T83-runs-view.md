@@ -2,6 +2,22 @@
 
 milestone: v2.1 · track: frontend · depends_on: T81 · provides: a `/runs` route listing every ticket with its run-state, PR link and lane outcome, rendering the no-run-data case as an explicit state rather than an empty table.
 
+> **SHIPPED, AND THIS TEXT IS NOT WHAT SHIPPED.** Recorded 2026-08-05 by the v2.1 integration audit
+> (finding F6), narrowed in place per T93's precedent. T83 merged as PR #195; the header above still
+> says `depends_on: T81`, and T81 no longer exists — it was split into T88/T89/T90 and is
+> `superseded` in `tickets.json`, which repointed T83's dependency to **T90**.
+>
+> The contract below is T81's, and **T90 does not ship it**. What shipped is
+> `server/factory_console/api/v1/runs.py` returning `{items, total}` of
+> `RunRecord{ticketId, result, receipt}` — with no project-level `sources` block, no `prUrl` field,
+> no per-row `unavailable` list, and no `getRun(id)`. T83's implementation derived the all-absent
+> conclusion per-record instead and documented why in `SourcesBanner.svelte`.
+>
+> Left as-is, sections 1-4 below read as unbuilt requirements against a merged Ticket, which is the
+> one thing a plan must never do: **the spec outlived the contract it was written against**, and a
+> reader cannot tell that from the text. The paragraphs are kept rather than rewritten because they
+> record what was intended and why the divergence happened; they are not a description of the code.
+
 ## Context
 
 `GET /api/v1/runs` (T81) returns per-ticket run records plus a `sources` block saying which factory artefacts were found. This is the view. It follows the existing route shape — `+page.ts` loader calling `$lib/api`, `+page.svelte` rendering, `page.test.ts` with the api module mocked — the same pattern `/graph`, `/roadmap` and `/search` already use, so there is no new architecture here.
