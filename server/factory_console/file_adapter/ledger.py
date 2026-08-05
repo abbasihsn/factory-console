@@ -10,7 +10,8 @@ running, which shapes the whole reader:
   from :func:`read_ledger`, whose :class:`LedgerRead` may honestly hold zero
   entries for an EMPTY ledger. The two facts never share a value.
   There is a THIRD answer, and callers must handle it: when the node cannot be
-  probed at all, the function RAISES ``OSError`` rather than collapsing "I could
+  probed at all — or resolves OUTSIDE the project root, which this console refuses
+  to read through — the function RAISES ``OSError`` rather than collapsing "I could
   not look" into the ``None`` that means "definitively not there". A caller that
   leaves it uncaught turns an unsearchable ``.factory/`` into an unmapped 500;
   one that catches it reports the bill as UNKNOWN (found, unread) — which is what
@@ -51,7 +52,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from factory_console.domain.ledger import LedgerEntry, LedgerRead, SkippedLine, SkipReason
-from factory_console.file_adapter.path_safety import ABSENT_ERRNOS, resolve_or_none
+from factory_console.file_adapter.path_safety import ABSENT_ERRNOS, resolve_or_none, within_root
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -99,6 +100,19 @@ _REDACTED = '"session_id":"<redacted>"'
 _ABSENT_ERRNOS = ABSENT_ERRNOS
 
 
+class LedgerNotContained(OSError):
+    """The ledger resolved OUTSIDE the project root, so this console will not read it.
+
+    An ``OSError`` subclass on purpose. :func:`find_ledger_path` already has a third
+    answer — "I could not look" — which ``api/v1/spend.py`` catches as ``OSError`` and
+    renders as found-but-unread. A REFUSAL to look and an INABILITY to look are the
+    same answer to that caller: the bill is UNKNOWN, and neither may be reported as
+    ``$0.00``. So containment joins that case rather than inventing a second one the
+    endpoint would have to learn, and the ``None`` that means "definitively no ledger"
+    stays reserved for a ledger that is definitively not there.
+    """
+
+
 def find_ledger_path(project_root: Path) -> Path | None:
     """Return the project's ledger file, ``None`` if it has none, else RAISE.
 
@@ -125,7 +139,8 @@ def find_ledger_path(project_root: Path) -> Path | None:
     """
     candidate = project_root / LEDGER_RELATIVE_PATH
     try:
-        return candidate if stat.S_ISREG(candidate.stat().st_mode) else None
+        if not stat.S_ISREG(candidate.stat().st_mode):
+            return None
     except OSError as error:
         if error.errno in _ABSENT_ERRNOS:
             return None
@@ -141,6 +156,34 @@ def find_ledger_path(project_root: Path) -> Path | None:
         # Parity with :meth:`Path.is_file`, which reads a non-encodable path as
         # absent rather than as a failure to look.
         return None
+
+    # CONTAINMENT, applied where the path is CHOSEN — the only place with a project
+    # root to measure against. ``.factory/`` is written by a process the console does
+    # not control and may be a checkout of an untrusted repository, so a symlink at
+    # ``ledger.jsonl`` — or at ``.factory`` itself — resolves wherever it points, and
+    # reading through it would bill this project for whatever the server can open.
+    # ``O_NOFOLLOW`` in :func:`read_ledger` does NOT cover this: it refuses a symlink
+    # swapped in as the final component AFTER the resolve, which is precisely the case
+    # a pre-existing symlink is not. Both non-yes answers refuse, exactly as
+    # :func:`~factory_console.file_adapter.runs._safe_artifact_path` refuses them:
+    # ``None`` (undecidable) and ``False`` (a proven escape) alike mean this console
+    # will not read the path. The refusal RAISES rather than returning ``None``,
+    # because "I will not read this" is an unknown bill, never a measured zero.
+    #
+    # This gate binds the path this function RETURNS. :func:`read_ledger` resolves
+    # again before opening, so a symlink swapped in between the two calls is outside
+    # what this closes — the same open-once-and-interrogate-the-descriptor limit the
+    # rest of this module works within, and a narrower window than the checked-in
+    # symlink this refuses.
+    resolved = resolve_or_none(candidate)
+    if resolved is None or not within_root(resolved, project_root):
+        _LOGGER.warning(
+            "ledger: %s does not resolve inside the project root; it is not read", candidate
+        )
+        raise LedgerNotContained(
+            f"ledger at {candidate} resolves outside the project root; not read"
+        )
+    return candidate
 
 
 def read_ledger(path: Path) -> LedgerRead:
@@ -169,11 +212,16 @@ def read_ledger(path: Path) -> LedgerRead:
     # Resolved for the OPEN only; ``path`` stays the reported one, because
     # ``source.path`` is a contract with the caller about WHERE the console looked,
     # not about where the filesystem sent it. Resolving first is also what keeps a
-    # legitimately symlinked ledger (a shared artefacts mount) readable while
-    # ``O_NOFOLLOW`` below still refuses a symlink swapped in AFTER this line — the
-    # same order :func:`~factory_console.file_adapter.runs._read_json_artifact`
-    # uses. A path that will not resolve is opened by its original name and left to
-    # fail there, rather than being called absent here.
+    # symlinked ledger readable while ``O_NOFOLLOW`` below still refuses a symlink
+    # swapped in AFTER this line — the same order
+    # :func:`~factory_console.file_adapter.runs._read_json_artifact` uses. A path that
+    # will not resolve is opened by its original name and left to fail there, rather
+    # than being called absent here.
+    #
+    # WHERE that symlink may point is not decided here: this function takes a path and
+    # has no root to measure it against. :func:`find_ledger_path` owns the containment
+    # gate and refuses a ledger resolving outside the project root before any caller
+    # reaches this line, so the symlink still readable here is an in-root one.
     target = resolve_or_none(path) or path
 
     try:

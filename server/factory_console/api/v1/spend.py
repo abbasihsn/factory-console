@@ -35,7 +35,9 @@ there and RAISES when it could not tell, precisely so this endpoint cannot read
 the second as the first — an unsearchable ``.factory/`` billed as "$0.00, no
 ledger" would be the same false statement about real money, arriving by way of a
 directory mode instead of a missing file. The raise is caught here and answered
-as found-but-unread.
+as found-but-unread. A ledger that resolves OUTSIDE the project root raises the
+same way and gets the same answer: the console refuses to read through it, and a
+refusal to look leaves the bill exactly as unknown as an inability to look does.
 """
 
 from __future__ import annotations

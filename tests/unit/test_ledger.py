@@ -384,6 +384,47 @@ def test_a_probe_that_could_not_look_raises_rather_than_reporting_absence(
         find_ledger_path(tmp_path)
 
 
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="platform has no symlinks")
+def test_a_ledger_symlinked_out_of_the_project_root_is_refused(tmp_path: Path) -> None:
+    # CONTAINMENT. ``.factory/`` is written by a process the console does not control
+    # and may be a checkout of an untrusted repository, so a symlink at the ledger path
+    # resolves wherever it points. Reading through it would bill THIS project for
+    # whatever the server process can open, and every line of that foreign file that
+    # validates surfaces its ticket ids, models and costs on /spend as measured spend.
+    # ``O_NOFOLLOW`` in read_ledger does not cover this: it refuses a symlink swapped in
+    # AFTER the resolve, which a checked-in one is not. The refusal RAISES rather than
+    # answering ``None``, because "I will not read this" is an unknown bill, never the
+    # measured zero ``None`` renders as.
+    outsider = tmp_path / "outside" / "secrets.jsonl"
+    outsider.parent.mkdir(parents=True)
+    outsider.write_text(REAL_ENTRY_LINE + "\n", encoding="utf-8")
+    project = tmp_path / "project"
+    ledger = project / _LEDGER_RELATIVE
+    ledger.parent.mkdir(parents=True)
+    ledger.symlink_to(outsider)
+
+    with pytest.raises(OSError):
+        find_ledger_path(project)
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="platform has no symlinks")
+def test_a_ledger_symlinked_inside_the_project_root_is_still_read(tmp_path: Path) -> None:
+    # The containment gate refuses an ESCAPE, not a symlink. A project that keeps its
+    # ledger behind an in-root link still reads, so the fix above cannot be mistaken
+    # for "reject every symlinked ledger".
+    real = tmp_path / ".factory" / "metrics-real" / "ledger.jsonl"
+    real.parent.mkdir(parents=True)
+    real.write_text(REAL_ENTRY_LINE + "\n", encoding="utf-8")
+    ledger = tmp_path / _LEDGER_RELATIVE
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.symlink_to(real)
+
+    found = find_ledger_path(tmp_path)
+
+    assert found == ledger, "an in-root symlinked ledger is contained, so it is read"
+    assert len(read_ledger(found).entries) == 1
+
+
 def test_a_path_the_os_cannot_even_encode_is_absence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

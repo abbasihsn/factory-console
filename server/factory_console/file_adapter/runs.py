@@ -48,11 +48,12 @@ three as interchangeable. Their id check is the pattern alone, while
 containment resolves inline, so a resolution that itself fails escapes as a
 ``RuntimeError`` where this one answers ``unreadable``. Converging them is a follow-up,
 which is why the shared rule now lives in
-:mod:`~factory_console.file_adapter.path_safety` rather than here. Note also that
-neither :mod:`~factory_console.file_adapter.run_state` nor
-:mod:`~factory_console.file_adapter.ledger` resolves or contains anything, so this is
-the first artifact reader under ``.factory/`` to impose the check rather than one
-more module inheriting a house-wide habit.
+:mod:`~factory_console.file_adapter.path_safety` rather than here. This was the FIRST
+artifact reader under ``.factory/`` to impose the check rather than one more module
+inheriting a house-wide habit; :mod:`~factory_console.file_adapter.ledger` has since
+adopted the containment half in its own ``find_ledger_path``, phrasing the refusal as
+its "I could not look" raise instead of as ``unreadable``.
+:mod:`~factory_console.file_adapter.run_state` still resolves and contains nothing.
 
 :func:`read_last_stop` takes no ticket id, but it gets the CONTAINMENT half of that
 check anyway (:func:`~factory_console.file_adapter.path_safety.within_root`, applied
