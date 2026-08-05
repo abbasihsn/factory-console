@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from factory_console.domain.deps import DepNeighborhood, Roadmap
 from factory_console.domain.project import Project
+from factory_console.domain.run_record import RunRecord
 from factory_console.domain.run_state import RunState
 from factory_console.domain.run_state_source import (
     RUN_STATE_SOURCE_LOCATIONS,
@@ -31,6 +32,7 @@ __all__ = [
     "JsonRunState",
     "Project",
     "Roadmap",
+    "RunRecord",
     "RunState",
     "RunStateSource",
     "RunStateSourceKind",

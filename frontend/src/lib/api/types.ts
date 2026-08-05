@@ -282,10 +282,113 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/api/v1/spend": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Get Spend
+         * @description Return the project's aggregated spend, or an explicit "no ledger" body.
+         *
+         *     Reads the discovered root from ``request.app.state.project_root`` — a ``Path``
+         *     ``create_app`` requires at boot. With no ledger the response is
+         *     ``source.found: false`` over zeroed totals; with one, it is the aggregate of
+         *     every entry that parsed, plus the line numbers and reasons of those that did
+         *     not. A ledger that exists but could not be read at all is the third case, and
+         *     says so with ``source.read: false`` rather than passing its zeroed totals off
+         *     as a measurement. The ledger's ``excerpt`` and ``session_id`` are projected
+         *     nowhere.
+         */
+        readonly get: operations["get_spend_api_v1_spend_get"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/v1/runs": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * List Runs
+         * @description Return one :class:`RunRecord` per manifest ticket, in manifest order.
+         *
+         *     Loads the discovered project from ``request.app.state.project_root`` and delegates
+         *     the whole composition to :class:`RunService` over the injected
+         *     :class:`FileAdapter` and :class:`RunArtifactReader`. ``total`` is the number of
+         *     records, which is the manifest's ticket count and not a count of tickets that have
+         *     artifacts — there is no filtering and no pagination.
+         */
+        readonly get: operations["list_runs_api_v1_runs_get"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * ArtifactRead
+         * @description The result of reading ONE ``.factory`` JSON artifact: what it said, or why not.
+         *
+         *     Exactly one of the two outcomes holds: ``reason is None`` iff ``data`` is a
+         *     successfully parsed JSON object. When ``reason`` is set, ``data`` is ``None``; a
+         *     caller may therefore branch on either field and reach the same answer.
+         *
+         *     That ``iff`` is ENFORCED (:meth:`_exactly_one_outcome`), not merely documented.
+         *     Both fields default to ``None``, so ``ArtifactRead(path=p)`` — an easy thing for a
+         *     consumer or a test double to write for a case it forgot to name — would otherwise
+         *     be accepted in precisely the state the paragraph above says cannot exist, and the
+         *     two blessed branches would then DISAGREE about it: a caller testing ``reason is
+         *     None`` reads it as a clean read and subscripts ``data`` into a ``TypeError``, while
+         *     a caller testing ``data is None`` renders an empty state. That is the same
+         *     absent/malformed collapse this type exists to prevent, so it is rejected at
+         *     construction — the rule :class:`~factory_console.domain.run_state_source.JsonRunState`
+         *     and :class:`~factory_console.domain.write.WriteResult` already set for their own
+         *     two-field invariants.
+         *
+         *     ``path`` is carried on both outcomes — including ``absent`` — because "which
+         *     file was this about" is exactly what an operator needs to act on a reason.
+         *
+         *     ``data`` is DELIBERATELY an untyped ``dict[str, Any]`` and not a modeled
+         *     schema with named fields. This ticket (T88) is the reading layer only: it
+         *     knows how to answer "does this artifact exist and is it a JSON object", and
+         *     it has no captured real artifact to verify field names against — modeling
+         *     fields from guesswork would ship a schema that silently rejects what the
+         *     factory actually writes. Composing these into a per-ticket record is
+         *     :class:`~factory_console.domain.run_record.RunRecord`'s job (T89), and it
+         *     named the two SOURCES rather than their fields: it carries each
+         *     :class:`ArtifactRead` verbatim, so ``data`` is still untyped there and this
+         *     paragraph still governs it. Do not "improve" this into a typed schema — here
+         *     or there — until a real captured artifact exists to verify against.
+         */
+        readonly ArtifactRead: {
+            /**
+             * Path
+             * Format: path
+             */
+            readonly path: string;
+            /** Data */
+            readonly data?: {
+                readonly [key: string]: unknown;
+            } | null;
+            /** Reason */
+            readonly reason?: ("absent" | "unreadable" | "unparseable" | "too_large") | null;
+        };
         /**
          * DepNeighborhood
          * @description A ticket with its direct dependency edges and any unresolved dep ids.
@@ -387,6 +490,69 @@ export interface components {
              * Format: path
              */
             readonly projectRoot: string;
+        };
+        /**
+         * LevelSpend
+         * @description One agent level's share of the bill — how much of it was review, not build.
+         *
+         *     ``level`` is the ledger's ``level`` field as written (``ticket``, and whatever
+         *     else the factory names): the vocabulary belongs to the factory, so no closed
+         *     set is enumerated here and an unrecognised level appears rather than vanishing.
+         */
+        readonly LevelSpend: {
+            /** Level */
+            readonly level: string;
+            /**
+             * Costusd
+             * @default 0
+             */
+            readonly costUsd: number;
+            /**
+             * Entries
+             * @default 0
+             */
+            readonly entries: number;
+        };
+        /**
+         * ModelSpend
+         * @description One model's project-wide share of the bill.
+         *
+         *     ``model`` is the factory's model id VERBATIM (e.g. ``claude-opus-4-8[1m]``).
+         *     Nothing here maps it to a display name: mapping is the view's job, and a
+         *     mapping applied at this layer would silently hide a model the console has not
+         *     heard of behind whatever its fallback happened to be.
+         *
+         *     Distinct from the ledger's same-named
+         *     :class:`~factory_console.domain.ledger.ModelSpend`, which is the RAW shape of
+         *     one ``by_model`` value on one entry. This is the aggregate across every entry.
+         *
+         *     ``tokens.total`` is the SUM of one total per contributing entry, and each of
+         *     those is arrived at differently: an entry with a ``by_model`` breakdown carries
+         *     no total there, so its contribution is derived (the four counts summed), while
+         *     an entry with no breakdown contributes the entry's own written ``total``. A
+         *     model fed by both kinds therefore reports a total that need NOT equal this
+         *     row's other four fields summed — the factory's written total is its own
+         *     measurement, not a restatement of the parts, and this row keeps it rather than
+         *     quietly replacing it with a figure the ledger never recorded.
+         */
+        readonly ModelSpend: {
+            /** Model */
+            readonly model: string;
+            /**
+             * Costusd
+             * @default 0
+             */
+            readonly costUsd: number;
+            /**
+             * @default {
+             *       "input": 0,
+             *       "output": 0,
+             *       "cacheRead": 0,
+             *       "cacheCreation": 0,
+             *       "total": 0
+             *     }
+             */
+            readonly tokens: components["schemas"]["SpendTokens"];
         };
         /**
          * Project
@@ -496,6 +662,48 @@ export interface components {
             readonly items?: readonly components["schemas"]["RoadmapItem"][];
         };
         /**
+         * RunListResponse
+         * @description Envelope for the runs list: one record per manifest ticket, and their count.
+         */
+        readonly RunListResponse: {
+            /** Items */
+            readonly items: readonly components["schemas"]["RunRecord"][];
+            /** Total */
+            readonly total: number;
+        };
+        /**
+         * RunRecord
+         * @description The factory's two per-ticket artifacts for ONE manifest ticket, reasons and all.
+         *
+         *     Both artifacts are carried as the reader's own :class:`ArtifactRead`
+         *     VERBATIM, and that is the whole point of this type. Each ``ArtifactRead``
+         *     already pairs "here is the object" with, on the other branch, exactly WHY
+         *     there is none — ``absent`` (the factory never wrote it), ``unreadable``
+         *     (nothing was read: the bytes would not come, or the path could not be proven
+         *     safe to read at all, so existence is NOT established — see
+         *     :data:`~factory_console.domain.runs.ArtifactSkipReason`, which forbids
+         *     inferring it), ``unparseable``
+         *     (it answered, unintelligibly) or ``too_large``. Collapsing the pair into a
+         *     summary — a ``hasResult`` boolean, a count of missing sources, a bare
+         *     ``None`` — would put back precisely the ambiguity T88 built the type to
+         *     remove: a blank field that means either "nothing was recorded" or "we did not
+         *     look". Every absent source must be NAMED, per source. Do not flatten these.
+         *
+         *     The two sources are independent: a lane can have written a result and no
+         *     receipt, or a corrupt receipt beside a clean result, so each field carries its
+         *     own reason and neither may be inferred from the other.
+         *
+         *     ``ticketId`` comes from the manifest, not from the artifacts — the artifacts
+         *     are keyed BY it — and is :data:`~factory_console.domain.ticket.TicketId`
+         *     constrained like every other id on the domain surface.
+         */
+        readonly RunRecord: {
+            /** Ticketid */
+            readonly ticketId: string;
+            readonly result: components["schemas"]["ArtifactRead"];
+            readonly receipt: components["schemas"]["ArtifactRead"];
+        };
+        /**
          * RunState
          * @description A ticket's run-state, derived from the project's resolved run-state source.
          *
@@ -554,6 +762,208 @@ export interface components {
             readonly items: readonly components["schemas"]["SearchHit"][];
             /** Total */
             readonly total: number;
+        };
+        /**
+         * SkippedLineInfo
+         * @description A ledger line that did not parse, over HTTP: which line, and why.
+         *
+         *     T79's :class:`~factory_console.domain.ledger.SkippedLine` also carries an
+         *     ``excerpt`` of the offending line; it is NOT projected here. The excerpt exists
+         *     for a human reading the file, and the ledger is a file the console only
+         *     observes — putting a slice of its raw bytes on the wire would widen what this
+         *     read-only endpoint can disclose for no view that needs it.
+         *
+         *     ``lineNo`` is ``0`` when the failure belongs to the whole file rather than to
+         *     any one line (unreadable, or over the reader's size cap).
+         */
+        readonly SkippedLineInfo: {
+            /** Lineno */
+            readonly lineNo: number;
+            /**
+             * Reason
+             * @enum {string}
+             */
+            readonly reason: "not_json" | "invalid_entry" | "partial_line" | "file_too_large" | "unreadable";
+        };
+        /**
+         * SourceInfo
+         * @description Whether this project HAS a ledger, whether it could be READ, and where it is.
+         *
+         *     THE field that keeps "no ledger" from being read as "$0.00". ``found: false``
+         *     is the fresh-clone case and a client must be able to act on it directly, rather
+         *     than inferring absence from a zero total — which an empty ledger also produces,
+         *     and which for an unmeasured project would be a false statement about real money.
+         *
+         *     ``read`` carries the SAME distinction one step further, because ``found`` alone
+         *     does not survive a ledger that exists and could not be opened. A file over the
+         *     reader's size cap, or one that cannot be stat'd or read at all, yields zero
+         *     entries — so ``found: true`` over zeroed totals would state that a ledger WAS
+         *     read and measured nothing, which for an 11 MiB file full of real lanes is the
+         *     same false statement ``found`` exists to prevent, merely relocated. ``read:
+         *     false`` says the bill is UNKNOWN rather than zero; the reason is in
+         *     :attr:`SpendResponse.skipped`, at ``lineNo`` 0.
+         *
+         *     So ``read`` means "the figures below came from actually reading a file", and it
+         *     defaults to ``False`` — the honest value for the no-ledger case, where there was
+         *     nothing to read. ``totals`` is a MEASURED zero only when ``read`` is true; on
+         *     ``found: true, read: false`` it is a placeholder for a bill nobody could count.
+         *
+         *     ``path`` is where the console LOOKED, not proof that anything was there — it
+         *     is populated on all three outcomes, including ``found: false``. A view whose
+         *     entire job in the no-ledger case is to explain the absence has to be able to
+         *     name the place, and reading that off ``found`` instead would make the
+         *     frontend restate the ledger's location in its own source. ``found`` and
+         *     ``read``, not this field, are what say whether the file exists and was
+         *     parsed. It is ``None`` only when the path could not be formed at all.
+         */
+        readonly SourceInfo: {
+            /** Found */
+            readonly found: boolean;
+            /**
+             * Read
+             * @default false
+             */
+            readonly read: boolean;
+            /** Path */
+            readonly path?: string | null;
+        };
+        /**
+         * SpendResponse
+         * @description The ``GET /api/v1/spend`` body: a :class:`SpendReport` plus how it was read.
+         *
+         *     Extends the pure report with the two facts only the caller holds — whether the
+         *     ledger existed at all (:class:`SourceInfo`) and which of its lines could not be
+         *     read — by SUBCLASSING it, so the wire shape cannot drift from the aggregate as
+         *     fields are added to one and not the other.
+         *
+         *     ``skippedOmitted`` counts lines that failed beyond the reader's detail cap. It
+         *     is not decoration: T79 caps how many skipped lines it materialises but keeps
+         *     counting them, and dropping that count here would make a catastrophically
+         *     corrupt ledger report exactly as partial as a mildly corrupt one.
+         *
+         *     ``len(skipped) + skippedOmitted`` is the exact number of lines missing from
+         *     :attr:`SpendReport.totals` — **for per-line failures only**. A skip at
+         *     ``lineNo`` 0 is not a line: it reports that the WHOLE file was not read
+         *     (``unreadable``, or over the reader's size cap), so it stands for an unknown
+         *     number of lines, not for one. That case is exactly ``source.read: false``, and a
+         *     client counting unparsed lines must branch on it rather than render "1 line
+         *     could not be read" over a ledger nothing ever opened.
+         */
+        readonly SpendResponse: {
+            /**
+             * Attribution
+             * @default full-to-each-id
+             * @constant
+             */
+            readonly attribution: "full-to-each-id";
+            /**
+             * @default {
+             *       "costUsd": 0,
+             *       "entries": 0,
+             *       "tokens": {
+             *         "cacheCreation": 0,
+             *         "cacheRead": 0,
+             *         "input": 0,
+             *         "output": 0,
+             *         "total": 0
+             *       }
+             *     }
+             */
+            readonly totals: components["schemas"]["SpendTotals"];
+            /** Byticket */
+            readonly byTicket?: readonly components["schemas"]["TicketSpend"][];
+            /** Bymodel */
+            readonly byModel?: readonly components["schemas"]["ModelSpend"][];
+            /** Bylevel */
+            readonly byLevel?: readonly components["schemas"]["LevelSpend"][];
+            readonly source: components["schemas"]["SourceInfo"];
+            /** Skipped */
+            readonly skipped?: readonly components["schemas"]["SkippedLineInfo"][];
+            /**
+             * Skippedomitted
+             * @default 0
+             */
+            readonly skippedOmitted: number;
+        };
+        /**
+         * SpendTokens
+         * @description Summed token counts in the console's OWN camelCase wire vocabulary.
+         *
+         *     A near-twin of :class:`~factory_console.domain.ledger.TokenCounts`, and
+         *     deliberately NOT that class. The ledger's model is shaped by the FILE: it
+         *     spells the factory's ``cache_read``/``cache_creation`` and it is
+         *     ``extra="ignore"`` because another program owns that format. Both traits are
+         *     wrong for a response — the REST v1 contract is camelCase, and a shape this repo
+         *     builds AND serialises end to end takes the house ``extra="forbid"``.
+         *
+         *     Reusing the ledger model here would publish snake_case keys in the one nested
+         *     object of an otherwise camelCase body, and would leave the console's published
+         *     contract to be rewritten by a future edit to a model that exists to track
+         *     someone else's file. So the parse shape and the wire shape are separate types,
+         *     converted in exactly one place —
+         *     :meth:`~factory_console.domain.spend_calc._Tokens.frozen`.
+         */
+        readonly SpendTokens: {
+            /**
+             * Input
+             * @default 0
+             */
+            readonly input: number;
+            /**
+             * Output
+             * @default 0
+             */
+            readonly output: number;
+            /**
+             * Cacheread
+             * @default 0
+             */
+            readonly cacheRead: number;
+            /**
+             * Cachecreation
+             * @default 0
+             */
+            readonly cacheCreation: number;
+            /**
+             * Total
+             * @default 0
+             */
+            readonly total: number;
+        };
+        /**
+         * SpendTotals
+         * @description What the whole read cost: dollars, entry count, and summed token counts.
+         *
+         *     ``entries`` counts the ledger entries that PARSED. It is deliberately reported
+         *     beside the money so a caller can compare it against
+         *     :attr:`SpendResponse.skipped` and see that a total was computed over 40 of 43
+         *     lines — a partial bill that says so, rather than a confident wrong number.
+         *
+         *     ``tokens`` sums the entries' own ``tokens`` objects field by field, including
+         *     the factory's written ``total``; it is not recomputed from the parts, so it
+         *     reports what the factory measured.
+         */
+        readonly SpendTotals: {
+            /**
+             * Costusd
+             * @default 0
+             */
+            readonly costUsd: number;
+            /**
+             * Entries
+             * @default 0
+             */
+            readonly entries: number;
+            /**
+             * @default {
+             *       "input": 0,
+             *       "output": 0,
+             *       "cacheRead": 0,
+             *       "cacheCreation": 0,
+             *       "total": 0
+             *     }
+             */
+            readonly tokens: components["schemas"]["SpendTokens"];
         };
         /**
          * Ticket
@@ -686,6 +1096,34 @@ export interface components {
             readonly items: readonly components["schemas"]["TicketSummary"][];
             /** Total */
             readonly total: number;
+        };
+        /**
+         * TicketSpend
+         * @description One ticket id's attributed spend, under :data:`ATTRIBUTION_RULE`.
+         *
+         *     ``attributedCostUsd`` is named for the rule: it is the sum of the FULL cost of
+         *     every entry naming this ticket, so summing this field across tickets does not
+         *     give :attr:`SpendTotals.costUsd` and is not meant to.
+         *
+         *     ``models`` lists the model ids seen on this ticket's entries, sorted, as the
+         *     factory wrote them — a set for the view to render, not a per-model breakdown
+         *     (that is :class:`ModelSpend`, which is project-wide).
+         */
+        readonly TicketSpend: {
+            /** Ticketid */
+            readonly ticketId: string;
+            /**
+             * Attributedcostusd
+             * @default 0
+             */
+            readonly attributedCostUsd: number;
+            /**
+             * Entries
+             * @default 0
+             */
+            readonly entries: number;
+            /** Models */
+            readonly models?: readonly string[];
         };
         /**
          * TicketSummary
@@ -1094,6 +1532,46 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": unknown;
+                };
+            };
+        };
+    };
+    readonly get_spend_api_v1_spend_get: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["SpendResponse"];
+                };
+            };
+        };
+    };
+    readonly list_runs_api_v1_runs_get: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["RunListResponse"];
                 };
             };
         };

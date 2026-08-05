@@ -142,27 +142,42 @@ describe('RunStateBadge', () => {
 		expect(classes('unreadable')).not.toBe(classes('absent'));
 	});
 
-	// The six states only the factory's run-state.json names. Each must render a
-	// labelled, titled, styled pill — a state the map forgot would render an empty
-	// span with `undefined` classes, which is exactly what shipped for every
-	// factory state before the JSON source was read at all.
-	const FACTORY_ONLY_STATES: readonly (readonly [RunState, string])[] = [
-		['in_progress', 'In progress'],
-		['in_part', 'In part'],
-		['in_submilestone', 'In submilestone'],
-		['flagged', 'Flagged'],
-		['failed', 'Failed'],
-		['needs_human', 'Needs human']
-	];
+	// EVERY member of the union, and the union is READ FROM THE GENERATED TYPE rather
+	// than hand-listed here. `Record<RunState, string>` is what does it: a state added
+	// to the backend enum and regenerated into `RunState` makes this object a missing
+	// key — a compile error in `pnpm check` — so the new member cannot reach main with
+	// no test, which a literal array of the states someone remembered would allow.
+	// Iterating the same object then turns that compile-time guarantee into a rendered
+	// assertion per state: a state the component's map forgot renders an empty span
+	// with `undefined` classes, which is exactly what shipped for every factory state
+	// before the JSON source was read at all.
+	const EXPECTED_LABELS: Record<RunState, string> = {
+		todo: 'To do',
+		'in-flight': 'In flight',
+		in_progress: 'In progress',
+		in_part: 'In part',
+		in_submilestone: 'In submilestone',
+		ready: 'Ready',
+		merged: 'Merged',
+		flagged: 'Flagged',
+		failed: 'Failed',
+		needs_human: 'Needs human',
+		unknown: 'Unknown',
+		absent: 'Not listed',
+		unreadable: 'Unreadable'
+	};
 
-	it.each(FACTORY_ONLY_STATES)('renders the %s variant', (runState, label) => {
-		const { container } = render(RunStateBadge, { props: { runState } });
+	it.each(Object.entries(EXPECTED_LABELS) as [RunState, string][])(
+		'renders the %s variant as a labelled, titled, styled pill',
+		(runState, label) => {
+			const { container } = render(RunStateBadge, { props: { runState } });
 
-		const pill = container.querySelector('span');
-		expect(screen.getByText(label)).toBeTruthy();
-		expect(pill?.getAttribute('title')).toBeTruthy();
-		expect(pill?.className).not.toContain('undefined');
-	});
+			const pill = container.querySelector('span');
+			expect(pill?.textContent?.trim()).toBe(label);
+			expect(pill?.getAttribute('title')).toBeTruthy();
+			expect(pill?.className).not.toContain('undefined');
+		}
+	);
 
 	// The three failure-ish states must be visually distinct from the in-progress
 	// ones: an operator scanning the board needs "a lane stopped and something is

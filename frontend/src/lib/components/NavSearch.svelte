@@ -1,6 +1,6 @@
 <script lang="ts">
-	// The single navigation surface for the header: the /graph + /roadmap (and
-	// Home) links plus the full-text search box. This component OWNS navigation —
+	// The single navigation surface for the header: the /graph + /roadmap + /spend +
+	// /runs (and Home) links plus the full-text search box. This component OWNS navigation —
 	// it is the only header piece that imports `$app/navigation` — so `TopBar`
 	// stays presentational and `$app`-free (and keeps unit-testing under jsdom).
 	import { goto } from '$app/navigation';
@@ -21,6 +21,8 @@
 	<a href="/" class="text-sm text-text hover:underline">Home</a>
 	<a href="/graph" class="text-sm text-text hover:underline">Graph</a>
 	<a href="/roadmap" class="text-sm text-text hover:underline">Roadmap</a>
+	<a href="/spend" class="text-sm text-text hover:underline">Spend</a>
+	<a href="/runs" class="text-sm text-text hover:underline">Runs</a>
 	<form class="flex items-center" onsubmit={submit}>
 		<input
 			type="search"

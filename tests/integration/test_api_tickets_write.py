@@ -61,6 +61,10 @@ from factory_console.logging import _LOG_FORMAT
 TODO_ID = "CAD-131"
 DELETABLE_TODO_ID = "CAD-152"
 NON_TODO_IDS = ["CAD-100", "CAD-118", "CAD-125"]
+# Used by the T92 case only, which MOVES this id's marker out of ``todo/`` and into a
+# state directory this console has no name for — so it is named ONLY under that
+# directory, the shape that used to resolve ``absent`` and delete cleanly.
+ONLY_UNKNOWN_STATE_ID = "CAD-140"
 NEW_ID = "CAD-210"
 
 # Outside TICKET_ID_PATTERN, so the ``Path`` validator rejects it before any handler.
@@ -513,6 +517,55 @@ async def test_a_status_this_console_cannot_classify_refuses_both_writes_end_to_
         # status the factory now writes.
         assert "in_review" in error["message"]
         assert str(run_state_json) in error["message"]
+    assert _snapshot(root) == before
+
+
+async def test_a_state_directory_this_console_cannot_name_refuses_the_delete_end_to_end(
+    tmp_path: Path,
+) -> None:
+    # T92 through the real app, and DELETE is the request that has to be asserted: the
+    # fixture's `.factory/run-state` names CAD-152 under `todo/`, so before this change
+    # a factory that also wrote `in_review/CAD-152` — a tenth FAC_STATES entry the
+    # console has no name for — left the console reading `todo`, the MUTABLE state, and
+    # this DELETE returned 200 on a ticket a lane was actively reviewing. The id named
+    # ONLY under `in_review/` is worse still: it resolved `absent`, which is in
+    # DELETABLE_STATES, so the delete succeeded with no marker to contradict it.
+    #
+    # Both shapes are asserted here rather than at the resolver because the whole claim
+    # is about the gate's answer: the 409 an operator sees, the file still on disk, and
+    # the refusal naming the directory rather than saying "not tracked".
+    app, root = _real_app(tmp_path)
+    run_state_dir = root / ".factory" / "run-state"
+    (run_state_dir / "in_review").mkdir()
+    # CAD-152 is `todo` in the fixture: the unknown state must OUTRANK that marker.
+    (run_state_dir / "in_review" / DELETABLE_TODO_ID).write_text("", encoding="utf-8")
+    # CAD-140 is moved from `todo/` to `in_review/`, so it is named ONLY under the state
+    # this console cannot name — the shape that resolved `absent` and deleted cleanly.
+    (run_state_dir / "todo" / ONLY_UNKNOWN_STATE_ID).unlink()
+    (run_state_dir / "in_review" / ONLY_UNKNOWN_STATE_ID).write_text("", encoding="utf-8")
+    before = _snapshot(root)
+    async with _client(app) as client:
+        deleted = await client.delete(f"/api/v1/tickets/{DELETABLE_TODO_ID}", headers=AUTH)
+        edited = await client.put(
+            f"/api/v1/tickets/{DELETABLE_TODO_ID}", json=_edit_body(), headers=AUTH
+        )
+        deleted_unlisted = await client.delete(
+            f"/api/v1/tickets/{ONLY_UNKNOWN_STATE_ID}", headers=AUTH
+        )
+
+    for ticket_id, resp in (
+        (DELETABLE_TODO_ID, deleted),
+        (DELETABLE_TODO_ID, edited),
+        (ONLY_UNKNOWN_STATE_ID, deleted_unlisted),
+    ):
+        assert resp.status_code == 409
+        error = resp.json()["error"]
+        assert error["code"] == "ticket_not_mutable"
+        assert error["details"] == {"ticketId": ticket_id, "runState": "unreadable"}
+        assert "state 'in_review'" in error["message"]
+        assert str(run_state_dir) in error["message"]
+    # Nothing was written — in particular the ticket file is still there, which is the
+    # concrete loss this refusal prevents.
     assert _snapshot(root) == before
 
 

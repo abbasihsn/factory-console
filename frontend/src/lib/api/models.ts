@@ -88,3 +88,57 @@ export type DiffPreview = components['schemas']['DiffPreview'];
 
 /** A single file's planned or applied change as a unified diff, inside {@link DiffPreview}. */
 export type FileDiff = components['schemas']['FileDiff'];
+
+/**
+ * `GET /api/v1/spend` — totals, the three cuts, and how the ledger was read.
+ *
+ * `source.found` (NOT a zero total) is what says whether the project has a ledger
+ * at all, and `attribution` names the rule under which {@link TicketSpend} rows
+ * may sum to more than `totals.costUsd`.
+ */
+export type SpendResponse = components['schemas']['SpendResponse'];
+
+/** One ticket id's attributed spend, inside a {@link SpendResponse}'s `byTicket`. */
+export type TicketSpend = components['schemas']['TicketSpend'];
+
+/** One model id's project-wide share of the bill, inside `byModel`. */
+export type ModelSpend = components['schemas']['ModelSpend'];
+
+/** One agent level's share of the bill, inside `byLevel`. */
+export type LevelSpend = components['schemas']['LevelSpend'];
+
+/** `{ items, total }` envelope of `GET /api/v1/runs`, unwrapped by `getRuns`. */
+export type RunListResponse = components['schemas']['RunListResponse'];
+
+/**
+ * One manifest ticket's two factory artifacts — `.factory/results/<id>.json` and
+ * `.factory/receipts/<id>.json` — each as its own {@link ArtifactRead}.
+ *
+ * There is a record per MANIFEST ticket, including tickets the factory has never
+ * run (both sources then say `absent`), so a record's presence says nothing about
+ * whether a run happened; only the per-source `reason` does.
+ */
+export type RunRecord = components['schemas']['RunRecord'];
+
+/**
+ * One artifact read: `data` when it parsed, `reason` when it did not — exactly one
+ * of the two, enforced server-side.
+ *
+ * `data` is DELIBERATELY untyped (`{ [key: string]: unknown }`): the server models
+ * no field inside a factory artifact, because it has none it has verified against a
+ * real captured file. Read fields out of it defensively — a key may be missing or
+ * any type at all — and never widen this into a hand-written schema here; that
+ * would put back the guesswork the backend refused to ship.
+ */
+export type ArtifactRead = components['schemas']['ArtifactRead'];
+
+/**
+ * Why an artifact yielded no data: `absent` (the factory never wrote it — the
+ * ordinary state of a fresh clone) versus `unreadable`/`unparseable`/`too_large`,
+ * which are real degraded reads and must not render like a plain absence.
+ *
+ * Derived from {@link ArtifactRead} rather than aliased from a schema, because the
+ * server inlines this union into the field instead of publishing it as its own
+ * component — so a member added there widens this automatically.
+ */
+export type ArtifactSkipReason = NonNullable<ArtifactRead['reason']>;

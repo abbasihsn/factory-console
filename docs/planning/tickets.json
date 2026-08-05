@@ -1266,6 +1266,149 @@
       "provides": "The directory run-state form refuses, PER ID, the ids named under a state subdirectory this console has no name for — even when a recognised marker also names them, because the unknown state's precedence is unknown. A source populated only under unrecognised names is populated, not vacuous, so the vacuity scan counts markers under every subdirectory. An unrecognised directory naming no ids changes nothing: over-refusal is the failure mode the per-id narrowness exists to prevent. Closes the seventh and last instance of T80's fail-open class, found by T80's Amendment 4 step-4 enumeration rather than by a seventh review round.",
       "path": "docs/planning/tickets/v2.1/T92-unrecognised-state-directory.md",
       "status": "todo"
+    },
+    {
+      "id": "T93",
+      "title": "Ledger discovery must use the same errno split the run-state reader made normative",
+      "track": "backend",
+      "milestone": "v2.2",
+      "depends_on": [
+        "T79"
+      ],
+      "provides": "NARROWED 2026-08-04: the raw `Path.is_file()` probe this was filed against is already gone — the T86 branch rewrote `find_ledger_path` to stat, catch and re-raise outside the shared `ABSENT_ERRNOS`, and hoisted that constant into `path_safety.py`. What remains is ownership, not behaviour: `find_ledger_path` still restates the `stat` + `S_ISREG` + errno-split inline instead of calling the `_is_regular_file` helper T80 made normative, so one shared decision still has two implementations.",
+      "path": "docs/planning/tickets/v2.2/T93-ledger-discovery-must-use-the-same-errno-split-the-run.md",
+      "status": "todo",
+      "audit_finding": "duplicated-or-contradictory-implementation",
+      "audit_date": "2026-08-02"
+    },
+    {
+      "id": "T94",
+      "title": "User and contributor docs still state the pre-T78 run-state contract",
+      "track": "docs",
+      "milestone": "v2.2",
+      "depends_on": [
+        "T80"
+      ],
+      "provides": "The user- and contributor-facing docs still describe edit and delete sharing one `todo`/`unknown` gate, `unknown` meaning 'no run-state directory', and a four-value state vocabulary. T80 updated `README.md` and `docs/planning/ARCHITECTURE.md` for exactly those changes and left these behind.",
+      "path": "docs/planning/tickets/v2.2/T94-user-and-contributor-docs-still-state-the-pre-t78-run-s.md",
+      "status": "todo",
+      "audit_finding": "architecture-drift",
+      "audit_date": "2026-08-02"
+    },
+    {
+      "id": "T95",
+      "title": "The ledger artifact is read but never watched",
+      "track": "backend",
+      "milestone": "v2.2",
+      "depends_on": [
+        "T91"
+      ],
+      "provides": "T91 landed as the fix for 'a factory artifact the console reads is not watched, so live updates are silently dead', and scoped itself to run-state. T79 added a reader for a NEW factory artifact in the same range that the watcher does not schedule, and no Ticket covers it. The audit found the incompleteness of its own fix.",
+      "path": "docs/planning/tickets/v2.2/T95-the-ledger-artifact-is-read-but-never-watched.md",
+      "status": "todo",
+      "audit_finding": "end-to-end-behaviour",
+      "audit_date": "2026-08-02"
+    },
+    {
+      "id": "T96",
+      "title": "The wrong-cause error and the degrading guard, everywhere else",
+      "track": "backend",
+      "milestone": "v2.1",
+      "depends_on": [
+        "T88"
+      ],
+      "provides": "T88's Amendment 1 applied as a CLASS: invalid_ticket_id is never returned for a well-formed id anywhere, O_NOFOLLOW's absence degrades to a refusal rather than to no check, and the containment gate has one implementation instead of two.",
+      "path": "docs/planning/tickets/v2.1/T96-name-the-cause-class-wide.md",
+      "status": "todo",
+      "source": "T88 review round 3 of resumption, 2026-08-02"
+    },
+    {
+      "id": "T97",
+      "title": "One bounded artifact read, not three copies of it",
+      "track": "backend",
+      "milestone": "v2.2",
+      "depends_on": [
+        "T86"
+      ],
+      "provides": "ledger.read_ledger and runs._read_json_artifact each independently implement the identical open/fstat/S_ISREG/cap/bounded-read sequence, differing only in byte cap and log text, and both docstrings acknowledge mirroring each other. The same drift hazard path_safety.py was created to remove, one layer up and doing more work.",
+      "path": "docs/planning/tickets/v2.2/T97-one-bounded-artifact-read-not-three.md",
+      "status": "todo",
+      "source": "T86 deep review round 2, 2026-08-05",
+      "review_finding": "37a4d62a4014"
+    },
+    {
+      "id": "T98",
+      "title": "Every v1 handler is async and touches the filesystem",
+      "track": "backend",
+      "milestone": "v2.2",
+      "depends_on": [
+        "T86"
+      ],
+      "provides": "list_runs is async def, so its two synchronous os.open+read calls per manifest ticket run on the asyncio event loop with no pagination, stalling every other route including the SSE stream. A house-wide pattern that /runs makes acute by doing roughly twice the per-ticket I/O of its peers.",
+      "path": "docs/planning/tickets/v2.2/T98-blocking-io-on-the-event-loop.md",
+      "status": "todo",
+      "source": "T86 deep review round 2, 2026-08-05",
+      "review_finding": "e22915783d59"
+    },
+    {
+      "id": "T99",
+      "title": "The result and receipt artifacts are read but never watched",
+      "track": "backend",
+      "milestone": "v2.2",
+      "depends_on": [
+        "T90"
+      ],
+      "provides": "/runs is the only view that can never live-update: runs.py declares RESULTS_/RECEIPTS_RELATIVE_DIR, the watcher schedules neither, and its json-only-root filter drops what would remain. Third instance of the read-but-unwatched class after T91 fixed one and T95 filed a per-artifact criterion against it — so the criterion this asks for is structural, not another file name.",
+      "path": "docs/planning/tickets/v2.2/T99-results-and-receipts-are-read-but-never-watched.md",
+      "status": "todo",
+      "source": "Incremental Integration Audit run 3, 2026-08-05",
+      "audit_finding": "F1",
+      "audit_lens": "end-to-end-behaviour"
+    },
+    {
+      "id": "T100",
+      "title": "/runs reads two fields its own readers declare unmodelled",
+      "track": "frontend",
+      "milestone": "v2.2",
+      "depends_on": [
+        "T90"
+      ],
+      "provides": "The fixture README, domain/runs.py and ARCHITECTURE.md:279 all say the console models no field inside a lane artifact; +page.svelte reads pr_url and status out of one. On a real factory project both columns can render em-dash for every ticket that has a result. Resolves the contradiction in one direction or the other.",
+      "path": "docs/planning/tickets/v2.2/T100-the-view-reads-fields-the-readers-below-it-refuse-to-model.md",
+      "status": "todo",
+      "source": "Incremental Integration Audit run 3, 2026-08-05",
+      "audit_finding": "F3",
+      "audit_lens": "incompatible-api-schema-event"
+    },
+    {
+      "id": "T101",
+      "title": "The containment refusal sends the operator to check two things that are not at fault",
+      "track": "fullstack",
+      "milestone": "v2.2",
+      "depends_on": [
+        "T86"
+      ],
+      "provides": "T86's LedgerNotContained routes into /spend's found-but-unread branch, whose only rendering names a size cap and file permissions. A symlinked .factory is diagnosed as neither. ARCHITECTURE.md:262-274 already states the rule this breaks: the remedy must be named.",
+      "path": "docs/planning/tickets/v2.2/T101-a-refusal-that-names-the-wrong-remedy.md",
+      "status": "todo",
+      "source": "Incremental Integration Audit run 3, 2026-08-05",
+      "audit_finding": "F4",
+      "audit_lens": "cross-ticket-regression"
+    },
+    {
+      "id": "T102",
+      "title": "Two endpoints, added in one version, take opposite positions on disclosing artifact content",
+      "track": "backend",
+      "milestone": "v2.2",
+      "depends_on": [
+        "T90"
+      ],
+      "provides": "/spend redacts a session id and then refuses to project even an 80-character excerpt; /runs serialises every key of two artifacts it declares unmodelled. One house rule in ARCHITECTURE.md, and both endpoints obeying it.",
+      "path": "docs/planning/tickets/v2.2/T102-two-endpoints-two-opposite-disclosure-policies.md",
+      "status": "todo",
+      "source": "Incremental Integration Audit run 3, 2026-08-05",
+      "audit_finding": "F5",
+      "audit_lens": "architecture-drift"
     }
   ]
 }

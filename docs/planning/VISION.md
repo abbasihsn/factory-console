@@ -11,7 +11,8 @@ milestone.
 
 App Factory projects live on disk as a folder tree of ticket `.md` files, a
 `docs/planning/tickets.json` manifest, a `ROADMAP.md`, and — once the factory has run —
-a run-state directory that marks which tickets are immutable (in-flight, ready, merged).
+a run-state source that marks which tickets a factory lane owns and has therefore made
+immutable (`in_progress`, `ready`, `merged`, and the rest of the factory's vocabulary).
 Today, understanding "what's in this project, where does it stand, and what depends on
 what" means opening those files by hand or grepping the manifest. There's no dedicated
 viewer that presents a factory project as a coherent, browsable whole.
@@ -24,7 +25,7 @@ viewer that presents a factory project as a coherent, browsable whole.
 - **Reviewers / collaborators** — pulling a factory-generated repo and wanting to
   orient themselves before running or reviewing lanes.
 - **Future: self** editing tickets before the factory has claimed them, without
-  touching in-flight/ready/merged work.
+  touching work a lane owns.
 
 ## Value proposition
 
@@ -41,7 +42,7 @@ files.
   looking for `docs/planning/tickets.json`. Same ergonomics as git.
 - **Ticket list:** id / status / title / track, filterable + searchable.
 - **Ticket detail:** full ticket `.md` rendered, plus resolved `depends_on` /
-  `provides` / factory run-state (todo / in-flight / ready / merged / etc.), plus a
+  `provides` / factory run-state (`todo`, `in_progress`, `ready`, `merged`, etc.), plus a
   link back to the ticket file on disk.
 - **Dep view:** for the selected ticket, the direct deps and dependents as clickable
   lists (no rendered graph yet — that's v1+).
@@ -55,7 +56,7 @@ files.
 - **v1 — richer read + navigation:** rendered dependency graph, roadmap/milestone
   view, cross-ticket search, file-watcher for live updates.
 - **v2 — safe editing:** create/edit `todo` tickets in the UI, respecting factory
-  run-state immutability (in-flight/ready/merged tickets are read-only, matching how
+  run-state immutability (a ticket a lane owns is read-only, matching how
   `/factory-reconcile-plan` treats them); manifest + roadmap kept in sync; single-commit
   writes behind a confirm.
 - **v3 — hosted multi-project control plane ("mission control"):** the console graduates from a
@@ -104,8 +105,8 @@ their source of truth.
 - **Compatible with factory data contracts:** consumes `docs/planning/tickets.json`
   and ticket `.md` files as written by `/factory-plan-project`,
   `/factory-plan-milestone`, and `/factory-reconcile-plan`; consumes the factory
-  run-state directory as written by `bin/factory-pm` / `bin/factory-lead`. Never
-  mutates run-state.
+  run-state source (`.factory/run-state.json`, or a legacy marker directory) as written
+  by `bin/factory-pm` / `bin/factory-lead`. Never mutates run-state.
 - **No coupling to the factory runtime:** the console reads factory-produced files
   but does not import or call the factory. It works against any directory shaped
   like a factory project, even one produced offline.

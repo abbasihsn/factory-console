@@ -2,7 +2,7 @@
 
 Two on-disk forms exist and both are read. The factory writes ONE JSON file,
 ``.factory/run-state.json``; the older console contract (``ARCHITECTURE.md``
-"Factory run-state directory (read-only)") is a directory of per-state marker
+"Factory run-state source (read-only)") is a directory of per-state marker
 subdirectories. Which one a project actually has is not a guess a caller should
 have to re-derive from a path shape, so the prober reports it: a
 :class:`RunStateSource` carries the resolved ``kind`` alongside its ``path``, and

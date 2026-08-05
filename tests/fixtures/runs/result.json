@@ -1,0 +1,9 @@
+{
+  "ticket_id": "T88",
+  "status": "ready",
+  "pr_url": "https://github.com/example/factory-console/pull/186",
+  "branch": "tkt/T88",
+  "started_at": "2026-08-02T09:14:05Z",
+  "finished_at": "2026-08-02T10:02:41Z",
+  "review_rounds": 2
+}

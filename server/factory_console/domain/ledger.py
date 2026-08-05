@@ -13,6 +13,16 @@ ledger over a field it does not even want to show. ``extra="forbid"`` remains
 right for models the console itself owns end to end (an unknown key there IS a
 bug); it is wrong for a file the console only observes.
 
+That tolerance is about the SHAPE of a record, and it does not extend to the
+VALUE of a field this console does arithmetic on. The two are separate axes and
+only the first is forward compatibility: an unrecognised key is tomorrow's
+factory measuring something new, whereas a non-finite ``cost_usd`` is not a
+record from the future, it is a broken record now — and admitting it does not
+cost that line, it costs every figure the line is summed into. So ``cost_usd``,
+alone among these fields, is constrained (see :class:`LedgerEntry`). Strictness
+here should stay that narrow: a value constraint earns its place only where a
+bad value would spread beyond its own entry.
+
 :class:`LedgerRead` and :class:`SkippedLine` are the console's OWN result types —
 nothing on disk is parsed into them — so they keep the house ``extra="forbid"``.
 
@@ -78,6 +88,9 @@ class ModelSpend(BaseModel):
     Keyed in ``by_model`` by the factory's full model id (e.g.
     ``claude-sonnet-5``), which the console treats as an opaque string — model
     ids are the factory's vocabulary, not a set this console may enumerate.
+
+    ``cost_usd`` refuses a non-finite value for the reason given on
+    :attr:`LedgerEntry.cost_usd`.
     """
 
     model_config = ConfigDict(frozen=True, extra="ignore")
@@ -86,7 +99,7 @@ class ModelSpend(BaseModel):
     output: int = 0
     cache_read: int = 0
     cache_creation: int = 0
-    cost_usd: float = 0.0
+    cost_usd: float = Field(default=0.0, allow_inf_nan=False)
 
 
 class LedgerEntry(BaseModel):
@@ -106,6 +119,25 @@ class LedgerEntry(BaseModel):
     straight out of its endpoints, so a comment asking the next lane not to
     serialise the field would be one ``-> LedgerEntry`` away from being ignored.
     The attribute still reads normally; it simply leaves no ``model_dump``.
+
+    ``cost_usd`` additionally refuses a NON-FINITE value, and it is the only
+    field here that does. ``json.loads`` accepts the bare literals ``NaN``,
+    ``Infinity`` and ``-Infinity`` (Python's own ``json.dumps`` emits them for
+    non-finite floats), and pydantic admits them into a ``float`` by default — so
+    without this, one such line would validate, and ``math.fsum`` would carry the
+    NaN into the project's total, every ticket row that entry touches, and its
+    level row. That poisoned total arrives as a MEASURED figure with an empty
+    ``skipped`` list, serialises as ``null`` through a schema that declares a
+    number, and makes the by-cost ordering arbitrary (every comparison against
+    NaN is false). Refusing it at parse time instead spends exactly the line it
+    came from: the entry becomes an ``invalid_entry`` skip, which the reader
+    already counts and the endpoint already publishes, so the total is visibly
+    partial rather than quietly wrong. The narrowness is the point — it is
+    ``extra="ignore"`` above that keeps tomorrow's ledger parsing, and this
+    guards a corrupt value in a field this console does arithmetic on, not an
+    unrecognised one. ``wall_min`` and the token counts are deliberately left
+    alone: nothing sums them into a published figure, so a strange value there
+    must not cost a real entry its place in the bill.
     """
 
     model_config = ConfigDict(frozen=True, extra="ignore")
@@ -119,7 +151,7 @@ class LedgerEntry(BaseModel):
     wall_min: float | None = None
     turns: int | None = None
     tokens: TokenCounts = TokenCounts()
-    cost_usd: float
+    cost_usd: float = Field(allow_inf_nan=False)
     cost_scope: str | None = None
     session_id: str | None = Field(default=None, exclude=True)
     review_tier: str | None = None

@@ -31,6 +31,7 @@ import factory_console
 from factory_console import cli
 from factory_console.cli import app
 from factory_console.config import WRITE_TOKEN_HEADER
+from factory_console.file_adapter.run_artifacts import RealRunArtifactReader
 
 runner = CliRunner()
 
@@ -92,6 +93,24 @@ class _StubServer:
 
     def run(self) -> None:
         return None
+
+
+def _capturing_server() -> tuple[type[_StubServer], dict[str, object]]:
+    """Return a fresh capturing ``uvicorn.Server`` stub plus the dict it fills.
+
+    Lets a test assert on what ``create_app`` actually BUILT — the only way to
+    prove a ``create_app`` kwarg survives the boot, since the CLI never hands the
+    app back. A new class and a new dict per call, deliberately: a shared or
+    class-level capture would leak one test's app into the next.
+    """
+    captured: dict[str, object] = {}
+
+    class _CapturingServer(_StubServer):
+        def __init__(self, config: object) -> None:
+            super().__init__(config)
+            captured["app"] = config.app  # type: ignore[attr-defined]
+
+    return _CapturingServer, captured
 
 
 class _SyncThread:
@@ -386,14 +405,9 @@ def test_env_var_pins_the_write_token_on_the_built_app(monkeypatch: pytest.Monke
     # app.state.write_token. Without this, dropping the create_app kwarg in a refactor
     # would leave every test green while the operator's pin silently stopped working.
     pinned = "cli-pinned-write-token"
-    captured: dict[str, object] = {}
+    server, captured = _capturing_server()
 
-    class _CapturingServer(_StubServer):
-        def __init__(self, config: object) -> None:
-            super().__init__(config)
-            captured["app"] = config.app  # type: ignore[attr-defined]
-
-    monkeypatch.setattr("factory_console.cli.uvicorn.Server", _CapturingServer)
+    monkeypatch.setattr("factory_console.cli.uvicorn.Server", server)
     monkeypatch.setattr("factory_console.cli.configure_logging", lambda level: None)
 
     result = runner.invoke(
@@ -404,6 +418,26 @@ def test_env_var_pins_the_write_token_on_the_built_app(monkeypatch: pytest.Monke
 
     assert result.exit_code == 0, result.output
     assert captured["app"].state.write_token == pinned  # type: ignore[union-attr]
+
+
+def test_production_boot_wires_the_real_run_artifact_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The production composition root must bind the artifact-read port, or
+    # GET /api/v1/runs raises the seam's wiring RuntimeError on a real boot. The
+    # kwarg executes on every CLI test (so it is line-covered) but nothing asserted
+    # it REACHED app.state — a dropped or misnamed kwarg would leave the suite green
+    # and only surface when an operator hit the endpoint.
+    server, captured = _capturing_server()
+
+    monkeypatch.setattr("factory_console.cli.uvicorn.Server", server)
+    monkeypatch.setattr("factory_console.cli.configure_logging", lambda level: None)
+
+    result = runner.invoke(app, [str(_MINIMAL), "--no-browser", "--port", "0"])
+
+    assert result.exit_code == 0, result.output
+    reader = captured["app"].state.run_artifact_reader  # type: ignore[union-attr]
+    assert isinstance(reader, RealRunArtifactReader)
 
 
 @pytest.mark.parametrize("pin", ["", "too-short"], ids=["blank", "short"])
