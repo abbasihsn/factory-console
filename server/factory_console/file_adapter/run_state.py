@@ -930,7 +930,7 @@ def _marker_state(run_state_dir: Path, ticket_id: str) -> RunState | None:
 def probe_ticket_state(run_state_dir: Path | None, ticket_id: str) -> RunState:
     """Resolve ``ticket_id``'s :class:`RunState` by probing ``run_state_dir``.
 
-    Resolution rules (see ARCHITECTURE.md "Factory run-state directory
+    Resolution rules (see ARCHITECTURE.md "Factory run-state source
     (read-only)"):
 
     - ``run_state_dir is None`` (no run-state directory on disk) ->

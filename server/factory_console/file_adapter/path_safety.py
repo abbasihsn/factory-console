@@ -161,7 +161,7 @@ def validate_ticket_id_as_segment(ticket_id: str) -> None:
     ``match``) so a trailing newline cannot sneak past the ``$`` anchor. And
     :data:`TICKET_ID_PATTERN` admits ``.`` as an ordinary character, so bare ``.``
     and ``..`` satisfy the regex while still being single-segment traversals —
-    they are rejected explicitly, per the ARCHITECTURE run-state directory
+    they are rejected explicitly, per the ARCHITECTURE run-state source
     contract.
 
     It lives HERE, beside the exception it raises, because the rule and the error

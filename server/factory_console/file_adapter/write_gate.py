@@ -19,7 +19,7 @@ source resolved and does not list the ticket at all), and ``unreadable`` (the
 information is UNAVAILABLE: a run-state source is THERE and could not be read at all,
 or it lists this ticket under an entry this console cannot interpret) — is read-only, matching
 how ``/factory-reconcile-plan`` treats them (see ``ARCHITECTURE.md`` "Factory
-run-state directory (read-only)"). :func:`_ensure_state_allowed` is the one
+run-state source (read-only)"). :func:`_ensure_state_allowed` is the one
 resolution-and-refusal site every gated write passes before touching disk —
 :func:`ensure_mutable` and :func:`ensure_deletable` are its two named entry
 points, differing ONLY in their allowlist — and :class:`TicketNotMutable` is the
