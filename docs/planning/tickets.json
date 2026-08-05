@@ -1275,7 +1275,7 @@
       "depends_on": [
         "T79"
       ],
-      "provides": "T79's ledger discovery probes a `.factory` artifact with a raw `Path.is_file()`, while T80 made the discovery rule normative and implemented it via the module's own errno split. Two readers of the same tree therefore disagree about an unprobeable path.",
+      "provides": "NARROWED 2026-08-04: the raw `Path.is_file()` probe this was filed against is already gone — the T86 branch rewrote `find_ledger_path` to stat, catch and re-raise outside the shared `ABSENT_ERRNOS`, and hoisted that constant into `path_safety.py`. What remains is ownership, not behaviour: `find_ledger_path` still restates the `stat` + `S_ISREG` + errno-split inline instead of calling the `_is_regular_file` helper T80 made normative, so one shared decision still has two implementations.",
       "path": "docs/planning/tickets/v2.2/T93-ledger-discovery-must-use-the-same-errno-split-the-run.md",
       "status": "todo",
       "audit_finding": "duplicated-or-contradictory-implementation",

@@ -35,7 +35,9 @@ there and RAISES when it could not tell, precisely so this endpoint cannot read
 the second as the first — an unsearchable ``.factory/`` billed as "$0.00, no
 ledger" would be the same false statement about real money, arriving by way of a
 directory mode instead of a missing file. The raise is caught here and answered
-as found-but-unread.
+as found-but-unread. A ledger that resolves OUTSIDE the project root raises the
+same way and gets the same answer: the console refuses to read through it, and a
+refusal to look leaves the bill exactly as unknown as an inability to look does.
 """
 
 from __future__ import annotations
@@ -44,8 +46,12 @@ from pathlib import Path
 
 from fastapi import APIRouter, Request
 
-from factory_console.domain.ledger import LedgerRead, SkipReason
-from factory_console.domain.spend import SkippedLineInfo, SourceInfo, SpendResponse
+from factory_console.domain.spend import (
+    SkippedLineInfo,
+    SourceInfo,
+    SpendResponse,
+    was_read,
+)
 from factory_console.domain.spend_calc import aggregate
 from factory_console.file_adapter.ledger import (
     LEDGER_RELATIVE_PATH,
@@ -56,24 +62,6 @@ from factory_console.file_adapter.ledger import (
 # The package ``__init__`` owns the ``/api/v1`` prefix; this sub-router only names
 # the route and its OpenAPI tag.
 router = APIRouter(tags=["spend"])
-
-# The skip reasons that belong to the WHOLE file rather than to any one line. T79
-# records them at line 0 with zero entries, which is indistinguishable from an
-# empty ledger by the totals alone — so they are named here and reported as
-# ``source.read: false``. See :func:`_was_read`.
-_WHOLE_FILE_REASONS: frozenset[SkipReason] = frozenset({"file_too_large", "unreadable"})
-
-
-def _was_read(result: LedgerRead) -> bool:
-    """Whether the ledger's CONTENT was actually examined.
-
-    ``False`` for the two whole-file failures — over the size cap, or impossible to
-    stat/read — where T79 returns zero entries because nothing was parsed, not
-    because nothing was spent. Keyed on the reason rather than on ``line_no == 0``
-    so a future per-line reason that happens to land at line 0 cannot silently turn
-    a partial read into an unread one.
-    """
-    return not any(line.reason in _WHOLE_FILE_REASONS for line in result.skipped)
 
 
 @router.get("/spend")
@@ -121,7 +109,7 @@ async def get_spend(request: Request) -> SpendResponse:
     result = read_ledger(path)
     return SpendResponse.from_report(
         aggregate(result.entries),
-        source=SourceInfo(found=True, read=_was_read(result), path=str(result.path)),
+        source=SourceInfo(found=True, read=was_read(result), path=str(result.path)),
         skipped=[
             SkippedLineInfo(lineNo=line.line_no, reason=line.reason) for line in result.skipped
         ],

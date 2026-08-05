@@ -28,6 +28,7 @@ rewrite.
 
 from __future__ import annotations
 
+import errno
 import re
 from pathlib import Path
 
@@ -36,6 +37,33 @@ from factory_console.errors import FactoryConsoleError
 
 _DEFAULT_REASON = "ticket id failed path-safety validation"
 _PATTERN_VIOLATION_REASON = f"Ticket id must match {TICKET_ID_PATTERN}"
+
+# The errno set that means "this node definitively is not there". DELIBERATELY NARROWER
+# than CPython's ``pathlib._ignore_error``, which also swallows ``ELOOP``: a symlink loop
+# — or a chain past ``MAXSYMLINKS`` — means the entry EXISTS and could not be RESOLVED,
+# which is "I could not look", not "there is nothing to find". Nothing is lost by
+# excluding it, because a DANGLING symlink already answers ``ENOENT`` on its own.
+# Swallowing ``ELOOP`` reopened T80 amendment 3's fail-open through the errno table
+# rather than through the walk: a looping ``merged/<id>`` answered ``False`` instead of
+# raising, so ``run_state._marker_state`` stepped over it and returned a stale ``todo``
+# marker — the MUTABLE state — for a ticket the factory had merged; and a looping
+# run-state directory answered ``False`` from ``run_state._is_directory``, which
+# ``run_state_resolver`` reads as "not a directory" and turns into the mutable
+# ``unknown`` for EVERY ticket in the project. ``EBADF`` stays: a path-based ``stat()``
+# cannot raise it, so it is inert either way, and dropping it would only invite someone
+# to re-add ``ELOOP`` alongside it. Everything else (``EACCES`` above all) means "it may
+# well be there and I could not look", which is the distinction T80's second amendment
+# turns on.
+#
+# It lives HERE, with :func:`resolve_or_none` and :func:`within_root`, because it is the
+# same KIND of rule they are: one every reader of the factory's tree must answer
+# identically. It was previously defined byte-for-byte twice, in ``run_state.py`` and
+# ``ledger.py``, under a comment promising to keep the copies in step by hand — and this
+# module's own docstring names that arrangement as the hazard, since a future tightening
+# applied to one copy and not the other leaves the write gate and the spend endpoint
+# disagreeing about whether an unsearchable ``.factory/`` is absent or unreadable. One
+# of those answers is ``$0.00`` on a real bill.
+ABSENT_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR, errno.EBADF})
 
 
 class PathTraversal(FactoryConsoleError):
@@ -133,7 +161,7 @@ def validate_ticket_id_as_segment(ticket_id: str) -> None:
     ``match``) so a trailing newline cannot sneak past the ``$`` anchor. And
     :data:`TICKET_ID_PATTERN` admits ``.`` as an ordinary character, so bare ``.``
     and ``..`` satisfy the regex while still being single-segment traversals —
-    they are rejected explicitly, per the ARCHITECTURE run-state directory
+    they are rejected explicitly, per the ARCHITECTURE run-state source
     contract.
 
     It lives HERE, beside the exception it raises, because the rule and the error

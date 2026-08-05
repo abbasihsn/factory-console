@@ -16,7 +16,7 @@ flowchart LR
   Server -->|serves built assets| Browser
   Server --> Domain[Domain Services\nTicketService,\nDepsService]
   Domain --> Adapter[FileAdapter port\nread-only]
-  Adapter --> FS[(Project files:\n docs/planning/tickets.json\n docs/planning/tickets/*.md\n ROADMAP.md\n .factory/run-state/**)]
+  Adapter --> FS[(Project files:\n docs/planning/tickets.json\n docs/planning/tickets/*.md\n ROADMAP.md\n .factory/run-state.json\n .factory/metrics, results, receipts)]
 ```
 
 ## SDLC coverage
@@ -70,10 +70,10 @@ flowchart LR
 
 No database. Source of truth is the target project's files, modeled as read-through domain entities that live in memory only during a single request.
 
-- **Project** — `{ rootPath, ticketsManifestPath, ticketsDir, roadmapPath|None, runStateDir|None, discoveredAt }`. Constructed once per request.
+- **Project** — `{ rootPath, ticketsManifestPath, ticketsDir, roadmapPath|None, runStateSource|None, runStateDir|None, discoveredAt }`. Constructed once per request. `runStateSource` is the resolved run-state artifact (`{ kind: "json" | "directory", path }`) and is what every run-state read dispatches on; `runStateDir` answers only "which directory, if any, is the source", and is `None` for a JSON-sourced project — see "Factory run-state source" below.
 - **Ticket** — `{ id, title, status, track|None, milestone|None, dependsOn: [str], provides: [str], files: [str], filePath, bodyMarkdown, bodyHtml, raw: dict }`. Joins a manifest entry with its `.md` at `docs/planning/tickets/<id>.md`.
 - **TicketSummary** — list projection: `{ id, title, status, track, milestone, runState, depCount, dependentCount }`.
-- **RunState** — enum, derived from the project's resolved run-state **source** (`.factory/run-state.json` in preference to the marker directory — see "Factory run-state directory" below, whose addenda are normative for HOW each member is resolved). Members: the four directory-form states `{ todo, in_flight, ready, merged }`; the six further factory statuses `{ in_progress, in_part, in_submilestone, flagged, failed, needs_human }` (T78, JSON form only); and the three "no state was read" answers `{ unknown, absent, unreadable }` (T80), which are the ones the write gates discriminate on. Single source of truth: `factory_console.domain.run_state.RunState`; the SPA's union is generated from it, never hand-maintained.
+- **RunState** — enum, derived from the project's resolved run-state **source** (`.factory/run-state.json` in preference to a legacy marker directory — see "Factory run-state source" below, which is normative for HOW each member is resolved). Members: the factory's nine states `{ todo, in_progress, ready, in_part, in_submilestone, merged, flagged, failed, needs_human }`; the one further name only the legacy marker directory can express, `in-flight` (the console's own name — the factory has no such state); and the three console-side "no state was read" answers `{ unknown, absent, unreadable }`, which are not factory states at all and are the ones the write gates discriminate on. Single source of truth: `factory_console.domain.run_state.RunState`; the SPA's union is generated from it, never hand-maintained.
 - **DepNeighborhood** — `{ ticket, directDeps, directDependents, unresolvedDeps }`. Dependents computed by reverse-indexing `dependsOn` per request.
 - **Roadmap** — `{ path, bodyMarkdown, bodyHtml }` — MVP detects presence; v1 renders full body.
 
@@ -113,51 +113,202 @@ Python `Protocol`, read-only, eight methods (all but `load_project` take a `Proj
 
 Two implementations: `RealFileAdapter` (hits real FS) and `FakeFileAdapter` (in-memory for tests). Handlers depend on the Protocol, wired via `FastAPI.Depends()`. This is the seam the file-adapter track owns; backend never touches `open()` directly.
 
-### Factory run-state directory (read-only)
-Fallback probe order: `<root>/.factory/run-state/`, then `<root>/docs/planning/.run-state/`. Per-ticket state via marker file or subdirectory:
+### Factory run-state source (read-only)
 
-- `<runStateDir>/todo/<id>`, `<runStateDir>/in-flight/<id>/`, `<runStateDir>/ready/<id>/`, `<runStateDir>/merged/<id>`.
+> **Correction (v2.1 / T86) — this section used to be wrong about the factory.** It was titled
+> "Factory run-state directory (read-only)" and described a directory the factory does not write.
+> It gave a probe order of `<root>/.factory/run-state/` then `<root>/docs/planning/.run-state/`, a
+> four-name vocabulary (`todo` / `in-flight` / `ready` / `merged`), and two resolution rules:
+> *"Absence of the run-state dir → all tickets `RunState.unknown`. Present dir but missing marker →
+> `RunState.todo`."* Measured against the factory: it writes `.factory/run-state.json`, and its
+> vocabulary is the nine values of `FAC_STATES` — **none of which is `in_flight`**. That name was
+> the console's own invention and survives only as a legacy marker-directory spelling
+> (`in-flight`), never as something the factory says. The string `run-state.json` did not appear in
+> this file at all.
+>
+> The console's code **faithfully implemented the text above**, which is why no test caught the
+> gap: the contract was wrong about the factory, not the code wrong about the contract. So the
+> rules below are a **behaviour change** as well as a correction — most of all the quoted
+> *"present dir but missing marker → `RunState.todo`"*, which is now `absent` and refuses an edit
+> where `todo` allowed one.
+>
+> **History.** The correction was worked out ticket by ticket in `docs/planning/tickets/v2.1/`:
+> `T78` (read the source the factory actually writes; model the nine states it actually has),
+> `T80` + its amendments 1–4 (the four-way split, the resolution invariant, `unknown` narrowed to
+> silence), `T92` + its amendments 1–2 (the invariant reaching the directory form, and
+> MONOTONICITY — the property every one of these rules turned out to be an instance of). Those
+> ticket files remain the narrative record of *how* the defect happened; this section is the
+> settled contract, and it is what a lane builds against.
 
-Absence of the run-state dir → all tickets `RunState.unknown`. Present dir but missing marker → `RunState.todo`. The console **MUST NOT** write anything here in v0 or v2. v2's editing gate uses `RunState == todo` (or `unknown`) as the only editable predicate.
+#### The source
 
-> **⚠ SUPERSEDED BY T80 — do not build against the two sentences above.** They are kept verbatim only so the correction can quote what it replaces. As shipped, resolution is three-way, not two: **no source at all → `unknown` (mutable)**; **a resolved but _vacuous_ source → `unknown` (mutable)** — a marker directory holding no marker for any ticket, or a `run-state.json` whose `tickets` object parsed and is empty; **a _populated_ source that does not list this ticket → `absent`**, which is refused an edit but is still **deletable** (`ensure_deletable`, because `create_ticket` is ungated). A **vanished** source — one that is no longer there when probed — resolves `unknown`, never `absent`. There are therefore **two** predicates, not one: `MUTABLE_STATES` for edit and the wider `DELETABLE_STATES` for delete. The console also reads `.factory/run-state.json` in preference to this directory. See `docs/planning/tickets/v2.1/T80-write-gate-absent-vs-unsourced.md`; **T86** rewrites this whole section.
->
-> **Addendum (T80 amendment 2) — resolution is four-way.** A source that **exists and cannot be READ** (`EACCES` on a marker directory or its state subdirectories, an I/O error on `run-state.json`) resolves **`unreadable`**, which is in **neither** allowlist: both edit and delete are refused, and the 409 names the source path. It is distinct from `unknown` ("I looked and there is nothing to find" — no source, vanished, vacuous, or content that could not be parsed) and from `absent` ("the source was read and does not list this ticket", which stays deletable), because an unreadable source may be hiding a `merged` marker and a write must never be granted because the check could not run.
->
-> **Addendum (T80 amendment 3) — the resolution invariant.** A run-state resolution that **could not read** something it needed must **refuse**; it may never fall back to a state that is *more permissive* than the one it failed to check. "I looked and found nothing" and "I could not look" are different answers, and only the first may return a mutable state. Concretely for the marker directory: the precedence walk (`merged` > `ready` > `in-flight` > `todo`) returns a marker only when every state **at or above** it was readable, so a stale `todo/<id>` under an unreadable `merged/` resolves `unreadable`, not the mutable `todo`. A state directory **below** an answer already read does not change it. The same rule binds source **discovery**: a location that could not be probed becomes the source and refuses, rather than being skipped into "this project has no run-state". *(Superseded in wording by amendment 4 below — the conclusion is unchanged.)*
->
-> **Addendum (T80 amendment 4) — the resolution invariant, restated; and `unknown` narrowed to silence.** Amendment 3 said "could not **read**". That misses a case that is not a read failure at all: the file was read fine, we read `status: <value>`, and **could not interpret it**. Looked, saw, did not understand.
->
-> > **THE RESOLUTION INVARIANT (restated).** A run-state resolution must refuse whenever the information it needed is **unavailable** — whether because it could not be read, or because it was read and could not be interpreted. It may never fall back to a state *more permissive* than the one it failed to establish.
->
-> Concretely: a `run-state.json` entry that names **this** ticket under a `status` outside `FACTORY_STATUS_ALIASES` — or under a non-string `status`, or in an entry that is not an object at all — now resolves **`unreadable`** and is refused **both** writes, where it previously resolved the mutable `unknown`. An unrecognised status is the factory speaking about this ticket in a vocabulary this console does not know; the one thing it is not is silence. The refusal **names the value** (*"the run-state says `in_review`, which this console does not know"*), not "not tracked" and not "could not be read" — the state is shared with amendment 2's cause because the authorization answer is the same, but the remedy differs (upgrade the console vs. fix the source's permissions) and so the message must. The value also still appears in `JsonRunState.unrecognised`: naming the gap and refusing it are both required.
->
-> This **narrows `unknown` to "nothing was said"** — no source at all, a source that vanished, a source that lists nobody, and a document whose whole content could not be parsed (so it named no ticket either). Those stay **mutable**; a project with no usable run-state must remain fully usable in the console. The document-level parse failure is the deliberate boundary of this amendment and remains ratified as `unknown` — see the ticket's open item 2, which asks whether it should move too.
->
-> **Addendum (T92) — the restated invariant reaches the DIRECTORY form.** Amendment 4 concretised "read and could not be interpreted" only for `run-state.json` statuses. The marker directory has the same gap and it is the last of the family: `_MARKER_PRECEDENCE` (`merged`, `ready`, `in-flight`, `todo`) is the console's **whole vocabulary**, not the factory's, so a state subdirectory outside it — `.factory/run-state/in_review/` once the factory grows a tenth `FAC_STATES` entry — is the factory speaking about a ticket in a vocabulary this console does not know. Three changes, all in `file_adapter/run_state.py`:
->
-> 1. **An id NAMED under such a subdirectory resolves `unreadable`**, refused by both gates. **Per id, not per source** — an unrecognised directory that **opens and** names nobody changes nothing, because a misplaced folder must not turn a whole project read-only. Read "names nobody" strictly: a directory that *opened* and held no marker for this id. One that will **not** open is the other case entirely — see amendment 1 below, which is per source.
-> 2. **It refuses AHEAD of any recognised marker for the same id**, which amends amendment 3's precedence sentence above: the walk `merged` > `ready` > `in-flight` > `todo` is no longer the complete rule, because a state with no name has no *rank* either — `merged/<id>` can no longer settle the question once `in_review/<id>` might outrank it.
-> 3. **Vacuity counts markers under EVERY subdirectory**, not only the four named ones — so the definition in the superseded paragraph above ("a marker directory holding no marker for any ticket") means *any* subdirectory. A source whose markers all live under `in_review/` **lists** tickets; we simply cannot name their states, so ids it does not name stay `absent` rather than becoming the mutable `unknown`.
->
-> As in amendment 4, the refusal **names what it could not interpret** — `state 'in_review'`, the directory form's mirror of `status 'in_review'` — so the operator is sent to upgrade the console, not to chmod a path that reads fine. The unrecognised state names are also collected and logged once per scan, the directory form's answer to `JsonRunState.unrecognised`. See `docs/planning/tickets/v2.1/T92-unrecognised-state-directory.md`.
->
-> **Addendum (T92 amendment 1) — an UNSEARCHABLE unrecognised subdirectory refuses PER SOURCE.** Item 1 above is per id because it is decided by **reading** the unknown state directory. A directory that was **discovered and will not open** — `.factory/run-state/in_review/` mode `0700` under the factory's uid, so the run-state dir lists fine while stat'ing anything inside it raises — cannot be enumerated, so **no id in that source can be ruled out of it**. It therefore resolves `unreadable` for **every id in the source**, and, exactly as in item 2, **ahead of any recognised marker**: a `todo/<id>` this console can read cannot outrank a state whose rank is unknown.
->
-> This is not a widening of the over-refusal guard in item 1, it is the guard's boundary. That guard protects a directory that names **nobody** — empty, and readable enough to *know* it is empty. **An unsearchable directory is not empty, it is unknown**, which is amendment 4's absent-is-not-empty distinction one level out. So a project whose run-state directory holds an unsearchable subdirectory does go read-only until a human fixes the permissions, and that is the intended outcome: the console cannot establish who owns those tickets and must not edit tickets a lane may own. It is also loud, which the fail-open it replaces was not — and a refusal is recoverable with one `chmod`, while an unnoticed write to a ticket the factory has moved on from is not.
->
-> The remedy differs from item 1's, so the message must too: this refusal **names the directory it could not search** and says it **could not be looked in** — as shipped, `run-state: <dir> holds state 'in_review', which this console could not look in`. Never "does not know" (that sends the operator to upgrade a console when the fix is a permission bit) and never "could not be enumerated" (that sends them to chmod a run-state directory that enumerated fine). Because nothing was *read*, there is no value to quote, so the name is carried in the operator-facing **log** rather than in `TicketNotMutable`'s reason — that field phrases "your console is a version behind the factory", which would be false here. See the ticket's "Amendment 1" section.
->
-> **Addendum (T92 amendment 2) — MONOTONICITY, the property every rule above is an instance of.** T80 took four amendments to close six cases and T92 took two to find three more, each stated as a rule about a *situation* — an unreadable source, a looping directory, an unclassifiable status, an unsearchable directory. Situations are unbounded, so that list never closes. Stated as a property of the resolution function instead, it does:
->
-> > **MONOTONICITY. Resolution must be monotone in information: if input A reveals strictly less than input B, A's answer must be *no more permissive* than B's. There is no filesystem state so degraded that it grants access a better-understood state would refuse.**
->
-> Every addendum above is a corollary of it, and two answers changed to satisfy it:
->
-> 1. **A run-state directory entry whose `stat` FAILED is recorded, never dropped.** A symlink loop at `.factory/run-state/in_review` raises `ELOOP` (deliberately not an "absent" errno), and the entry used to be discarded from the unrecognised set — so it was never probed for any id and a stale readable `todo/<id>` still resolved the **mutable** `todo`. Dropping is the sharpest instance of the failure: discarding what could not be read leaves a collection that looks *smaller and cleaner*, which reads downstream as **more** information, not less. It is now recorded as an unrecognised state name, where the existing machinery refuses it per source exactly as amendment 1's unsearchable directory does. The REFUSAL needs no new branch, but the **message does**, and it is the family's third: an entry that would not `stat` has not been shown to be a state directory, nor to carry a name this console merely lacks, so it says it **could not be identified** — `run-state: <dir> holds an entry 'in_review' this console could not identify` — and never "does not know", which would send an operator to upgrade a console when the fix is a symlink loop or a permission bit.
-> 2. **A run-state directory that cannot be ENUMERATED refuses every id in the source**, ahead of the marker walk, where a readable `todo/<id>` used to answer. That residual was documented as deliberate and it was non-monotonic: a directory that will not *list* reveals strictly less than one that lists fine while holding a subdirectory that will not *open*, yet the first was answering markers while the second (amendment 1) refuses everything. Its refusal **names no subdirectory** — the listing that would have produced a name is what failed — so the message points at the run-state directory itself and says it **could not be enumerated**, the one wording amendment 1 forbids for its own case, and for the mirror-image reason.
->
-> The enumeration this amendment requires — every resolution path verdicted against *"is there a strictly-less-informative input that produces a strictly-more-permissive output?"* — is stated in the PR body, per the ticket's "Required before any further review round". See the ticket's "Amendment 2" section.
+The console resolves **one run-state source** per project and reports which one it used —
+`Project.runStateSource` = `{ kind: "json" | "directory", path }`. Probe order:
+
+1. `<root>/.factory/run-state.json` — what the factory writes (T78);
+2. `<root>/.factory/run-state/` — legacy marker directory;
+3. `<root>/docs/planning/.run-state/` — legacy marker directory, older location.
+
+The resolved thing is called a **source** everywhere, not "the run-state directory": the directory
+is one of two forms it can take, and the one the factory no longer produces.
+`Project.runStateDir` is kept only to answer "which directory, if any, is the source" — a
+JSON-sourced project has `runStateDir is None` — and every run-state read dispatches on
+`runStateSource`.
+
+In the directory form, per-ticket state is a marker file or subdirectory named by the state:
+`<runStateDir>/todo/<id>`, `<runStateDir>/in-flight/<id>/`, `<runStateDir>/ready/<id>/`,
+`<runStateDir>/merged/<id>`.
+
+The console **MUST NOT write to any run-state source**, in any version. The first two locations
+live under `.factory/`, which is machine-local and gitignored (see "Other factory artefacts"
+below), so **no source is guaranteed to exist** — a fresh clone of a heavily-run project may resolve
+none at all, and the third location, being under `docs/planning/`, is the only one a clone carries.
+
+#### Vocabulary
+
+The factory's own states — the nine values of `FAC_STATES`, as written to `run-state.json`:
+
+`todo` · `in_progress` · `ready` · `in_part` · `in_submilestone` · `merged` · `flagged` ·
+`failed` · `needs_human`
+
+The legacy marker directory can only express four names — `todo`, `in-flight`, `ready`, `merged` —
+and `in-flight` is **the console's own name for a directory form the factory has stopped writing**,
+not a factory state. Nothing in the factory is ever called `in_flight`.
+
+On top of those, the console has three answers of its own. **They are not factory states**: no
+source ever names them, and no lane ever puts a ticket into one. They record what the console
+learned when it went looking, and they are what the write gates discriminate on:
+
+- **`unknown`** — nothing was said.
+- **`absent`** — a populated source answered, and its answer is "not listed".
+- **`unreadable`** — something was said and the console could not make it out.
+
+#### Resolution — four-way, not two
+
+- **No source at all → `unknown`** (mutable). A project with no usable run-state must stay fully
+  usable in the console.
+- **A resolved but VACUOUS source → `unknown`** (mutable). A marker directory holding no marker
+  for any ticket, or a `run-state.json` whose `tickets` object parsed and is empty. A source that
+  names nobody exercises no authority over anybody; answering `absent` here would turn an
+  empty-but-valid run-state into a project-wide read-only lockout. Also `unknown`: a source whose
+  whole document was read and could not be parsed or understood, because a document that resolved
+  into nothing named no ticket either.
+- **A POPULATED source that does not list this ticket → `absent`** — refused an **edit**, but
+  still **deletable**. This replaces *"present dir but missing marker → `RunState.todo`"* and is a
+  deliberate behaviour change. It stays deletable because `create_ticket` is ungated: a ticket the
+  console just minted is `absent` in any project with a populated source, and refusing the delete
+  too would leave a mistyped new ticket unrecoverable through the UI that created it.
+- **A source that IS there and could not be READ → `unreadable`** — refused for **both** edit and
+  delete. `EACCES` on a marker directory or one of its state subdirectories, an I/O error on
+  `run-state.json`, a directory entry that will not `stat`, and equally the *read-but-unintelligible*
+  cases: an entry naming this ticket under a `status` outside the alias table, under a non-string
+  `status`, under an entry that is not an object, or a marker under a state subdirectory outside the
+  four the console can name. The 409 names the source path, so an operator reads it as a problem
+  with the source rather than as "this ticket is not tracked".
+
+A **vanished** source — one that is no longer there when probed — resolves **`unknown`**: nothing
+is there to hide a marker, so it behaves exactly like a project with no source. An **unreadable**
+one resolves **`unreadable`**. **The two must not be folded together.** The first three cases above
+are "I looked and there is nothing to find"; the fourth is "I could not look", and granting a write
+because the check could not run is the fail-open this split exists to close.
+
+#### The resolution invariant
+
+> **MONOTONICITY. Resolution must be monotone in information: if input A reveals strictly less than
+> input B, A's answer must be no more permissive than B's. There is no filesystem state so degraded
+> that it grants access a better-understood state would refuse.**
+
+Every rule in this section is a corollary. A resolution that could not establish what it needed —
+whether because it could not be read, or because it was read and could not be interpreted — must
+**refuse**; it may never fall back to a state *more permissive* than the one it failed to check.
+"I looked and found nothing" and "I could not look" are different answers, and only the first may
+return a mutable state. What could not be read is **recorded, never dropped**: discarding an entry
+that failed to `stat` leaves a collection that looks smaller and cleaner, which reads downstream as
+*more* information, not less.
+
+Concretely, for the legacy directory form:
+
+- The marker-precedence walk is `merged` > `ready` > `in-flight` > `todo`, and it returns a marker
+  only when every state **at or above** it was readable — so a stale `todo/<id>` under an
+  unreadable `merged/` resolves `unreadable`, not the mutable `todo`. A state directory *below* an
+  answer already read does not change it.
+- A **state subdirectory outside those four names** (`.factory/run-state/in_review/`, once the
+  factory grows a tenth `FAC_STATES` entry) is the factory speaking in a vocabulary this console
+  does not know. An id **named** under such a subdirectory resolves `unreadable` — **per id**, since
+  a misplaced folder must not turn a whole project read-only — and it refuses **ahead of any
+  recognised marker for the same id**, because a state with no name has no rank either.
+- An unrecognised subdirectory that **opens and names nobody** changes nothing. One that **will not
+  open**, or an entry that will not `stat` (a symlink loop raising `ELOOP`), is not empty — it is
+  unknown — and refuses **per source**, for every id in it, ahead of any recognised marker.
+- A run-state directory that cannot be **enumerated** refuses every id in the source, ahead of the
+  marker walk.
+- **Vacuity counts markers under EVERY subdirectory**, not only the four named ones. A source whose
+  markers all live under `in_review/` *lists* tickets — the console simply cannot name their states
+  — so ids it does not name stay `absent` rather than becoming the mutable `unknown`.
+- The same rule binds source **discovery**: a location that could not be probed becomes the source
+  and refuses, rather than being skipped into "this project has no run-state".
+
+#### The two write predicates
+
+There are **two** allowlists, not one editable predicate:
+
+- `MUTABLE_STATES` = `{ todo, unknown }` — gates **edit** (`ensure_mutable`).
+- `DELETABLE_STATES` = `MUTABLE_STATES` + `{ absent }` — gates **delete** (`ensure_deletable`).
+
+`unreadable` is in neither. `create_ticket` passes no gate at all, which is why delete is the wider
+of the two.
+
+Refusals are `409 ticket_not_mutable`, and their wording is part of the contract, because the
+authorization answer is shared while the **remedy** differs:
+
+- unrecognised `status`/state value → names the value the console could not interpret ("upgrade the
+  console"), never "could not be read";
+- a source that could not be read → names the source path and the failure mode ("fix the
+  permissions"), and must not offer delete as a way out;
+- an unsearchable state subdirectory → names the directory it **could not look in** — carried in
+  the operator-facing log, since nothing was read and there is no value to quote;
+- a run-state directory that could not be enumerated → names the directory itself and says it
+  **could not be enumerated**, with no subdirectory named (the listing that would have produced a
+  name is what failed);
+- an entry that would not `stat` → says it **could not be identified**;
+- `absent` → says the console will not **edit** the ticket and that it can still be deleted.
+
+### Other factory artefacts (read-only)
+
+Beside the run-state source, the console reads four more factory-owned artefacts. It writes to
+none of them, and it models no field inside them beyond what it has verified.
+
+| Artefact | Path | Read by |
+|---|---|---|
+| Spend ledger | `<root>/.factory/metrics/ledger.jsonl` | `GET /api/v1/spend` |
+| Lane results | `<root>/.factory/results/<ticketId>.json` | `GET /api/v1/runs` |
+| Lane receipts | `<root>/.factory/receipts/<ticketId>.json` | `GET /api/v1/runs` |
+| Last stop | `<root>/.factory/last-stop.json` | *not yet surfaced by any endpoint* |
+
+The file-adapter reader for last stop exists (`read_last_stop`), but nothing composes it into a
+response yet: it carries no ticket id — it is one artefact per PROJECT saying why the last run
+stopped — so it does not belong on the per-ticket `RunRecord`, and `GET /api/v1/runs` therefore
+carries only `result` and `receipt` (see "REST v1" above, which is authoritative for what is on the
+wire). Whichever ticket surfaces last stop owns where it belongs.
+
+**The rule that governs all of them: `.factory/` is gitignored, so every source is OPTIONAL, and a
+missing one renders as MISSING — never as zero and never as empty.** Having no artefacts is the
+normal state of a fresh clone, not a measurement. So every read returns *why* it is empty rather
+than a bare `None`: `absent` | `unreadable` | `unparseable` | `too_large` for the per-ticket
+artefacts (`ArtifactRead = { path, data, reason }`), and `source.found` / `source.read` for the
+ledger — which is what lets `GET /api/v1/spend` tell no ledger from an unread one from a measured
+zero, and `GET /api/v1/runs` answer `200` with every source `absent` rather than `404` or `[]`. See
+those two entries under "REST v1" above for the response shapes.
+
+Two consequences worth stating, since both look like bugs until explained:
+
+- **Attributed cost.** A ledger entry naming several tickets is charged **in full to each** id it
+  names (`attribution: full-to-each-id`), so `byTicket` can sum to **more** than `totals.costUsd`.
+  Deliberate: splitting a lane's cost across the ids it touched would invent a division the factory
+  never recorded.
+- **Run-state and run artefacts are different sources.** A project can show a full board of
+  `merged` / `flagged` badges and have no results or receipts at all — the legacy marker directory
+  under `docs/planning/` is committed, while `.factory/` is not.
 
 ### CLI contract
 ```
@@ -207,6 +358,13 @@ domain/ports — no domain rewrite. Every read still flows through the source-ag
   Tickets / run-state / roadmap are **never** copied into it; they stay read-through from each
   project's files. (A flat file would suffice; SQLite is chosen so a later audit log / multi-user need
   no migration.)
+- **Run-state + run artefacts, per project (CLARIFIED by v2.1):** each registered project resolves
+  its **own** run-state source and its own `.factory/` artefacts by the rules in "Factory run-state
+  source" and "Other factory artefacts" above — the same source resolution and the same full
+  vocabulary, looped over the registry, with no directory form assumed. Because `.factory/` is
+  gitignored and machine-local, a hosted console shows run-state, runs and spend only for projects
+  whose working copies live on the machine it runs on; for the rest those sources are legitimately
+  missing, and missing must render as missing.
 - **Project resolution (CHANGED):** today one `Project` is fixed at boot from cwd and served for the
   process's life. v3 resolves the *selected* project per request from the registry (single-user = a
   server-side "current selection"). The domain/services already accept a `Project` argument, so this is

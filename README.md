@@ -42,6 +42,8 @@ Within a few seconds the console discovers the project, starts a local server on
 - A **global full-text search** box (header) over a ticket's id, title, `provides`, and body, with results at `/search`.
 - A **dependency graph** (`/graph`) — the whole project as a run-state-colored DAG; click a node to open its ticket.
 - A **roadmap** (`/roadmap`) rendering the project's `ROADMAP.md` as milestone sections.
+- **Run visibility** (`/runs`) — what the factory did per ticket: run state, PR link, outcome, and receipt, with every missing artifact named as missing rather than left blank — see [Runs](docs/usage.md#runs).
+- **Spend visibility** (`/spend`) — what the factory cost, from its ledger: totals plus a breakdown by ticket, model, and agent level — see [Spend](docs/usage.md#spend).
 - **Live updates**: open pages auto-refresh over SSE when a ticket's run-state changes on disk, with a status indicator pill (and graceful fallback to the Reload button).
 
 Press Ctrl-C to stop. See [`docs/usage.md`](docs/usage.md) for flags, exit codes, and path resolution.

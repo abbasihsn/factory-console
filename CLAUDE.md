@@ -25,7 +25,8 @@ Fast orientation for anyone touching this repo. The **authoritative** design liv
 - Contracts
   - REST v1
   - FileAdapter port
-  - Factory run-state directory (read-only)
+  - Factory run-state source (read-only)
+  - Other factory artefacts (read-only)
   - CLI contract
 - Cross-cutting
 - DevOps

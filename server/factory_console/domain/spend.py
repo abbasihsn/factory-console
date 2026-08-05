@@ -46,7 +46,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from factory_console.domain.ledger import SkipReason
+from factory_console.domain.ledger import LedgerRead, SkipReason
 
 AttributionRule = Literal["full-to-each-id"]
 """How an entry's cost is spread over the several ticket ids it may name."""
@@ -239,6 +239,33 @@ class SourceInfo(BaseModel):
     found: bool
     read: bool = False
     path: str | None = None
+
+
+# The skip reasons that belong to the WHOLE file rather than to any one line. T79
+# records them at line 0 with zero entries, which is indistinguishable from an
+# empty ledger by the totals alone — so they are named here and reported as
+# ``SourceInfo.read: false``. See :func:`was_read`.
+WHOLE_FILE_REASONS: frozenset[SkipReason] = frozenset({"file_too_large", "unreadable"})
+
+
+def was_read(result: LedgerRead) -> bool:
+    """Whether the ledger's CONTENT was actually examined.
+
+    ``False`` for the two whole-file failures — over the size cap, or impossible to
+    stat/read — where T79 returns zero entries because nothing was parsed, not
+    because nothing was spent. Keyed on the reason rather than on ``line_no == 0``
+    so a future per-line reason that happens to land at line 0 cannot silently turn
+    a partial read into an unread one.
+
+    Lives HERE, beside :class:`SourceInfo`, and not in the endpoint that calls it:
+    it reads the domain's own :data:`~factory_console.domain.ledger.SkipReason`
+    vocabulary to decide a domain-meaningful fact — "was this source measured" —
+    which is the same rule ``spend_calc``'s module docstring states for attribution,
+    "testable directly, at the level it is decided, instead of only through an HTTP
+    round trip". As a private helper in ``api/v1/spend.py`` its only coverage was an
+    HTTP round trip.
+    """
+    return not any(line.reason in WHOLE_FILE_REASONS for line in result.skipped)
 
 
 class SpendReport(BaseModel):

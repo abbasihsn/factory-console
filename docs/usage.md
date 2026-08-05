@@ -85,9 +85,16 @@ Sending `dryRun` **more than once** (`?dryRun=true&dryRun=false`) is refused the
 with `400 repeated_query_param`, because only the last value would otherwise bind — so a
 request that asks for a preview must never apply.
 
-Only tickets whose factory run-state is `todo` (or `unknown`, when the project has no
-run-state directory) may be edited or deleted — an `in-flight`, `ready`, or `merged`
-ticket is refused with `409 ticket_not_mutable`. That gate guards the **write**, so it
+Editing and deleting are gated on the ticket's factory run-state, and the two gates are
+**not the same**. A ticket is **editable** when its run-state is `todo`, or `unknown` —
+which covers a project with no run-state source at all and one whose source resolved but
+lists no ticket whatsoever. A ticket a lane owns (`in_progress`, `ready`, `merged`,
+`flagged`, and the rest of the factory's vocabulary) is refused with
+`409 ticket_not_mutable`. A ticket that a **populated** run-state source simply does not
+list resolves `absent`: it is refused an **edit**, and the message names the source it
+consulted — but it can still be **deleted**. A source that is there and could not be read
+resolves `unreadable` and refuses **both**. ["Editing tickets"](#editing-tickets) below
+has the full rule with the cases that motivate it. That gate guards the **write**, so it
 fires on an apply; `?dryRun=true` still returns the preview diff for such a ticket, and
 the refusal comes when you apply it. Creating an id that already exists, by contrast, is
 refused with `409 write_conflict` on **both** paths, because previewing a create that
@@ -108,9 +115,10 @@ automatically; a pending **delete** is not resumed — the confirmation is asked
 since auto-resuming a destructive action off the back of an unrelated token paste is not
 something to do without the user looking at it.
 
-The run-state gate above is mirrored in the UI: for a ticket that is not `todo`/`unknown`
-the Edit and Delete buttons are disabled and a banner names the run-state that made it
-read-only. That mirror is convenience only — the server enforces the gate regardless.
+The run-state gate above is mirrored in the UI: for a ticket the gate refuses, the Edit
+and Delete buttons are disabled — separately, since delete is the wider of the two — and a
+banner names the run-state that made it read-only. That mirror is convenience only — the
+server enforces the gate regardless.
 
 The console binds to loopback only, so the token is defence-in-depth _behind_ that
 boundary — it stops another process on your machine, or a drive-by request from a page in
@@ -133,8 +141,8 @@ line reads `X-Factory-Write-Token: <pinned, not echoed>`.
 ## What you'll see
 
 Every page shares a header with a **Factory Console** label, the served project
-path, a navigation cluster (**Home / Graph / Roadmap** links plus a **global
-search box**), and a **Reload** button. A **live-update indicator** pill sits just
+path, a navigation cluster (**Home / Graph / Roadmap / Spend / Runs** links plus a
+**global search box**), and a **Reload** button. A **live-update indicator** pill sits just
 below the header on the right.
 
 ### Ticket list, detail, and deps
@@ -146,9 +154,37 @@ neighborhood" for that ticket's direct deps and dependents as clickable links.
 
 ### Editing tickets
 
-Only a ticket whose factory run-state is `todo` — or `unknown`, on a project with no
-run-state directory — is editable; `in-flight`, `ready`, and `merged` tickets stay
-read-only — the detail view disables Edit and Delete and names the run-state that did it.
+Editability is decided by the ticket's factory run-state, read from the project's
+**run-state source** — `.factory/run-state.json` if the factory wrote one, otherwise a
+legacy marker directory (`.factory/run-state/`, then `docs/planning/.run-state/`).
+
+**Editable:** a ticket whose run-state is `todo`, and a ticket whose run-state is
+`unknown` — which covers a project with **no** run-state source at all *and* a project
+whose source resolved but lists no ticket whatsoever. A project the factory has never
+touched here is therefore fully editable, as it should be. A ticket a lane owns
+(`in_progress`, `ready`, `in_part`, `in_submilestone`, `merged`, `flagged`, `failed`,
+`needs_human`) stays read-only — the detail view disables Edit and Delete and names the
+run-state that did it.
+
+**Deletable but not editable (`absent`):** when the run-state source *is* populated and
+simply does not list this ticket, an edit is refused (`409`, naming the file or directory
+consulted) while a **delete is allowed**. Delete is deliberately the wider gate. Creating
+a ticket is ungated, so a ticket the console just minted is `absent` in any project whose
+run-state is populated — the concrete case being a ticket you add by hand, or mistype into
+the **New ticket** form. Refusing the delete too would leave that ticket unrecoverable
+through the very UI that created it. Such a ticket can be deleted but not edited until the
+factory seeds it into the run-state.
+
+**Neither editable nor deletable (`unreadable`):** if the run-state source is there and
+could not be read — no permission on the file or directory, an entry that will not resolve,
+or a state name outside the vocabulary this console knows — the console refuses **both**
+writes and names the source in the message. This is not a lifecycle state a factory lane
+put the ticket into; it is a broken source, and the fix is to the **source**: correct its
+permissions (or upgrade the console, when the message names a state value it does not
+know). Note the consequence: in a project with an unreadable run-state source, even a
+ticket you have just created can be neither edited nor deleted until the source reads
+again.
+
 Every write also needs the write token; both gates are covered in ["The write
 token"](#the-write-token) above.
 
@@ -182,9 +218,11 @@ empty state rather than an error.
 ### Dependency graph
 
 `/graph` (the header **Graph** link) draws the whole project as a
-dependency DAG. Each node is a ticket colored by its factory run-state
-(`todo` / `in-flight` / `ready` / `merged`), and edges point from a ticket to the
-tickets it depends on. Click a node to open that ticket's detail page.
+dependency DAG. Each node is a ticket colored by its factory run-state — the
+factory's own states (`todo`, `in_progress`, `ready`, `in_part`, `in_submilestone`,
+`merged`, `flagged`, `failed`, `needs_human`) plus the console's three answers for
+when no state was read (`unknown`, `absent`, `unreadable`) — and edges point from a
+ticket to the tickets it depends on. Click a node to open that ticket's detail page.
 
 ### Roadmap
 
@@ -193,10 +231,64 @@ milestone sections — each item shows its checkbox state and, when it reference
 ticket, a monospace id link into the ticket detail — followed by the roadmap's
 prose body.
 
+### Runs
+
+`/runs` (the header **Runs** link) is what the factory did, per ticket. One row per
+ticket in `docs/planning/tickets.json`, in manifest order — including tickets the
+factory has never run here, which are named as missing rather than left blank. Each
+row shows the ticket id, its **run state** (from the run-state source), a **PR** link
+when the lane recorded one, the lane's **outcome**, and whether a **receipt** was
+written.
+
+The two artefacts behind the PR / outcome / receipt columns are
+`.factory/results/<id>.json` and `.factory/receipts/<id>.json`. When one is missing the
+cell says **why**, and the reasons are not interchangeable: `—` (absent — the factory
+never wrote it), **Unreadable** (there, but its contents and even its existence could
+not be established), **Unparseable** (there, and not a JSON object — it answered,
+unintelligibly), **Too large** (over the reader's size cap, so it was not read rather
+than half-read).
+
+**On a fresh clone you will see "No factory run data in this project."** `.factory/` is
+machine-local and gitignored, so a clone carries no run artefacts. That is not the same
+as the factory having run and recorded nothing — nothing has been recorded *on this
+machine*, and these tickets' outcomes are unknown here rather than empty. The banner
+names the two directories it probed so you can see where it looked.
+
+Run state comes from a **different** source than those artefacts, so the two do not
+imply each other: the legacy marker directory under `docs/planning/` is committed while
+`.factory/` is not, so a fresh clone can show a full board of `merged` / `flagged`
+badges beside a table of missing artefacts.
+
+### Spend
+
+`/spend` (the header **Spend** link) is what the factory cost, read from its ledger at
+`.factory/metrics/ledger.jsonl`. It shows the **total** spend and token counts (input,
+output, cache read, cache creation), then three breakdowns: **by ticket**, **by model**
+(the model id verbatim, as the factory wrote it), and **by level** (agent level).
+
+**Attributed cost — per-ticket figures can sum to more than the total, on purpose.** A
+single lane often touches several ticket ids, and its cost is charged **in full to each
+id it names** (the page states the rule as `full-to-each-id`). So the *By ticket*
+column reports **attributed** cost, and adding it up can exceed the grand total. This is
+a deliberate design choice, not a bug: splitting a lane's cost across the ids it touched
+would invent a division the factory never recorded, so the console reports the whole
+cost against each id the work was for.
+
+Two more things the page will tell you rather than guess at:
+
+- **No ledger** — on a fresh clone (`.factory/` is gitignored) you get "No spend ledger
+  for this project", naming the path it looked at, and **no figures at all**. A table of
+  zeros would be a claim about real money that nobody measured; this project's cost is
+  *unknown* here, not zero.
+- **Partial or unknown** — if the ledger exists but could not be opened, the page says
+  spend is unknown and again shows no figure. If individual lines could not be read, the
+  total is labelled **Partial total** right next to the number, with a count of the
+  excluded lines.
+
 ### Live updates
 
-The console watches the project on disk. When its tickets change — a run-state
-marker moves, or a ticket's `.md` is edited — an open page **auto-refreshes**
+The console watches the project on disk. When its tickets change — the run-state
+source changes, or a ticket's `.md` is edited — an open page **auto-refreshes**
 over a Server-Sent-Events stream — no manual reload needed. The indicator pill reflects the stream's health: **Connecting…** while it
 opens, **Live** once connected, **Offline** if the stream drops, and it briefly
 flashes **Updated** when a change arrives. Where the browser has no `EventSource`,

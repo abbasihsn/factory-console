@@ -276,7 +276,8 @@
 									<span
 										data-testid="pr-{row.ticketId}"
 										class="text-muted"
-										title="The result artifact was read and carries no PR url">—</span
+										title="The result artifact was read and names no PR url under any key this console recognises"
+										>—</span
 									>
 								{/if}
 							</td>
@@ -306,7 +307,8 @@
 									<span
 										data-testid="outcome-{row.ticketId}"
 										class="text-muted"
-										title="The result artifact was read and names no status">—</span
+										title="The result artifact was read and names no status under any key this console recognises"
+										>—</span
 									>
 								{/if}
 							</td>
