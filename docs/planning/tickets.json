@@ -1356,7 +1356,8 @@
       "track": "backend",
       "milestone": "v2.2",
       "depends_on": [
-        "T90"
+        "T90",
+        "T95"
       ],
       "provides": "/runs is the only view that can never live-update: runs.py declares RESULTS_/RECEIPTS_RELATIVE_DIR, the watcher schedules neither, and its json-only-root filter drops what would remain. Third instance of the read-but-unwatched class after T91 fixed one and T95 filed a per-artifact criterion against it — so the criterion this asks for is structural, not another file name.",
       "path": "docs/planning/tickets/v2.2/T99-results-and-receipts-are-read-but-never-watched.md",
@@ -1401,7 +1402,8 @@
       "track": "backend",
       "milestone": "v2.2",
       "depends_on": [
-        "T90"
+        "T90",
+        "T100"
       ],
       "provides": "/spend redacts a session id and then refuses to project even an 80-character excerpt; /runs serialises every key of two artifacts it declares unmodelled. One house rule in ARCHITECTURE.md, and both endpoints obeying it.",
       "path": "docs/planning/tickets/v2.2/T102-two-endpoints-two-opposite-disclosure-policies.md",

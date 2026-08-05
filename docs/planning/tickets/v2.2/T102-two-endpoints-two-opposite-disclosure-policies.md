@@ -1,6 +1,6 @@
 # [T102] Two endpoints, added in one version, take opposite positions on disclosing artifact content
 
-milestone: v2.2 · track: backend · depends_on: T90 · source: Incremental Integration Audit run 3 (2026-08-05), lens `architecture-drift`, tickets T82,T88,T90
+milestone: v2.2 · track: backend · depends_on: T90, T100 · source: Incremental Integration Audit run 3 (2026-08-05), lens `architecture-drift`, tickets T82,T88,T90
 
 ## Context
 
@@ -49,5 +49,14 @@ internally consistent.
 3. A test that fails if a handler serialises an artifact payload the rule does not permit — attached
    to the rule, not to today's two endpoints, so a third one inherits the check.
 4. Coordinate with T100: that Ticket decides what `/runs` may *depend on*, this one decides what it
-   may *disclose*. They can be built in either order but must not settle on contradictory answers —
-   whichever lands second reads the first's decision.
+   may *disclose*. **T100 lands first** — the manifest now carries the edge, so the scheduler
+   enforces it. Read T100's decision and do not contradict it; if it forces a different answer here,
+   amend this Ticket rather than diverging.
+
+   *Why the order is fixed rather than left open.* As first filed this criterion said the two "can be
+   built in either order but must not settle on contradictory answers", and gave the manifest no edge
+   between them — so both were dispatchable at once and the coordination existed only in prose the
+   scheduler cannot read. Audit run 4 caught it (`duplicated-or-contradictory-implementation`, tickets
+   T100,T102,T90). *Either order, but coordinated* is not a schedulable requirement: a DAG can express
+   an order or nothing at all. T100 goes first because disclosure is constrained by what is modelled —
+   this Ticket cannot decide whether a field may be disclosed before T100 decides whether it exists.

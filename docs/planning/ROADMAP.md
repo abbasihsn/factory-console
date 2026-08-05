@@ -11,6 +11,7 @@ timeline
     v1 : Rendered dependency graph : Full-text search : File-watcher live updates : Roadmap/milestone view
     v2 : Safe editing of todo tickets : Manifest + roadmap co-writer : Loopback write token
     v2.1 : Real run-state source & vocabulary : Corrected write gate : Runs view : Spend view : One lint gate
+    v2.2 : Watch every artifact the console reads : One errno split : One disclosure rule : Docs match the code
     v3.0 : Multi-project registry : Switchable project view : GitHub PR status & links
     v3.1 : serve mode + username/password : Tailscale remote access (phone + laptop)
     v3.2 : Live log streaming : All-projects dashboard
@@ -131,6 +132,32 @@ A correction milestone. The console was built against a run-state contract that 
 - [ ] **T84** — /spend — the cost view → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.1/T84-spend-view.md`
 - [ ] **T85** — One lint gate — `make lint` must run what CI runs → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.1/T85-lint-gate-parity.md`
 - [ ] **T86** — v2.1 docs — run-state source, runs, spend, and the one lint gate → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.1/T86-v2.1-docs.md`
+
+## v2.2 — what auditing v2.1 found
+
+Not a feature milestone. Every Ticket here was filed by an **Incremental Integration Audit** of v2.1
+(§10.1–§10.3) — findings that no single Ticket's own review could have seen, because each one takes
+two or three merged Tickets together to state. All were returned `blocking: 0`, so none gated v2.1's
+Version; they are filed here so the findings survive the run that produced them.
+
+Two themes account for most of it. **A factory artifact the console reads is not watched**, so the
+view that reads it can never live-update — T95 and T99, the second and third instances of the class
+T91 fixed for run-state. And **the same fact answered differently in two places**: an errno split
+that is normative in one reader and absent in another (T93), a run-state contract corrected in code
+and not in docs (T94), two endpoints taking opposite positions on disclosing artifact content (T102).
+
+- [ ] **T93** — Ledger discovery must use the same errno split the run-state reader made normative → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.2/T93-ledger-discovery-must-use-the-same-errno-split-the-run.md`
+- [ ] **T94** — User and contributor docs still state the pre-T78 run-state contract → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.2/T94-user-and-contributor-docs-still-state-the-pre-t78-run-s.md`
+- [ ] **T95** — The ledger artifact is read but never watched → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.2/T95-the-ledger-artifact-is-read-but-never-watched.md`
+- [ ] **T97** — One bounded artifact read, not three copies of it → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.2/T97-one-bounded-artifact-read-not-three.md`
+- [ ] **T98** — Every v1 handler is async and touches the filesystem → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.2/T98-blocking-io-on-the-event-loop.md`
+- [ ] **T99** — The result and receipt artifacts are read but never watched (depends on T95 — verifies its mechanism, does not rebuild it) → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.2/T99-results-and-receipts-are-read-but-never-watched.md`
+- [ ] **T100** — `/runs` reads two fields its own readers declare unmodelled → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.2/T100-the-view-reads-fields-the-readers-below-it-refuse-to-model.md`
+- [ ] **T101** — The containment refusal sends the operator to check two things that are not at fault → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.2/T101-a-refusal-that-names-the-wrong-remedy.md`
+- [ ] **T102** — Two endpoints take opposite positions on disclosing artifact content (depends on T100 — disclosure is constrained by what is modelled) → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.2/T102-two-endpoints-two-opposite-disclosure-policies.md`
+
+**T96 is deliberately not here.** It carries the same class as T93 and was filed against **v2.1**,
+where it shipped. Listing it under v2.2 would claim it was outstanding when v2.1 closed.
 
 ## v3 — Mission control: hosted multi-project console (epic-level)
 
