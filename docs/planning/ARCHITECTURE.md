@@ -275,10 +275,13 @@ authorization answer is shared while the **remedy** differs:
 
 ### Other factory artefacts (read-only)
 
-Beside the run-state source, the console reads four more factory-owned artefacts. It writes to
-none of them, and the reading layer — the file adapter, the domain types, and the wire — models no
-field inside them: an artefact payload is carried as an untyped JSON object all the way to the
-frontend.
+Beside the run-state source, the console reads four more factory-owned artefacts. It writes to none
+of them. Three of the four — the per-ticket lane results and receipts, and last stop — are read
+without modelling a single field inside them: the reading layer (the file adapter, the domain types,
+and the wire) carries such a payload as an untyped JSON object all the way to the frontend
+(`ArtifactRead.data` is `dict[str, Any]`). The spend ledger is the exception and the only one: it is
+a typed reading path end to end — `LedgerEntry` (`domain/ledger.py`) names and types every field it
+consumes, and `SpendReport`/`SpendResponse` (`domain/spend.py`) publish that on the wire.
 
 One layer above that does depend on two names, and declares it. The Runs view reads `pr_url` and
 `status` out of a lane result to render its PR and Outcome columns. Those names are **unverified** —
@@ -288,7 +291,8 @@ declared as a bounded, UI-only projection rather than a schema: enumerated once 
 compile error, guarded by `frontend/src/routes/runs/projected-fields.test.ts`, and rendered so a miss
 reads as "no PR url / no status under any key this console recognises" rather than as a claim about
 the artefact. Growing that list is a deliberate, reviewable edit in one place; nothing else in the
-stack may read a named field out of an artefact payload.
+stack may read a named field out of an untyped artefact payload (the ledger's typed model above is
+not one).
 
 | Artefact | Path | Read by |
 |---|---|---|
