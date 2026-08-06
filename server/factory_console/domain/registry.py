@@ -33,7 +33,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 REGISTERED_PROJECT_ID_PATTERN = r"^[0-9a-f]{32}$"
 """Canonical registry-id regex — the single source of truth for id validation.
@@ -53,29 +53,33 @@ RegisteredProjectId = Annotated[str, StringConstraints(pattern=REGISTERED_PROJEC
 """A registry id constrained to :data:`REGISTERED_PROJECT_ID_PATTERN`."""
 
 RegistryEntryCondition = Literal[
-    "ok", "path_missing", "not_a_project", "unreadable", "no_factory_dir"
+    "unreadable", "path_missing", "not_a_project", "no_factory_dir", "ok"
 ]
 """What the console currently knows about a registered project's path.
 
-- ``ok`` — the path resolves to a readable App Factory project with everything
-  the console reads through: nothing is degraded.
+Declared MOST-DEGRADED-FIRST, matching the precedence below — a resolver that
+observes more than one of these reports the leftmost:
+
+- ``unreadable`` — the console could not look. The path could not be read at all
+  (permission denied, an I/O error) or could not be PROVEN to resolve safely, so
+  nothing about its contents is asserted.
 - ``path_missing`` — nothing exists at the registered path any more. The row is
   still a true record of what the user asked for; the target moved or was
   deleted.
 - ``not_a_project`` — the path exists and IS readable, and what is there is not
   an App Factory project (no tickets manifest to discover). The console looked
   and found nothing.
-- ``unreadable`` — the console could not look. The path could not be read at all
-  (permission denied, an I/O error) or could not be PROVEN to resolve safely, so
-  nothing about its contents is asserted.
 - ``no_factory_dir`` — a real, browsable project whose ``.factory/`` directory is
   absent. Degraded but USABLE: plan, tickets and roadmap all read normally, and
   only run-state, runs and spend are legitimately missing (``.factory/`` is
   gitignored, so this is the ordinary state of a fresh clone).
+- ``ok`` — the path resolves to a readable App Factory project with everything
+  the console reads through: nothing is degraded.
 
 Precedence is MOST-DEGRADED-FIRST: ``unreadable`` > ``path_missing`` >
-``not_a_project`` > ``no_factory_dir`` > ``ok``. A resolver that observes more
-than one of these reports the leftmost.
+``not_a_project`` > ``no_factory_dir`` > ``ok``, exactly the declaration order
+above — ``get_args(RegistryEntryCondition)`` IS the precedence order, not just
+the exhaustive membership.
 
 ``unreadable`` must NEVER be folded into ``not_a_project``: "I could not look" is
 not "I looked and there is nothing there". Collapsing them would report a
@@ -117,6 +121,31 @@ class RegisteredProject(BaseModel):
     addedAt: datetime
     """When the row was created — timezone-aware UTC. The instant the user's
     intent starts; it says nothing about the path's current state."""
+
+    @field_validator("path")
+    @classmethod
+    def _require_absolute_path(cls, value: Path) -> Path:
+        """Reject a relative (or ``~``-prefixed) ``path`` rather than accept one this
+        class's own docstring says a consumer must never re-resolve. A relative path
+        resolves against whatever the reading process's cwd happens to be —
+        silently addressing a different project than the one the user registered,
+        exactly the mis-addressing the docstring above warns against."""
+        if not value.is_absolute():
+            raise ValueError(f"path must be absolute, got {value!r}")
+        return value
+
+    @field_validator("addedAt")
+    @classmethod
+    def _require_timezone_aware(cls, value: datetime) -> datetime:
+        """Reject a naive ``addedAt``. Unlike
+        :class:`~factory_console.domain.ledger.LedgerEntry`'s ``ts``, which is read
+        from a file the console does not own and so coerces a naive value to UTC,
+        ``addedAt`` is minted by the store itself — always via ``datetime.now(UTC)``
+        — so a naive value here is a caller bug, not an external format to
+        tolerate."""
+        if value.tzinfo is None:
+            raise ValueError("addedAt must be timezone-aware")
+        return value
 
 
 class RegistryEntry(BaseModel):

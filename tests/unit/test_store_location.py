@@ -18,6 +18,7 @@ developer's shell can never flip an assertion.
 from __future__ import annotations
 
 import stat
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -88,9 +89,8 @@ def test_blank_override_is_rejected(monkeypatch: pytest.MonkeyPatch, blank: str)
     # password hash in it — wherever the console happened to be started from. An
     # empty override is a mistake, not a request for the default.
     monkeypatch.setenv(DB_PATH_ENV, blank)
-    with pytest.raises(ValidationError) as excinfo:
+    with pytest.raises(ValueError, match="FACTORY_CONSOLE_DB_PATH must name a database file"):
         resolve_db_path()
-    assert [error["loc"] for error in excinfo.value.errors()] == [("db_path",)]
 
 
 def test_blank_override_is_rejected_when_passed_directly() -> None:
@@ -151,3 +151,19 @@ def test_ensure_store_dir_is_idempotent(tmp_path: Path) -> None:
 
     assert first == second
     assert _mode_of(second) == STORE_DIR_MODE
+
+
+def test_ensure_store_dir_refuses_the_home_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # FACTORY_CONSOLE_DB_PATH names a FILE, so `=~/console.db` must not chmod the
+    # whole home directory to 0700 on the operator's behalf.
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+
+    with pytest.raises(ValueError, match="shared directory"):
+        ensure_store_dir(tmp_path / DEFAULT_DB_FILENAME)
+
+
+def test_ensure_store_dir_refuses_the_system_temp_root(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="shared directory"):
+        ensure_store_dir(Path(tempfile.gettempdir()).resolve() / DEFAULT_DB_FILENAME)

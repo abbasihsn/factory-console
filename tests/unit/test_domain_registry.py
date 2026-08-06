@@ -84,6 +84,33 @@ def test_blank_name_is_rejected() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        pytest.param(Path("relative/proj"), id="relative"),
+        pytest.param(Path("~/proj"), id="tilde-prefixed"),
+    ],
+)
+def test_relative_path_is_rejected(relative_path: Path) -> None:
+    with pytest.raises(ValidationError):
+        RegisteredProject(
+            id=VALID_ID,
+            name="Factory Console",
+            path=relative_path,
+            addedAt=datetime(2026, 8, 6, 12, 30, tzinfo=UTC),
+        )
+
+
+def test_naive_added_at_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        RegisteredProject(
+            id=VALID_ID,
+            name="Factory Console",
+            path=Path("/proj"),
+            addedAt=datetime(2026, 8, 6, 12, 30),
+        )
+
+
 def test_unknown_condition_is_rejected() -> None:
     with pytest.raises(ValidationError):
         RegistryEntry(project=_make_registered_project(), condition="availability")
@@ -142,13 +169,15 @@ def test_registry_entry_round_trips_through_model_dump() -> None:
 def test_registry_entry_condition_members_are_exhaustive_and_ordered() -> None:
     # Most-degraded-first precedence is the documented resolution rule, and the
     # SPA's generated label map is exhaustive over exactly these members — so a
-    # sixth condition must fail here rather than ship silently.
+    # sixth condition must fail here rather than ship silently. The tuple order
+    # below IS the precedence order (see the RegistryEntryCondition docstring):
+    # a resolver reports the leftmost of `get_args(...)` it observes.
     assert get_args(RegistryEntryCondition) == (
-        "ok",
+        "unreadable",
         "path_missing",
         "not_a_project",
-        "unreadable",
         "no_factory_dir",
+        "ok",
     )
 
 

@@ -61,7 +61,7 @@ factory-console/
 │       │   ├── __init__.py
 │       │   ├── ticket_service.py                                                                  (T22)
 │       │   └── deps_service.py                                                                    (T23)
-│       ├── file_adapter/                  # the ONLY place that touches disk
+│       ├── file_adapter/                  # the only layer that reads the TARGET PROJECT's files
 │       │   ├── __init__.py
 │       │   ├── protocol.py                # FileAdapter Protocol                                  (T10)
 │       │   ├── fake.py                    # FakeFileAdapter                                       (T10)
@@ -72,6 +72,8 @@ factory-console/
 │       │   ├── markdown_render.py         # markdown-it-py + bleach sanitization                  (T14)
 │       │   └── run_state.py               # run-state prober (read-only)                          (T15)
 │       ├── store/                         # the console's OWN writable DB (v3 — outside every project)
+│       │   ├── __init__.py                # docstring-only, re-export-free                        (T104)
+│       │   └── location.py                # ConsoleStoreSettings + resolve_db_path + ensure_store_dir (T104)
 │       └── _static/                       # BUILT SPA copied here at package time (gitignored)
 │
 ├── frontend/

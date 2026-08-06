@@ -13,6 +13,7 @@ from factory_console.domain.project import Project
 from factory_console.domain.registry import (
     REGISTERED_PROJECT_ID_PATTERN,
     RegisteredProject,
+    RegisteredProjectId,
     RegistryEntry,
     RegistryEntryCondition,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "JsonRunState",
     "Project",
     "RegisteredProject",
+    "RegisteredProjectId",
     "RegistryEntry",
     "RegistryEntryCondition",
     "Roadmap",

@@ -20,10 +20,13 @@ for a registry.
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from factory_console.file_adapter.path_safety import resolve_or_none
 
 # The store directory and db file names behind the ARCHITECTURE.md default,
 # ``~/.factory-console/console.db``. Named rather than inlined so the tests assert
@@ -95,14 +98,25 @@ def resolve_db_path() -> Path:
     resolved non-strictly, because the file legitimately does not exist yet.
 
     Raises:
-        pydantic.ValidationError: ``FACTORY_CONSOLE_DB_PATH`` is set but blank.
+        ValueError: ``FACTORY_CONSOLE_DB_PATH`` is set but blank, or the path
+            could not be resolved (a symlink loop, or an unencodable path) —
+            raised as a plain ``ValueError`` rather than pydantic's
+            ``ValidationError``, matching :func:`~factory_console.config.read_write_token`,
+            so a boot path can catch one exception type for every bad override.
     """
-    db_path = ConsoleStoreSettings().db_path
+    try:
+        db_path = ConsoleStoreSettings().db_path
+    except ValidationError as exc:
+        raise ValueError(_BLANK_DB_PATH_ERROR) from exc
     if db_path is None:
         db_path = Path.home() / DEFAULT_STORE_DIRNAME / DEFAULT_DB_FILENAME
     # One expansion rule for both branches, so an override and the default cannot
-    # drift into being normalized differently.
-    return db_path.expanduser().resolve(strict=False)
+    # drift into being normalized differently. resolve_or_none (not a raw
+    # .resolve(strict=False)) because that call is not total — see its docstring.
+    resolved = resolve_or_none(db_path.expanduser())
+    if resolved is None:
+        raise ValueError(f"could not resolve FACTORY_CONSOLE_DB_PATH {db_path}")
+    return resolved
 
 
 def ensure_store_dir(db_path: Path) -> Path:
@@ -112,12 +126,24 @@ def ensure_store_dir(db_path: Path) -> Path:
     registry's first-touch path — not from its constructor — so that constructing a
     registry, or booting the viewer, still creates nothing.
 
-    The chmod runs unconditionally, even when the directory already existed, so a
-    loose pre-existing ``~/.factory-console/`` is tightened rather than left as found.
-    The db FILE's 0600 mode is not this function's business: ``schema.py`` sets it at
-    the point it creates the file.
+    Refuses a ``db_path`` whose parent IS the home directory or the system temp
+    root: ``FACTORY_CONSOLE_DB_PATH`` names a file, not a directory, so an override
+    of ``~/console.db`` or ``/tmp/console.db`` would otherwise chmod a directory
+    this store does not own and everything else on the machine shares.
+
+    The chmod on the parent runs unconditionally once that check passes, even when
+    the directory already existed, so a loose pre-existing ``~/.factory-console/``
+    is tightened rather than left as found. ``mkdir`` itself also requests 0700, so
+    a freshly-created directory is never briefly world-readable at the umask
+    default before the chmod line runs. The db FILE's 0600 mode is not this
+    function's business: ``schema.py`` sets it at the point it creates the file.
     """
     parent = db_path.parent
-    parent.mkdir(parents=True, exist_ok=True)
+    if parent in (Path.home(), Path(tempfile.gettempdir()).resolve()):
+        raise ValueError(
+            "FACTORY_CONSOLE_DB_PATH must name a file inside its own directory, "
+            f"not directly under the shared directory {parent}"
+        )
+    parent.mkdir(parents=True, exist_ok=True, mode=STORE_DIR_MODE)
     os.chmod(parent, STORE_DIR_MODE)
     return parent
