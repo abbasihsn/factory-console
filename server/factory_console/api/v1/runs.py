@@ -33,12 +33,24 @@ in ``ARCHITECTURE.md``'s REST v1 section) rather than a bare JSON array. Consist
 the whole argument — a client that already unwraps ``items`` for two lists should not
 special-case a third — and the envelope is also the shape that can grow a sibling field
 later without breaking every consumer, which a top-level array cannot.
+
+Both of the handler's calls are BLOCKING filesystem work — ``load_project`` stats a
+tree, and the service does two ``open``+read syscalls per manifest ticket — so they run
+on a worker thread via ``anyio.to_thread.run_sync`` rather than inline on the event
+loop. That is the house rule recorded under ``ARCHITECTURE.md``'s Cross-cutting
+**Concurrency** bullet, and this endpoint is its first conversion because it does the
+most per-request I/O of any route. The offload is at the HANDLER boundary only: the
+:class:`FileAdapter` and :class:`RunArtifactReader` ports and
+:class:`RunService` stay synchronous, which is what lets the rule be applied
+per-endpoint without an async rewrite of the layer below.
 """
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 
+import anyio.to_thread
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict
 
@@ -72,11 +84,27 @@ async def list_runs(
 
     Loads the discovered project from ``request.app.state.project_root`` and delegates
     the whole composition to :class:`RunService` over the injected
-    :class:`FileAdapter` and :class:`RunArtifactReader`. ``total`` is the number of
-    records, which is the manifest's ticket count and not a count of tickets that have
-    artifacts — there is no filtering and no pagination.
+    :class:`FileAdapter` and :class:`RunArtifactReader`. Both calls are synchronous and
+    hit the disk, so both are awaited through ``anyio.to_thread.run_sync`` — the
+    coroutine yields for the duration, and every other route (the SSE stream above all)
+    keeps being served while this one reads. ``functools.partial`` binds the arguments
+    because ``run_sync`` passes positionals only and takes no keywords.
+
+    ``total`` is the number of records, which is the manifest's ticket count and not a
+    count of tickets that have artifacts — there is no filtering and NO PAGINATION, the
+    same answer its sibling list endpoints give. That is a decision, not an omission:
+    the list's length is the manifest's length, the manifest is a planning document an
+    operator writes and reviews by hand (hundreds of entries at the outside, not
+    millions), and it is already served whole by ``GET /api/v1/tickets``. Paging one of
+    three list endpoints would split the envelope contract the SPA unwraps for all
+    three, to bound a list nothing observed to be unbounded. What actually caps the
+    cost is the offload above: the read is off the loop, so its size no longer stalls
+    the rest of the app. Revisit if a real manifest ever makes the response slow — see
+    ``ARCHITECTURE.md``'s Cross-cutting **Concurrency** bullet.
     """
     root: Path = request.app.state.project_root
-    project = adapter.load_project(root)
-    items = RunService(adapter, artifacts).list_run_records(project)
+    project = await anyio.to_thread.run_sync(partial(adapter.load_project, root))
+    items = await anyio.to_thread.run_sync(
+        partial(RunService(adapter, artifacts).list_run_records, project)
+    )
     return RunListResponse(items=items, total=len(items))

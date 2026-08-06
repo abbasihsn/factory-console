@@ -51,7 +51,9 @@ def test_ticket_under_a_milestone_directory_is_found(project) -> None:
 def test_the_resolved_path_is_the_one_the_manifest_declared(project) -> None:
     ticket = RealFileAdapter().get_ticket(project, "T03")
     assert ticket is not None
-    assert ticket.filePath == (FIXTURE / "docs/planning/tickets/v2/T03-a-later-milestone.md").resolve()
+    assert (
+        ticket.filePath == (FIXTURE / "docs/planning/tickets/v2/T03-a-later-milestone.md").resolve()
+    )
 
 
 def test_a_later_milestone_directory_resolves_too(project) -> None:

@@ -9,6 +9,10 @@ description = "Local web console for browsing App Factory project plans, tickets
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.110",
+    # Starlette already runs on anyio; declared explicitly because the API layer
+    # imports it directly (`anyio.to_thread.run_sync`, per ARCHITECTURE.md's
+    # Cross-cutting Concurrency rule) rather than only getting it transitively.
+    "anyio>=4",
     "uvicorn[standard]>=0.29",
     "typer>=0.12",
     "pydantic>=2",
