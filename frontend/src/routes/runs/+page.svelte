@@ -1,3 +1,28 @@
+<script module lang="ts">
+	/**
+	 * The ONLY field names this view will ever read out of an artifact's `data`.
+	 *
+	 * A narrow, documented, best-effort UI projection — NOT a verified schema. No
+	 * real captured factory artifact exists to check these names against (see
+	 * `tests/fixtures/runs/README.md`), so they are a guess, and the two columns
+	 * that use them render a miss honestly: "no PR url / no status under any key
+	 * this console recognises". Nothing below this view models a field — the
+	 * reading layer, `RunRecord` and the wire all keep `data` untyped — and this
+	 * declaration does not ask any of them to change.
+	 *
+	 * What it buys is a BOUND. This constant is the single place that must be
+	 * edited before any code reads a new field out of an artifact payload:
+	 * `readString`/`readField` take a `ProjectedField`, so an undeclared key is a
+	 * compile error, and `projected-fields.test.ts` fails on a source that reads a
+	 * key not listed here (or lists one nothing reads). Adding an entry is a
+	 * deliberate act, recorded in one diff, not a quiet fourth dependency.
+	 *
+	 * Exported so the test asserts against THIS list rather than a copy of it.
+	 */
+	export const PROJECTED_FIELDS = ['pr_url', 'status'] as const;
+	export type ProjectedField = (typeof PROJECTED_FIELDS)[number];
+</script>
+
 <script lang="ts">
 	import type { PageData } from './$types';
 	import type { ArtifactRead, ArtifactSkipReason } from '$lib/api';
@@ -99,7 +124,7 @@
 	// `data` is an untyped JSON object by contract — the backend models no field
 	// inside a factory artifact because it has verified none — so every field is
 	// read through a guard and a missing or non-string value is simply "not there".
-	function readString(artifact: ArtifactRead, key: string): string | null {
+	function readString(artifact: ArtifactRead, key: ProjectedField): string | null {
 		const value = artifact.data?.[key];
 		return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
 	}
@@ -116,7 +141,7 @@
 	 */
 	type FieldValue = { kind: 'none' } | { kind: 'unusable' } | { kind: 'value'; text: string };
 
-	function readField(artifact: ArtifactRead, key: string): FieldValue {
+	function readField(artifact: ArtifactRead, key: ProjectedField): FieldValue {
 		const raw = artifact.data?.[key];
 		if (raw === undefined || raw === null) {
 			return { kind: 'none' };
