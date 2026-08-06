@@ -2,8 +2,10 @@
 
 Pin the service's create/edit/delete orchestration the write handlers delegate to:
 the create-collision guard (:class:`WriteConflict`, both paths), the existence check
-for edit/delete (:class:`TicketNotFound`, both paths), the writer's todo-only gate
-propagating (:class:`TicketNotMutable`), dry-run returning a diff and committing
+for edit/delete (:class:`TicketNotFound`, both paths), the writer's two run-state
+mutability gates propagating (:class:`TicketNotMutable` — ``ensure_mutable`` on the
+edit path, the wider ``ensure_deletable`` on the delete path), dry-run returning a
+diff and committing
 nothing, and an apply committing then re-reading the resulting ticket through the
 adapter. Also covers the co-located error contract (:class:`WriteConflict` /
 :class:`WriteValidationError` construction + envelope rendering).

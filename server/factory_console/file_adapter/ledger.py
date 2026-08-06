@@ -96,14 +96,6 @@ _REDACTIONS: tuple[re.Pattern[str], ...] = (
 )
 _REDACTED = '"session_id":"<redacted>"'
 
-# The errnos that mean the node is definitively NOT THERE, as opposed to "I could
-# not look" — IMPORTED, not restated. This module and ``run_state.py`` used to hold
-# byte-identical copies under a comment promising to keep them in step by hand, which
-# is precisely the drift ``path_safety`` exists to prevent: a future tightening applied
-# to one copy and not the other leaves the write gate and this endpoint disagreeing
-# about the same syscall on the same tree. See there for why ``ELOOP`` is excluded.
-_ABSENT_ERRNOS = ABSENT_ERRNOS
-
 
 class LedgerNotContained(OSError):
     """The ledger resolved OUTSIDE the project root, so this console will not read it.
@@ -139,16 +131,16 @@ def find_ledger_path(project_root: Path) -> Path | None:
     crash the caller on an old one, from the same code. Since ``None`` here is what
     a caller renders as "$0.00, no ledger", that fail-open would be a false
     statement about real money arriving by way of an interpreter upgrade. So the
-    split is made HERE, matching ``run_state.py``'s ``_is_regular_file``, which owns
-    the same contract for the same reason.
+    split is made by :func:`~factory_console.file_adapter.path_safety.is_regular_file`,
+    the shared HELPER that owns the same contract for the same reason — not restated
+    here, so this reader and ``run_state.py``'s cannot drift on the surrounding probe
+    logic the way they once could still drift while sharing only the errno constant.
     """
     candidate = project_root / LEDGER_RELATIVE_PATH
     try:
-        if not stat.S_ISREG(candidate.stat().st_mode):
+        if not is_regular_file(candidate):
             return None
     except OSError as error:
-        if error.errno in _ABSENT_ERRNOS:
-            return None
         # The one failure in this module that leaves it as an exception, so it is
         # also the one that would otherwise leave no trace: its caller answers
         # "the bill is unknown" with HTTP 200, and an operator asking why would
@@ -157,10 +149,6 @@ def find_ledger_path(project_root: Path) -> Path | None:
         # rule at :func:`read_ledger` — the errno is the whole diagnostic here.
         _LOGGER.warning("ledger: %s could not be probed: %r", candidate, error)
         raise
-    except ValueError:
-        # Parity with :meth:`Path.is_file`, which reads a non-encodable path as
-        # absent rather than as a failure to look.
-        return None
 
     # CONTAINMENT, applied where the path is CHOSEN — the only place with a project
     # root to measure against. ``.factory/`` is written by a process the console does

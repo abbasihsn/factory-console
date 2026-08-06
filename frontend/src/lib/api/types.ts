@@ -97,8 +97,8 @@ export interface paths {
          *
          *     Always ``200``: an edit creates no resource on either path. Delegates to
          *     :meth:`~factory_console.services.write_service.WriteService.edit`, whose
-         *     ``TicketNotFound`` (404) and ``TicketNotMutable`` (409, the todo-only editing rule)
-         *     propagate to the registered handlers.
+         *     ``TicketNotFound`` (404) and ``TicketNotMutable`` (409, for a run-state outside the
+         *     EDIT allowlist ``todo``/``unknown``) propagate to the registered handlers.
          */
         readonly put: operations["edit_ticket_api_v1_tickets__ticket_id__put"];
         readonly post?: never;
@@ -375,6 +375,19 @@ export interface components {
          *     :class:`ArtifactRead` verbatim, so ``data`` is still untyped there and this
          *     paragraph still governs it. Do not "improve" this into a typed schema — here
          *     or there — until a real captured artifact exists to verify against.
+         *
+         *     That rule binds THIS layer, not every consumer. A UI above may read specific
+         *     field names out of ``data`` for display, provided it owns the guess openly:
+         *     the names enumerated in ONE place, the reads narrowed to that enumeration so
+         *     an undeclared key cannot compile, a test that fails when a new key is read
+         *     without being declared, and a rendering that reports a miss as the console's
+         *     own ignorance rather than as a fact about the artifact. The Runs view does
+         *     exactly that for two names (``pr_url``, ``status``) — see ``PROJECTED_FIELDS``
+         *     in ``frontend/src/routes/runs/+page.svelte`` and its
+         *     ``projected-fields.test.ts``. That projection is unverified and stays over
+         *     there: nothing on this side of the wire models a field, ``data`` remains
+         *     ``dict[str, Any]``, and a consumer's display convenience is not a licence to
+         *     type it here.
          */
         readonly ArtifactRead: {
             /**
