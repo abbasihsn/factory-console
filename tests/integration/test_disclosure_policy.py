@@ -133,16 +133,19 @@ def _is_free_form_object(schema: Any) -> bool:
     that built it put there, which for ``ProjectedArtifactRead`` is a declared
     allowlist.
 
-    Recurses the same way :func:`_refs_in` does, and for the same reason: a single-
-    node test only catches a free-form object sitting directly on a property, and
-    misses one hiding one level down — ``list[dict[str, Any]]`` (an ``items``
-    schema) or ``dict[str, dict[str, Any]]`` (a nested ``additionalProperties``
-    schema) both pass a single-node test cleanly while publishing exactly the
-    unconstrained payload the rule exists to catch. So this walks ``anyOf``/
-    ``oneOf``/``allOf`` (composition, including the union Pydantic emits for an
-    optional field), ``items``/``prefixItems`` (array shape) and a nested
-    ``additionalProperties`` SCHEMA (as opposed to the bare ``True`` above) — every
-    keyword through which a schema can hold another schema.
+    Recurses for the same reason :func:`_refs_in` does: a single-node test only
+    catches a free-form object sitting directly on a property, and misses one
+    hiding one level down — ``list[dict[str, Any]]`` (an ``items`` schema) or
+    ``dict[str, dict[str, Any]]`` (a nested ``additionalProperties`` schema) both
+    pass a single-node test cleanly while publishing exactly the unconstrained
+    payload the rule exists to catch. Unlike ``_refs_in``'s BLIND walk of every
+    dict/list node, this one is keyword-driven — ``anyOf``/``oneOf``/``allOf``
+    (composition, including the union Pydantic emits for an optional field),
+    ``items``/``prefixItems`` (array shape) and a nested ``additionalProperties``
+    SCHEMA (as opposed to the bare ``True`` above) — because unlike a ``$ref``,
+    which is one keyword everywhere, a free-form leaf can only arrive through
+    Pydantic's own limited JSON Schema vocabulary, so enumerating it does not
+    carry the same staleness risk as enumerating response-schema keywords would.
 
     Deliberately does NOT flag a shapeless ``object`` with neither ``properties``
     nor ``additionalProperties`` at all (a bare untyped field): that shape is also

@@ -184,7 +184,9 @@ class ProjectedRunRecord(BaseModel):
 
     @classmethod
     def from_record(cls, record: RunRecord) -> ProjectedRunRecord:
-        """Project both of a composed record's sources through :meth:`ProjectedArtifactRead.from_artifact`."""
+        """Project both of a composed record's sources through
+        :meth:`ProjectedArtifactRead.from_artifact`.
+        """
         return cls(
             ticketId=record.ticketId,
             result=ProjectedArtifactRead.from_artifact(record.result),
