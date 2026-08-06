@@ -104,18 +104,27 @@ class ArtifactRead(BaseModel):
     paragraph still governs it. Do not "improve" this into a typed schema — here
     or there — until a real captured artifact exists to verify against.
 
-    That rule binds THIS layer, not every consumer. A UI above may read specific
-    field names out of ``data`` for display, provided it owns the guess openly:
-    the names enumerated in ONE place, the reads narrowed to that enumeration so
-    an undeclared key cannot compile, a test that fails when a new key is read
+    That rule binds THIS layer, not every consumer. A consumer above may read
+    specific field names out of ``data``, provided it owns the guess openly: the
+    names enumerated in ONE place, the reads narrowed to that enumeration so an
+    undeclared key cannot compile, a test that fails when a new key is read
     without being declared, and a rendering that reports a miss as the console's
-    own ignorance rather than as a fact about the artifact. The Runs view does
-    exactly that for two names (``pr_url``, ``status``) — see ``PROJECTED_FIELDS``
-    in ``frontend/src/routes/runs/+page.svelte`` and its
-    ``projected-fields.test.ts``. That projection is unverified and stays over
-    there: nothing on this side of the wire models a field, ``data`` remains
-    ``dict[str, Any]``, and a consumer's display convenience is not a licence to
-    type it here.
+    own ignorance rather than as a fact about the artifact. Two consumers do
+    exactly that, for the same two names (``pr_url``, ``status``):
+    ``DISCLOSED_ARTIFACT_FIELDS`` / :class:`ProjectedArtifactRead` in
+    ``api/v1/runs.py``, and ``PROJECTED_FIELDS`` in
+    ``frontend/src/routes/runs/+page.svelte`` (guarded by its
+    ``projected-fields.test.ts``).
+
+    The first of those is a DISCLOSURE boundary, not merely a display
+    convenience, and it is why this untyped payload does not reach HTTP whole:
+    ``GET /api/v1/runs`` rebuilds each :class:`ArtifactRead` as its own narrower
+    wire model carrying only the declared keys, per the rule in
+    ``ARCHITECTURE.md``'s "Other factory artefacts (read-only)". None of that
+    changes anything HERE. Both projections are unverified and stay over there;
+    nothing on this side of the wire models a field, ``data`` remains
+    ``dict[str, Any]``, and neither a consumer's display convenience nor its
+    disclosure allowlist is a licence to type it here.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
