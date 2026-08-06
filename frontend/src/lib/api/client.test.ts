@@ -415,7 +415,7 @@ describe('write wrappers', () => {
 		expect(error.status).toBe(401);
 	});
 
-	it('surfaces the 409 todo-only conflict as ApiError on an update', async () => {
+	it('surfaces the 409 not-mutable conflict as ApiError on an update', async () => {
 		const fetchMock = stubFetch();
 		fetchMock.mockResolvedValue(
 			jsonResponse(

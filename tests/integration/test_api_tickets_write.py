@@ -12,7 +12,7 @@ wirings, each chosen for what it can actually prove:
   ONE shared project, which the shipped :class:`FakeFileWriter` and
   :class:`FakeFileAdapter` cannot make (they hold SEPARATE in-memory state — see the
   fixture note in ``tests/unit/test_write_service.py``). The fixture's run-states also
-  make the todo-only editing gate real rather than seeded.
+  make the EDIT mutability gate (``todo``/``unknown``) real rather than seeded.
 * the **in-memory pair** — :class:`FakeFileAdapter` + :class:`FakeFileWriter` — for the
   assertions that never reach a port at all: the write-token 401s, the
   ``invalid_ticket_id`` 400 rejected at the ``Path`` boundary, the frozen OpenAPI shape,
@@ -399,7 +399,7 @@ async def test_an_unknown_query_param_does_not_mask_a_missing_token(tmp_path: Pa
 
 
 # --------------------------------------------------------------------------- #
-# The todo-only editing gate + the create-collision guard (409s)
+# The EDIT mutability gate (``todo``/``unknown``) + the create-collision guard (409s)
 # --------------------------------------------------------------------------- #
 
 

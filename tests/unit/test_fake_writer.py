@@ -2,8 +2,9 @@
 
 These pin the write-path ``FileWriter`` contract the backend codes against before
 the real writer exists: the ``@runtime_checkable`` ``isinstance`` gate, the three
-apply flows (create/edit/delete) mutating only in-memory seeded state, the
-todo-only mutability gate over the seeded run-state, the pure ``preview_*`` diffs,
+apply flows (create/edit/delete) mutating only in-memory seeded state, the two
+run-state mutability gates over that seeded run-state (``ensure_mutable`` for an
+edit, the wider ``ensure_deletable`` for a delete), the pure ``preview_*`` diffs,
 and — the load-bearing guarantee — that NOTHING ever touches the filesystem
 (proven both by the shared AST guard and behaviorally against an empty
 ``tmp_path``). Deterministic and I/O-free — pydantic + stdlib only.

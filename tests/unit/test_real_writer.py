@@ -5,7 +5,8 @@ into a fresh ``tmp_path`` (so the checked-in fixture is never mutated) and drive
 the real writer against it, re-reading through the production
 :class:`~factory_console.file_adapter.real.RealFileAdapter`. These pin the write
 contract end-to-end — the ``@runtime_checkable`` ``isinstance`` gate, the three
-apply flows over real files, the todo-only mutability gate, pure previews, and the
+apply flows over real files, the two run-state mutability gates (``ensure_mutable``
+for an edit, the wider ``ensure_deletable`` for a delete), pure previews, and the
 load-bearing safety invariant that a refused write leaves every byte untouched.
 
 Deterministic and dependency-light: pydantic + PyYAML + stdlib only, no network,

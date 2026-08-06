@@ -12,7 +12,9 @@ It owns two co-located :class:`~factory_console.errors.FactoryConsoleError`
 subclasses per the ``errors.py`` convention (the raiser and its error live together,
 so the ONE existing exception handler renders them with no handler change):
 :class:`WriteConflict` (create id collision) and :class:`WriteValidationError` (the
-write-boundary 422). The non-todo mutability gate is enforced INSIDE the writer via
+write-boundary 422). The run-state mutability gates — ``ensure_mutable`` for an edit
+and the wider ``ensure_deletable`` for a delete, which are NOT one gate — are enforced
+INSIDE the writer via
 :class:`~factory_console.file_adapter.write_gate.TicketNotMutable` (409), which
 propagates through this service unchanged — WriteService does NOT redefine it. Absent
 ids on edit/delete reuse the canonical read-side
@@ -112,7 +114,8 @@ class WriteService:
         delegates editability to the writer: a dry-run returns the writer's planned
         :class:`DiffPreview` as ``applied=False``; an apply calls ``edit_ticket``,
         whose gate raises :class:`~factory_console.file_adapter.write_gate.TicketNotMutable`
-        (409) for a non-todo ticket — that propagates unchanged — then re-reads the
+        (409) for a ticket outside the EDIT allowlist ``todo``/``unknown`` — that
+        propagates unchanged — then re-reads the
         edited ticket through the adapter (see :meth:`_with_reread`).
         """
         if self._adapter.get_ticket(project, ticket_id) is None:
@@ -132,7 +135,8 @@ class WriteService:
         writer's planned :class:`DiffPreview` as ``applied=False``; an apply calls
         ``delete_ticket``, whose gate raises
         :class:`~factory_console.file_adapter.write_gate.TicketNotMutable` (409) for a
-        non-todo ticket (propagated unchanged).
+        ticket outside the DELETE allowlist — the edit's ``todo``/``unknown`` plus
+        ``absent``, since delete is the wider of the two gates (propagated unchanged).
 
         Unlike create/edit, the delete apply does NOT re-read via the adapter: the
         ticket is GONE afterwards, so a re-read would be ``None`` and would violate

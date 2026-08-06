@@ -97,8 +97,8 @@ export interface paths {
          *
          *     Always ``200``: an edit creates no resource on either path. Delegates to
          *     :meth:`~factory_console.services.write_service.WriteService.edit`, whose
-         *     ``TicketNotFound`` (404) and ``TicketNotMutable`` (409, the todo-only editing rule)
-         *     propagate to the registered handlers.
+         *     ``TicketNotFound`` (404) and ``TicketNotMutable`` (409, for a run-state outside the
+         *     EDIT allowlist ``todo``/``unknown``) propagate to the registered handlers.
          */
         readonly put: operations["edit_ticket_api_v1_tickets__ticket_id__put"];
         readonly post?: never;
