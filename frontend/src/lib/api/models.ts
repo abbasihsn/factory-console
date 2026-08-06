@@ -117,20 +117,33 @@ export type RunListResponse = components['schemas']['RunListResponse'];
  * There is a record per MANIFEST ticket, including tickets the factory has never
  * run (both sources then say `absent`), so a record's presence says nothing about
  * whether a run happened; only the per-source `reason` does.
+ *
+ * Aliased from the server's `ProjectedRunRecord` — the wire twin of its internal
+ * `RunRecord` — because the endpoint discloses a narrowed record, not its composed
+ * domain one (see {@link ArtifactRead}). The friendly name stays `RunRecord`: the
+ * projection is a server-side policy, and every consumer here reads the same
+ * `ticketId`/`result`/`receipt` it always did.
  */
-export type RunRecord = components['schemas']['RunRecord'];
+export type RunRecord = components['schemas']['ProjectedRunRecord'];
 
 /**
  * One artifact read: `data` when it parsed, `reason` when it did not — exactly one
  * of the two, enforced server-side.
  *
- * `data` is DELIBERATELY untyped (`{ [key: string]: unknown }`): the server models
- * no field inside a factory artifact, because it has none it has verified against a
- * real captured file. Read fields out of it defensively — a key may be missing or
- * any type at all — and never widen this into a hand-written schema here; that
- * would put back the guesswork the backend refused to ship.
+ * `data` is what the server DISCLOSES of the artifact, not the artifact: a
+ * `{ [key: string]: string }` holding only the keys in `DISCLOSED_ARTIFACT_FIELDS`
+ * (`server/factory_console/api/v1/runs.py`) that the file carries as strings — the
+ * same names the runs view declares in its `PROJECTED_FIELDS`. A read that names
+ * none of them is `{}`, which is NOT `null`; `null` means the read failed and
+ * `reason` says why.
+ *
+ * So the server still models no field inside a factory artifact — it has none it has
+ * verified against a real captured file — it simply declines to forward the ones
+ * nobody asked for. Read fields out of it defensively (a key may be missing) and
+ * never widen this into a hand-written schema here; that would put back the
+ * guesswork the backend refused to ship.
  */
-export type ArtifactRead = components['schemas']['ArtifactRead'];
+export type ArtifactRead = components['schemas']['ProjectedArtifactRead'];
 
 /**
  * Why an artifact yielded no data: `absent` (the factory never wrote it — the
