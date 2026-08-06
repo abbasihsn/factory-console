@@ -55,7 +55,8 @@ from factory_console.file_adapter.writer_protocol import FileWriter
 
 # Ids as the checked-in fixture stages them, reused verbatim for the in-memory pair so
 # one id means the same thing in both wirings: CAD-131 is ``todo`` (mutable), CAD-118 is
-# ``ready`` (the todo-only gate refuses it), CAD-999 exists nowhere.
+# ``ready`` (outside both mutability gates' allowlists, so edit and delete each refuse
+# it), CAD-999 exists nowhere.
 TODO_ID = "CAD-131"
 READY_ID = "CAD-118"
 MISSING_ID = "CAD-999"
@@ -123,9 +124,10 @@ class _RecordingFileWriter:
     depths. ``entered`` records a call on the way IN, so a guard that fires before the
     port leaves it empty. ``returned`` records only after the inner writer returned, so
     a name in ``entered`` but not ``returned`` is a call that RAISED — it produced no
-    :class:`WriteResult` and committed nothing. The todo-only gate needs exactly that
-    distinction: it lives INSIDE the writer's apply methods, so the port genuinely is
-    called, and "no write occurred" there means the apply aborted rather than never
+    :class:`WriteResult` and committed nothing. The run-state mutability gates need
+    exactly that distinction: they live INSIDE the writer's apply methods (``ensure_mutable``
+    in ``edit_ticket``, the wider ``ensure_deletable`` in ``delete_ticket``), so the port
+    genuinely is called, and "no write occurred" there means the apply aborted rather than never
     started.
     """
 
@@ -363,9 +365,10 @@ async def test_a_non_todo_apply_aborts_inside_the_writer_and_commits_nothing(
     verb: str, apply_method: str
 ) -> None:
     # The one guard that legitimately REACHES the port: unlike the token, id, and query
-    # guards, the todo-only gate lives inside the writer's apply methods (``write_gate``
-    # is the writer's first step), so asserting "zero port calls" here would be asserting
-    # something false. The true contract is two-part and pinned as such:
+    # guards, the run-state mutability gates (``ensure_mutable`` for an edit, the wider
+    # ``ensure_deletable`` for a delete) live inside the writer's apply methods
+    # (``write_gate`` is the writer's first step), so asserting "zero port calls" here
+    # would be asserting something false. The true contract is two-part and pinned as such:
     #
     #   * the apply was ENTERED but never RETURNED — it raised, so it produced no
     #     WriteResult and committed nothing, and

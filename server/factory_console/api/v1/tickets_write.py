@@ -218,8 +218,8 @@ async def edit_ticket(
 
     Always ``200``: an edit creates no resource on either path. Delegates to
     :meth:`~factory_console.services.write_service.WriteService.edit`, whose
-    ``TicketNotFound`` (404) and ``TicketNotMutable`` (409, the todo-only editing rule)
-    propagate to the registered handlers.
+    ``TicketNotFound`` (404) and ``TicketNotMutable`` (409, for a run-state outside the
+    EDIT allowlist ``todo``/``unknown``) propagate to the registered handlers.
     """
     root: Path = request.app.state.project_root
     project = adapter.load_project(root)
