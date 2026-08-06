@@ -33,8 +33,19 @@ a compile error, and `frontend/src/routes/runs/projected-fields.test.ts` fails i
 the view reads a key the constant does not list (or lists one nothing reads). The
 view also renders a miss honestly — "no PR url / no status under any key this
 console recognises" — precisely because the names may be wrong. Nothing below
-that view models a field: the reading layer, `RunRecord`, and the wire type all
-still carry `data` untyped.
+that view models a field: the reading layer and `RunRecord` still carry `data`
+untyped.
+
+The WIRE is the one place that narrows, and it does not model a field either — it
+DECLINES to disclose the ones nobody asked for. `GET /api/v1/runs` serves a
+`ProjectedArtifactRead` whose `data` holds only the keys listed in
+`DISCLOSED_ARTIFACT_FIELDS` (`server/factory_console/api/v1/runs.py`) — the same
+two names, and no schema: an undeclared key is simply not sent. That is the
+disclosure rule in `docs/planning/ARCHITECTURE.md` ("Other factory artefacts"),
+which forbids serialising an unmodelled factory-written artefact verbatim. So a
+key added to one of these fixtures reaches the reader and `RunRecord` and stops
+at the endpoint, which is the intended behaviour and what
+`tests/integration/test_api_runs.py` pins.
 
 T89 has since composed these reads into `domain/run_record.py`'s `RunRecord`, and
 it deliberately did **not** model named fields: the record names the two *sources*
