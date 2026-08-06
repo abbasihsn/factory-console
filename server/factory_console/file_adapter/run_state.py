@@ -181,11 +181,17 @@ RUN_STATE_RELATIVE_LOCATIONS: tuple[Path, ...] = tuple(
 # ``<location>/<state>/<ticket_id>``, a shape a FILE source has no room for, so
 # folding the two together would silently change marker classification.
 #
-# The T40 ``RealFileWatcher`` (T91) schedules the PARENT directory of each of
-# these and filters events down to these exact paths. Watchdog cannot watch a
-# single file that gets replaced: the factory writes ``run-state.json`` via
-# ``mktemp`` + ``mv`` (INV-03), so a file watch would keep observing the
-# replaced inode and go quiet after the first update.
+# THE WATCHER NO LONGER READS THIS TUPLE, and editing it in the hope of changing
+# what is watched will not (T95). The run-state files are watched as part of
+# :data:`~factory_console.domain.watched_artifacts.WATCHED_JSON_ARTIFACTS`, which
+# covers every factory FILE artefact the console reads — the ledger as well — and
+# derives its run-state half from :data:`RUN_STATE_SOURCE_LOCATIONS` directly, the
+# same tuple this one derives from. So the two still cannot drift; they are simply
+# siblings now rather than one feeding the other. The mechanism there is unchanged
+# from T91: schedule each file's PARENT directory and filter events down to the exact
+# path, because watchdog cannot watch a single file that gets replaced — the factory
+# writes ``run-state.json`` via ``mktemp`` + ``mv`` (INV-03), so a file watch would
+# keep observing the replaced inode and go quiet after the first update.
 RUN_STATE_JSON_RELATIVE_LOCATIONS: tuple[Path, ...] = tuple(
     relative for kind, relative in RUN_STATE_SOURCE_LOCATIONS if kind == "json"
 )
