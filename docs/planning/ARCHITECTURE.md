@@ -437,8 +437,20 @@ domain/ports — no domain rewrite. Every read still flows through the source-ag
   Claude Code can attach to a server-started session; skippable if viewing-only suffices.
 
 ### Data-model additions (v3)
-- **RegisteredProject** — `{ id, name, path, addedAt }` (a console-DB row) — distinct from the
-  read-through `Project` entity.
+- **RegisteredProject** — a console-DB row `{ id, name, path, addedAt }`: `id: str` (uuid4 hex,
+  `^[0-9a-f]{32}$`), `name: str` (non-empty), `path: Path` (canonical absolute, as the store wrote
+  it — consumers must not re-resolve), `addedAt: datetime` (tz-aware UTC). Frozen /
+  `extra="forbid"`, like every other domain model. Distinct from the read-through `Project` entity:
+  a row is durable user intent, a `Project` is a per-request filesystem resolution.
+- **RegistryEntry** — the read-time projection over a row: `{ project: RegisteredProject, condition:
+  RegistryEntryCondition }`. A row alone cannot be rendered honestly, because it says nothing about
+  whether its path still resolves. The wire field is `condition`, never `availability`.
+- **RegistryEntryCondition** — the EXHAUSTIVE union the SPA's generated types derive from:
+  `"ok" | "path_missing" | "not_a_project" | "unreadable" | "no_factory_dir"`. Resolved
+  most-degraded-first: `unreadable` > `path_missing` > `not_a_project` > `no_factory_dir` > `ok`.
+  `no_factory_dir` is degraded but USABLE (the project is real and browsable; only run-state, runs
+  and spend are legitimately missing), and `unreadable` is never folded into `not_a_project` — "I
+  could not look" is not "I looked and there is nothing there".
 - **Credentials / Session** — auth state (console DB / in-memory).
 
 ### Cross-cutting deltas (v3)
