@@ -292,26 +292,79 @@ async def test_other_files_beside_the_json_source_yield_nothing(tmp_path: Path) 
         watcher.stop()
 
 
+async def test_ledger_append_emits_ledger_event(tmp_path: Path) -> None:
+    # T95: the spend ledger (``.factory/metrics/ledger.jsonl``, read by
+    # ``GET /api/v1/spend`` since T79) was READ but never WATCHED — T91 generalized
+    # nothing, so it fixed run-state alone and left the next artifact in exactly the
+    # condition it had just repaired. An APPEND to the ledger must deliver a
+    # ChangeEvent all the way through the real observer and the subscriber fan-out;
+    # asserting the watcher was merely configured would not have caught the original
+    # bug either.
+    (tmp_path / ".factory" / "metrics").mkdir(parents=True)
+    ledger = tmp_path / ".factory" / "metrics" / "ledger.jsonl"
+    ledger.write_text('{"ticket_id": "T94"}\n')
+    watcher = RealFileWatcher(tmp_path)
+    watcher.start()
+    stream, first = await _primed_stream(watcher)
+    try:
+        with ledger.open("a", encoding="utf-8") as handle:
+            handle.write('{"ticket_id": "T95"}\n')
+        event = await _next_event(stream, first)
+        assert event.scope == "ledger"
+        assert event.path == ".factory/metrics/ledger.jsonl"
+        assert event.kind in {"created", "modified"}
+    finally:
+        first.cancel()
+        await stream.aclose()
+        watcher.stop()
+
+
+async def test_ledger_atomic_rename_emits_event(tmp_path: Path) -> None:
+    # The INV-03 trap applies to the ledger exactly as it does to run-state: the
+    # factory replaces files via mktemp + mv, so the inode changes and a naive
+    # single-file watch goes quiet after the first update. The ledger's parent
+    # ``.factory/metrics`` is watched instead, and names — not inodes — are matched.
+    (tmp_path / ".factory" / "metrics").mkdir(parents=True)
+    metrics_dir = tmp_path / ".factory" / "metrics"
+    (metrics_dir / "ledger.jsonl").write_text('{"ticket_id": "T94"}\n')
+    watcher = RealFileWatcher(tmp_path)
+    watcher.start()
+    stream, first = await _primed_stream(watcher)
+    try:
+        temp = metrics_dir / "ledger.jsonl.tmp"
+        temp.write_text('{"ticket_id": "T94"}\n{"ticket_id": "T95"}\n')
+        temp.rename(metrics_dir / "ledger.jsonl")
+
+        event = await _drain_until(stream, ".factory/metrics/ledger.jsonl", first)
+        assert event.scope == "ledger"
+    finally:
+        first.cancel()
+        await stream.aclose()
+        watcher.stop()
+
+
 async def test_nested_content_under_the_json_parent_yields_nothing(tmp_path: Path) -> None:
     # The sibling test above covers DIRECT children of ``.factory``. This one covers
-    # DEPTH, which is a different guard: the ``.factory`` watch is scheduled
+    # DEPTH, which is a different guard: each file artifact's parent is scheduled
     # ``recursive=False`` precisely so nothing below it is ever reported, and the
     # handler's json-only drop matches on the immediate parent only. A nested write
-    # therefore has to be invisible at the SCHEDULING layer — if that watch is ever
-    # flipped to recursive, this event would reach the handler, miss both the exact
-    # JSON match and the direct-parent drop, and be dispatched as ``planning``:
+    # therefore has to be invisible at the SCHEDULING layer — if one of those watches
+    # is ever flipped to recursive, this event would reach the handler, miss both the
+    # exact-path match and the direct-parent drop, and be dispatched as ``planning``:
     # scope widening the ticket forbids, and a refresh of the wrong pane.
     #
-    # ``.factory/metrics/ledger.jsonl`` is not hypothetical — it is the real spend
-    # ledger this console already reads (T79, ``file_adapter/ledger.py``), so it is
-    # exactly the nested content a live project has sitting under the new watch.
+    # ``.factory/metrics/`` used to be the example of that nested content, and since
+    # T95 it is a watched parent in its own right — so the depth this test guards is
+    # now one level BELOW it. The guard itself is unchanged and is the regression this
+    # test exists to catch; the ledger file's own event has moved to
+    # ``test_ledger_append_emits_ledger_event``.
     (tmp_path / ".factory" / "metrics").mkdir(parents=True)
     watcher = RealFileWatcher(tmp_path)
     watcher.start()
     stream, first = await _primed_stream(watcher)
     try:
-        (tmp_path / ".factory" / "metrics" / "ledger.jsonl").write_text("{}\n")
         (tmp_path / ".factory" / "metrics" / "deep").mkdir()
+        (tmp_path / ".factory" / "metrics" / "deep" / "ledger.jsonl").write_text("{}\n")
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(first, _QUIET_WINDOW)
     finally:
@@ -337,6 +390,43 @@ async def test_both_run_state_sources_present_do_not_double_fire(tmp_path: Path)
         event = await _next_event(stream, first)
         assert event.path == ".factory/run-state.json"
         assert event.scope == "run-state"
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(stream.__anext__(), _QUIET_WINDOW)
+    finally:
+        await stream.aclose()
+        watcher.stop()
+
+
+async def test_run_state_json_and_ledger_are_scoped_independently(tmp_path: Path) -> None:
+    # Two DISTINCT json-only parents are now scheduled (``.factory`` for
+    # run-state.json, ``.factory/metrics`` for ledger.jsonl), and ``.factory/metrics``
+    # is nested inside the other. Each file must fire once, under its OWN scope: a
+    # ledger append tagged ``run-state`` (or vice versa) would refresh the wrong pane,
+    # and a double-fire would mean the nested parent got scheduled twice.
+    (tmp_path / ".factory" / "metrics").mkdir(parents=True)
+    (tmp_path / ".factory" / "run-state.json").write_text('{"version": 1, "tickets": {}}')
+    ledger = tmp_path / ".factory" / "metrics" / "ledger.jsonl"
+    ledger.write_text('{"ticket_id": "T94"}\n')
+    watcher = RealFileWatcher(tmp_path)
+    watcher.start()
+    stream, first = await _primed_stream(watcher)
+    try:
+        (tmp_path / ".factory" / "run-state.json").write_text(
+            '{"version": 1, "tickets": {"T95": {"status": "ready"}}}'
+        )
+        event = await _next_event(stream, first)
+        assert event.path == ".factory/run-state.json"
+        assert event.scope == "run-state"
+
+        # No quiet-window check between the two writes: cancelling an ``__anext__``
+        # closes the generator, so the stream would be dead before the ledger write.
+        # The ledger event arriving NEXT is itself the non-duplication assertion —
+        # a second run-state event would be picked up here and fail the path check.
+        with ledger.open("a", encoding="utf-8") as handle:
+            handle.write('{"ticket_id": "T95"}\n')
+        event = await _next_event(stream)
+        assert event.path == ".factory/metrics/ledger.jsonl"
+        assert event.scope == "ledger"
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(stream.__anext__(), _QUIET_WINDOW)
     finally:
