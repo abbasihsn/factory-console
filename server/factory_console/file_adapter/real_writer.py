@@ -18,9 +18,11 @@ the four single-purpose write modules rather than parsing manifests, rendering
 * :func:`~factory_console.file_adapter.write_diff.preview` renders that set as the
   side-effect-free :class:`~factory_console.domain.write.DiffPreview` the UI and
   dry-run show.
-* :func:`~factory_console.file_adapter.write_gate.ensure_mutable` is the todo-only
-  authorization gate for an EDIT (409 ``TicketNotMutable`` for ``in-flight``/
-  ``ready``/``merged``, and for ``absent``);
+* :func:`~factory_console.file_adapter.write_gate.ensure_mutable` is the EDIT-path
+  authorization gate: ``todo``/``unknown`` pass and every other state is a 409
+  ``TicketNotMutable`` — the directory form's ``in-flight``/``ready``/``merged``, the
+  factory JSON's ``in_progress``/``in_part``/``in_submilestone``/``flagged``/
+  ``failed``/``needs_human``, and the source-shaped ``absent`` and ``unreadable``;
   :func:`~factory_console.file_adapter.write_gate.ensure_deletable` is its
   delete-path sibling, identical but for also permitting ``absent`` — see
   :meth:`RealFileWriter.delete_ticket`.
@@ -137,7 +139,8 @@ class RealFileWriter:
     def edit_ticket(self, project: Project, ticket_id: str, edit: TicketEdit) -> WriteResult:
         """Apply ``edit`` to ``ticket_id`` on disk and return the applied :class:`WriteResult`.
 
-        Enforces the todo-only gate FIRST (ticket step 4): a non-todo run-state
+        Enforces the EDIT gate :func:`~factory_console.file_adapter.write_gate.ensure_mutable`
+        FIRST (ticket step 4): a run-state outside its ``todo``/``unknown`` allowlist
         fails fast with :class:`~factory_console.file_adapter.write_gate.TicketNotMutable`
         (409) BEFORE any render or write. Gate-first vs the fake's existence-first
         order is observationally equivalent whenever the project's run-state source is
