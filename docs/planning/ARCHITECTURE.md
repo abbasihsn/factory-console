@@ -94,7 +94,7 @@ Base: `http://127.0.0.1:<port>/api/v1`. JSON camelCase, ISO-8601, errors as `{ e
 - `GET /api/v1/roadmap` → `Roadmap | { present: false }` — the full rendered body (`bodyMarkdown` + `bodyHtml`) plus structured `milestones[]`, or the `{ present: false }` envelope when the project has no roadmap.
 - `GET /api/v1/graph` → `TicketGraph` (`{ nodes, edges }`) — the whole-project run-state-coloured dependency DAG; one node per ticket, one edge per resolved `dependsOn` (self-loops and dangling ids omitted).
 - `GET /api/v1/spend` → `SpendResponse` (`{ source, attribution, totals, byTicket, byModel, byLevel, skipped, skippedOmitted }`) — the factory's ledger aggregated by ticket, model and agent level; `attribution` names the cost-splitting rule (`full-to-each-id`, so per-ticket figures are *attributed* cost and may exceed `totals.costUsd`), and `source.found`/`source.read` tell no ledger from an unread one from a measured zero.
-- `GET /api/v1/runs` → `{ items: RunRecord[], total }` — one record per MANIFEST ticket, in manifest order; each carries the `result` and `receipt` artifact reads verbatim as `{ path, data, reason }`, where `reason` NAMES why a source is missing (`absent` | `unreadable` | `unparseable` | `too_large`). A project the factory has never run is `200` with every source `absent` — never a 404 and never `[]`, since `.factory/` is gitignored and having no artifacts is the normal state of a fresh clone.
+- `GET /api/v1/runs` → `{ items: ProjectedRunRecord[], total }` — one record per MANIFEST ticket, in manifest order; each carries a `result` and a `receipt` as `{ path, data, reason }`, where `reason` NAMES why a source is missing (`absent` | `unreadable` | `unparseable` | `too_large`). `data` is **not** the artifact verbatim: it is a `{ [key: string]: string }` holding only the keys named in `DISCLOSED_ARTIFACT_FIELDS` (`api/v1/runs.py`) that the artifact actually carries as strings — today `pr_url` and `status`, `{}` when it names neither — per the disclosure rule under "Other factory artefacts" below. A project the factory has never run is `200` with every source `absent` — never a 404 and never `[]`, since `.factory/` is gitignored and having no artifacts is the normal state of a fresh clone.
 - `GET /api/v1/health` → `{ ok, version, projectRoot }`.
 - `GET /api/v1/openapi.json` — auto-generated schema; SPA regenerates TS types from it.
 
@@ -277,22 +277,45 @@ authorization answer is shared while the **remedy** differs:
 
 Beside the run-state source, the console reads four more factory-owned artefacts. It writes to none
 of them. Three of the four — the per-ticket lane results and receipts, and last stop — are read
-without modelling a single field inside them: the reading layer (the file adapter, the domain types,
-and the wire) carries such a payload as an untyped JSON object all the way to the frontend
-(`ArtifactRead.data` is `dict[str, Any]`). The spend ledger is the exception and the only one: it is
-a typed reading path end to end — `LedgerEntry` (`domain/ledger.py`) names and types every field it
+without modelling a single field inside them: the READING layer (the file adapter and the domain
+types) carries such a payload as an untyped JSON object, `ArtifactRead.data` is `dict[str, Any]`, and
+`RunRecord` composes those verbatim. The spend ledger is the exception and the only one: it is a
+typed reading path end to end — `LedgerEntry` (`domain/ledger.py`) names and types every field it
 consumes, and `SpendReport`/`SpendResponse` (`domain/spend.py`) publish that on the wire.
 
-One layer above that does depend on two names, and declares it. The Runs view reads `pr_url` and
-`status` out of a lane result to render its PR and Outcome columns. Those names are **unverified** —
-no captured artefact from a real factory run exists in this repo to check them against — so they are
-declared as a bounded, UI-only projection rather than a schema: enumerated once in `PROJECTED_FIELDS`
-(`frontend/src/routes/runs/+page.svelte`), narrowed into the field readers so an undeclared key is a
-compile error, guarded by `frontend/src/routes/runs/projected-fields.test.ts`, and rendered so a miss
-reads as "no PR url / no status under any key this console recognises" rather than as a claim about
-the artefact. Growing that list is a deliberate, reviewable edit in one place; nothing else in the
-stack may read a named field out of an untyped artefact payload (the ledger's typed model above is
-not one).
+**The disclosure rule (v2.2 / T102).** Reading loosely is not licence to publish loosely, and the two
+must not be confused:
+
+> A read-only endpoint MUST NOT serialise an unmodelled, factory-written artefact verbatim. It may
+> disclose only the specific fields a real consumer needs — declared by name, in one place, at the
+> point of disclosure, and covered by a test — never the whole untyped payload.
+
+The reason is that "unmodelled" means the console cannot enumerate what is in the file, so forwarding
+it whole discloses whatever another program chose to put there (the factory's own metrics carry
+session ids, model names, token counts and cost) for a view that reads two keys. Both endpoints that
+touch an artefact obey it. `/spend` already did: `domain/spend.py`'s `SkippedLineInfo` declines to
+project the ledger's raw `excerpt`, and `ledger.py` redacts `session_id` before it can leave the
+module. `/runs` now does too — the DISCLOSURE boundary is the API response model, which is a
+narrowing of the domain type and not the domain type itself: `api/v1/runs.py` declares
+`DISCLOSED_ARTIFACT_FIELDS` and rebuilds each `ArtifactRead` as a `ProjectedArtifactRead`
+(`data: dict[str, str] | None`) carrying only those keys, so the reading layer stays untyped end to
+end while the wire carries a declared, tested allowlist. `tests/integration/test_disclosure_policy.py`
+enforces the rule generically over the app's response schemas, so a third endpoint inherits it
+without anyone rereading this paragraph.
+
+Two names are declared, in the two places that act on them, and they are the same two. The Runs view
+reads `pr_url` and `status` out of a lane result to render its PR and Outcome columns, and the server
+discloses exactly those. Both lists are **unverified** — no captured artefact from a real factory run
+exists in this repo to check them against — so neither is a schema: the frontend's is enumerated once
+in `PROJECTED_FIELDS` (`frontend/src/routes/runs/+page.svelte`), narrowed into the field readers so an
+undeclared key is a compile error, guarded by `frontend/src/routes/runs/projected-fields.test.ts`, and
+rendered so a miss reads as "no PR url / no status under any key this console recognises" rather than
+as a claim about the artefact; the server's is `DISCLOSED_ARTIFACT_FIELDS` above. They are two
+declarations because they answer different questions — what may LEAVE the process, and what the view
+may READ — and growing either is a deliberate, reviewable edit in one place. Growing only the
+frontend's yields a field the view can name and the server will not send, which is the intended
+failure mode. Nothing else in the stack may read or disclose a named field out of an untyped artefact
+payload (the ledger's typed model above is not one).
 
 All four are also WATCHED, and by construction rather than by four separate decisions: every path in
 the table below is declared once in `domain/watched_artifacts.py` (`WATCHED_JSON_ARTIFACTS`), which
