@@ -736,8 +736,8 @@ def test_edit_ignores_factory_owned_keys_sent_in_front_matter(tmp_path: Path) ->
 
     ``_merge_edit`` refuses to let a client set ``id``/``status`` in the manifest, so
     letting them through here would desynchronize the ``.md`` from the entry written
-    beside it — with the todo-only gate unable to notice, since it authorizes off the
-    run-state directory rather than the file.
+    beside it — with the EDIT mutability gate unable to notice, since it authorizes off
+    the run-state directory rather than the file.
     """
     project = _make_project(tmp_path)
     _seed(project)
