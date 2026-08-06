@@ -43,7 +43,8 @@ is an argument for reading it loosely, never for PUBLISHING it whole. ``.factory
 artifacts are written by another process whose fields this repo cannot enumerate, so
 serialising every key of one would disclose over HTTP whatever the factory happens to
 put there (its own metrics carry session ids, model names and cost), for a view that
-consumes two names. So the domain object stops here: :func:`project_artifact` rebuilds
+consumes two names. So the domain object stops here:
+:meth:`ProjectedArtifactRead.from_artifact` rebuilds
 it as a :class:`ProjectedArtifactRead` carrying only
 :data:`DISCLOSED_ARTIFACT_FIELDS`, and it is that wire type — not
 :class:`~factory_console.domain.run_record.RunRecord` — the envelope holds.
@@ -132,7 +133,7 @@ class ProjectedArtifactRead(BaseModel):
     projects to ``data={}`` — an empty object, which is NOT ``None`` — so "read, and it
     named nothing this console recognises" stays distinct from "not read", exactly as
     it is one layer down. The invariant is not re-asserted with a validator here: this
-    module is its only constructor and :func:`project_artifact` is its only route, so a
+    module is its only constructor and :meth:`from_artifact` is its only route, so a
     second copy of the rule would have one owner and two homes.
     """
 
@@ -142,26 +143,27 @@ class ProjectedArtifactRead(BaseModel):
     data: dict[str, str] | None = None
     reason: ArtifactSkipReason | None = None
 
+    @classmethod
+    def from_artifact(cls, artifact: ArtifactRead) -> ProjectedArtifactRead:
+        """Narrow one domain :class:`ArtifactRead` to what may be disclosed.
 
-def project_artifact(artifact: ArtifactRead) -> ProjectedArtifactRead:
-    """Narrow one domain :class:`ArtifactRead` to what may be disclosed.
-
-    A declared key is disclosed only when it is present AND string-valued. A
-    non-string under a declared name is OMITTED rather than coerced — the same "read a
-    field or do not, never guess" rule the frontend's ``readString`` applies — because
-    ``str(value)`` on an object the console cannot model would publish a rendering of a
-    payload it does not understand, which is the disclosure this projection exists to
-    refuse. The frontend already reports a missing key as its own ignorance ("no status
-    under any key this console recognises"), so an omission renders honestly.
-    """
-    if artifact.data is None:
-        return ProjectedArtifactRead(path=artifact.path, reason=artifact.reason)
-    disclosed: dict[str, str] = {}
-    for field in DISCLOSED_ARTIFACT_FIELDS:
-        value = artifact.data.get(field)
-        if isinstance(value, str):
-            disclosed[field] = value
-    return ProjectedArtifactRead(path=artifact.path, data=disclosed)
+        A declared key is disclosed only when it is present AND string-valued. A
+        non-string under a declared name is OMITTED rather than coerced — the same
+        "read a field or do not, never guess" rule the frontend's ``readString``
+        applies — because ``str(value)`` on an object the console cannot model would
+        publish a rendering of a payload it does not understand, which is the
+        disclosure this projection exists to refuse. The frontend already reports a
+        missing key as its own ignorance ("no status under any key this console
+        recognises"), so an omission renders honestly.
+        """
+        if artifact.data is None:
+            return cls(path=artifact.path, reason=artifact.reason)
+        disclosed: dict[str, str] = {}
+        for field in DISCLOSED_ARTIFACT_FIELDS:
+            value = artifact.data.get(field)
+            if isinstance(value, str):
+                disclosed[field] = value
+        return cls(path=artifact.path, data=disclosed)
 
 
 class ProjectedRunRecord(BaseModel):
@@ -182,11 +184,11 @@ class ProjectedRunRecord(BaseModel):
 
     @classmethod
     def from_record(cls, record: RunRecord) -> ProjectedRunRecord:
-        """Project both of a composed record's sources through :func:`project_artifact`."""
+        """Project both of a composed record's sources through :meth:`ProjectedArtifactRead.from_artifact`."""
         return cls(
             ticketId=record.ticketId,
-            result=project_artifact(record.result),
-            receipt=project_artifact(record.receipt),
+            result=ProjectedArtifactRead.from_artifact(record.result),
+            receipt=ProjectedArtifactRead.from_artifact(record.receipt),
         )
 
 

@@ -442,6 +442,58 @@ async def test_atomic_rename_onto_a_run_artifact_emits_event(
         watcher.stop()
 
 
+async def test_temp_file_inside_a_run_artifact_dir_emits_nothing(tmp_path: Path) -> None:
+    # The factory writes an artefact via mktemp + mv IN THE SAME DIRECTORY
+    # (INV-03): the temp file's own create must not itself surface as a `runs`
+    # event, or every write fires twice — once for the transient `.tmp` name
+    # (never a valid artefact) and once for the real rename. Matching the
+    # directory branch by NAME, not just by parent, is what keeps one write to
+    # one event.
+    (tmp_path / ".factory" / "results").mkdir(parents=True)
+    watcher = RealFileWatcher(tmp_path)
+    watcher.start()
+    stream, first = await _primed_stream(watcher)
+    try:
+        (tmp_path / ".factory" / "results" / "T99.json.tmp").write_text('{"status": "ready"}')
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(first, _QUIET_WINDOW)
+    finally:
+        first.cancel()
+        await stream.aclose()
+        watcher.stop()
+
+
+async def test_run_artifact_dir_created_after_start_is_still_watched(tmp_path: Path) -> None:
+    # ``.factory/`` is gitignored, so `.factory/results` and `.factory/receipts`
+    # are routinely absent when the console starts — before the first lane
+    # finishes, or on a fresh clone. `start()` only schedules a "dir" target that
+    # already exists on disk; without late scheduling, the directory's own later
+    # creation is a directory event whose parent (`.factory`) is already a
+    # json-only root for the other file artefacts, so it is silently dropped and
+    # nothing ever watches it — /runs would never live-update for the rest of the
+    # process's life.
+    (tmp_path / ".factory").mkdir()
+    watcher = RealFileWatcher(tmp_path)
+    watcher.start()
+    stream, first = await _primed_stream(watcher)
+    try:
+        (tmp_path / ".factory" / "results").mkdir()
+        # Give the watchdog thread a beat to observe the directory's own create
+        # event and register the late watch (`_schedule_late`) before anything
+        # lands inside it — a real lane run has this same ordering, just at a much
+        # coarser timescale, so this is closing a real registration gap, not
+        # padding a debounce window.
+        await asyncio.sleep(0.3)
+        (tmp_path / ".factory" / "results" / "T99.json").write_text('{"status": "ready"}')
+
+        event = await _drain_until(stream, ".factory/results/T99.json", first)
+        assert event.scope == "runs"
+    finally:
+        first.cancel()
+        await stream.aclose()
+        watcher.stop()
+
+
 async def test_last_stop_write_emits_runs_event(tmp_path: Path) -> None:
     # ``.factory/last-stop.json`` is the third /runs source and the one that already
     # fits the exact-path mechanism: one file, fixed name, in ``.factory`` — a

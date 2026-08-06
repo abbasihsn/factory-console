@@ -124,26 +124,48 @@ def _response_schema_names(document: dict[str, Any]) -> set[str]:
 
 
 def _is_free_form_object(schema: Any) -> bool:
-    """Whether this schema is a bare ``dict[str, Any]``: an object with no declared shape.
+    """Whether this schema REACHES a bare ``dict[str, Any]``: directly, or nested inside it.
 
     ``additionalProperties`` true (Pydantic's rendering of a ``dict[str, Any]`` value)
     with no ``properties`` of its own. A ``dict[str, str]`` renders
-    ``additionalProperties: {"type": "string"}`` and is NOT free-form: its values are
-    typed, and — the point — the keys it may carry are whatever the code that built it
-    put there, which for ``ProjectedArtifactRead`` is a declared allowlist. Unwraps the
-    ``anyOf`` Pydantic emits for an optional field, so ``dict[str, Any] | None`` cannot
-    hide inside a union.
+    ``additionalProperties: {"type": "string"}`` and is NOT itself free-form: its
+    values are typed, and — the point — the keys it may carry are whatever the code
+    that built it put there, which for ``ProjectedArtifactRead`` is a declared
+    allowlist.
+
+    Recurses the same way :func:`_refs_in` does, and for the same reason: a single-
+    node test only catches a free-form object sitting directly on a property, and
+    misses one hiding one level down — ``list[dict[str, Any]]`` (an ``items``
+    schema) or ``dict[str, dict[str, Any]]`` (a nested ``additionalProperties``
+    schema) both pass a single-node test cleanly while publishing exactly the
+    unconstrained payload the rule exists to catch. So this walks ``anyOf``/
+    ``oneOf``/``allOf`` (composition, including the union Pydantic emits for an
+    optional field), ``items``/``prefixItems`` (array shape) and a nested
+    ``additionalProperties`` SCHEMA (as opposed to the bare ``True`` above) — every
+    keyword through which a schema can hold another schema.
+
+    Deliberately does NOT flag a shapeless ``object`` with neither ``properties``
+    nor ``additionalProperties`` at all (a bare untyped field): that shape is also
+    how FastAPI's own built-in ``ValidationError.ctx`` renders, on the automatic
+    422 response every route gets — a framework schema no ticket here authored
+    and no factory artefact flows through, so flagging it would fail the whole
+    suite over something this rule was never about disclosing.
     """
     if not isinstance(schema, dict):
         return False
     for branch in schema.get("anyOf", []) + schema.get("oneOf", []) + schema.get("allOf", []):
         if _is_free_form_object(branch):
             return True
-    return (
-        schema.get("type") == "object"
-        and schema.get("additionalProperties") is True
-        and not schema.get("properties")
-    )
+    if schema.get("type") == "array":
+        if _is_free_form_object(schema.get("items", {})):
+            return True
+        return any(_is_free_form_object(item) for item in schema.get("prefixItems", []))
+    if schema.get("type") == "object":
+        additional = schema.get("additionalProperties")
+        if isinstance(additional, dict):
+            return _is_free_form_object(additional)
+        return additional is True and not schema.get("properties")
+    return False
 
 
 def _free_form_properties(document: dict[str, Any]) -> set[str]:
@@ -156,6 +178,33 @@ def _free_form_properties(document: dict[str, Any]) -> set[str]:
             if _is_free_form_object(property_schema):
                 offenders.add(f"{name}.{field}")
     return offenders
+
+
+def test_free_form_object_detection_recurses_into_arrays_and_nested_dicts() -> None:
+    """A free-form leaf must be caught however deep it is nested, not just at the top.
+
+    A single-node test on the immediate schema misses a ``dict[str, Any]`` sitting
+    inside a ``list[...]`` (an ``items`` schema) or inside another ``dict[str, ...]``
+    (a nested ``additionalProperties`` schema) — both render as a typed OUTER
+    container over an untyped inner one, and a future endpoint returning either shape
+    would publish it verbatim while :func:`_free_form_properties` swept over an empty
+    set. Pinned directly against representative OpenAPI schema fragments rather than
+    a real route, since no current endpoint happens to expose either shape.
+    """
+    free_form_object = {"type": "object", "additionalProperties": True}
+    typed_object = {"type": "object", "properties": {"x": {"type": "string"}}}
+
+    assert _is_free_form_object({"type": "array", "items": free_form_object})
+    assert not _is_free_form_object({"type": "array", "items": typed_object})
+    assert _is_free_form_object(
+        {"type": "object", "additionalProperties": free_form_object}
+    )
+    assert not _is_free_form_object(
+        {"type": "object", "additionalProperties": {"type": "string"}}
+    )
+    # A shapeless object with neither key is NOT flagged (see the function's
+    # docstring: this is also how FastAPI's built-in ValidationError.ctx renders).
+    assert not _is_free_form_object({"type": "object"})
 
 
 def test_no_response_schema_discloses_an_unconstrained_free_form_object() -> None:

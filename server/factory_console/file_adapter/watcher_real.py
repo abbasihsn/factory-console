@@ -167,7 +167,7 @@ class _ChangeEventHandler(FileSystemEventHandler):
             return
         parent = Path(rel_path).parent.as_posix()
         dir_scope = _WATCHED_JSON_DIR_SCOPES.get(parent)
-        if dir_scope is not None and not event.is_directory:
+        if dir_scope is not None and not event.is_directory and rel_path.endswith(".json"):
             # A file directly inside a watched artefact DIRECTORY — one lane's
             # result or receipt, whose filename is a ticket id (T99). The scope
             # comes from the directory the shared list declared, so a new lane's
@@ -175,8 +175,30 @@ class _ChangeEventHandler(FileSystemEventHandler):
             # Ordered after the exact-path check so a file artefact declared inside
             # a watched directory would keep its OWN scope; the two maps are
             # disjoint today, so this order is a statement of precedence rather
-            # than a live case.
+            # than a live case. Filtered to ``.json`` names because the factory
+            # writes these via mktemp + mv IN THE SAME DIRECTORY (INV-03): an
+            # unfiltered match would dispatch the temp file's own create as a
+            # second ``runs`` event for every write, on a filename that is not
+            # the artefact and should never reach a subscriber.
             self._watcher._dispatch_from_thread(kind, dir_scope, rel_path)
+            return
+        if (
+            event.is_directory
+            and kind == "created"
+            and rel_path in _WATCHED_JSON_DIR_SCOPES
+        ):
+            # The watched directory ITSELF just came into existence — results or
+            # receipts created after start() (both are absent on a fresh clone,
+            # since ``.factory/`` is gitignored, so this is the common case, not
+            # an edge one). ``start()`` only schedules a "dir" target that already
+            # existed on disk; without this, the directory's later creation is a
+            # directory event whose parent is a json-only root and is silently
+            # dropped by the branch below, and nothing ever schedules it — the
+            # artefact stays unwatched for the rest of the process's life, one
+            # directory deeper than the failure T99 fixed. Scheduling here, on the
+            # live observer, is what lets the files that land inside it afterwards
+            # reach the ``dir_scope`` branch above at all.
+            self._watcher._schedule_late(rel_path, self)
             return
         if parent in self._watcher._json_only_roots:
             # A NAMED drop, not a silent one (T99, criterion 2). This root is
@@ -248,6 +270,11 @@ class RealFileWatcher:
         # substantive watch is absent here — its other entries keep whatever meaning
         # that watch gives them.
         self._json_only_roots: frozenset[str] = frozenset()
+        # "dir"-kind artefact directories (results, receipts) scheduled AFTER
+        # start(), because they did not exist on disk yet when it ran — see
+        # ``_schedule_late``. Guards against scheduling the same directory twice
+        # on the observer if its creation is reported more than once.
+        self._late_watched: set[str] = set()
         # The register/unregister/fan-out mechanics are shared with FakeFileWatcher
         # via _SubscriberHub (in watcher.py, NOT this guard-scanned source, so it
         # may use ``list.remove`` freely) — one implementation, no drift.
@@ -390,6 +417,23 @@ class RealFileWatcher:
         never blocks others.
         """
         return self._hub.subscribe()
+
+    # -- late scheduling ------------------------------------------------------ #
+
+    def _schedule_late(self, rel_path: str, handler: _ChangeEventHandler) -> None:
+        """Schedule a "dir"-kind artefact directory that did not exist at ``start()``.
+
+        Called from :meth:`_ChangeEventHandler.on_any_event` on the WATCHDOG
+        THREAD, not the loop — same as :meth:`_dispatch_from_thread`, but this one
+        talks to the observer instead of the loop, and ``Observer.schedule`` is
+        itself thread-safe (watchdog's own documented use for watching a
+        directory the moment it appears), so no ``call_soon_threadsafe`` hop is
+        needed here the way it is for debounce state and the subscriber hub.
+        """
+        if self._observer is None or rel_path in self._late_watched:
+            return
+        self._late_watched.add(rel_path)
+        self._observer.schedule(handler, str(self._project_root / rel_path), recursive=False)
 
     # -- thread → loop bridge + debounce ------------------------------------ #
 
