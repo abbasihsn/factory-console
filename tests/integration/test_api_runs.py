@@ -1,9 +1,17 @@
 """Integration tests for ``GET /api/v1/runs`` — the HTTP surface over T89's service.
 
-The endpoint owns routing and the response envelope and nothing else, so these tests
-pin exactly that: what the service composed reaches the wire unflattened, the empty
-project is a full list of NAMED absences rather than a 404 or an empty list, the route
-is registered, and no write verb is exposed on it.
+The endpoint owns routing, the response envelope, and — since T102 — the DISCLOSURE
+boundary, and nothing else. These tests pin exactly that: what the service composed
+reaches the wire unflattened but NARROWED to the declared fields, the empty project is a
+full list of NAMED absences rather than a 404 or an empty list, the route is registered,
+and no write verb is exposed on it.
+
+The narrowing is asserted here per FIELD NAME; that a response schema may not publish a
+free-form payload at all is the rule, and lives in
+``tests/integration/test_disclosure_policy.py`` where it is generic over every route.
+Both are needed: this file would pass on an endpoint that disclosed the right two keys
+by luck of its fixture, and that one would pass on an endpoint that disclosed the wrong
+two by declaration.
 
 Two wirings are exercised, for two different reasons. Most cases run over
 :class:`FakeRunArtifactReader` — the in-memory port implementation whose reasons are
@@ -23,6 +31,7 @@ assertion while losing the fact this milestone exists to show.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -30,6 +39,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from factory_console.api.v1.runs import DISCLOSED_ARTIFACT_FIELDS, ProjectedRunRecord
 from factory_console.app import create_app
 from factory_console.domain import Project, Ticket
 from factory_console.domain.runs import ArtifactRead
@@ -136,29 +146,38 @@ def test_a_seeded_project_returns_one_record_per_ticket_with_both_artifacts() ->
     assert body["total"] == 1
     (record,) = body["items"]
     assert record["ticketId"] == "T89"
-    # Both sources travel WHOLE — the data beside the (null) reason and the path.
-    # Asserted as the exact objects because the failure this record type exists to
-    # prevent is a flattening: a ``hasResult`` boolean or a bare null would satisfy
-    # any assertion that only checked ``data``.
+    # Both sources travel as their own three-field object — path, data and the (null)
+    # reason — because the failure this record type exists to prevent is a flattening:
+    # a ``hasResult`` boolean or a bare null would satisfy any assertion that only
+    # checked ``data``. What travels INSIDE ``data`` is the declared projection, so the
+    # objects are asserted exactly.
     assert record["result"] == {
         "path": str(FAKE_ROOT / RESULTS_RELATIVE_DIR / "T89.json"),
         "data": {"status": "ready"},
         "reason": None,
     }
+    # ``verdict`` is not disclosed, so the receipt READ fine and discloses nothing:
+    # ``{}``, which is not ``None``. The two must stay distinguishable — an empty
+    # object says "read, and it names none of the keys this console asks for", a null
+    # says "not read", and the reason beside it is what names why.
     assert record["receipt"] == {
         "path": str(FAKE_ROOT / RECEIPTS_RELATIVE_DIR / "T89.json"),
-        "data": {"verdict": "pass"},
+        "data": {},
         "reason": None,
     }
 
 
-def test_the_body_is_the_services_output_record_for_record() -> None:
-    """The handler adds nothing: the body equals what ``RunService`` composed.
+def test_the_body_is_the_services_output_record_for_record_once_projected() -> None:
+    """The handler adds nothing but the projection: the body is the service's list, narrowed.
 
     The endpoint's whole contract. Asserted against the service run over the SAME two
     ports rather than against a hand-written expectation, so a handler that filtered,
     re-ordered, or re-derived any part of the listing fails here even if the shape it
-    produced is individually plausible.
+    produced is individually plausible. The one transformation it IS allowed is the
+    disclosure projection, so the expectation is the service's own records put through
+    :meth:`ProjectedRunRecord.from_record` — the same function the handler calls, which
+    makes this a test of the LISTING (order, count, per-source pairing) and leaves what
+    the projection discloses to the cases that name the fields.
     """
     result = ArtifactRead(path=FAKE_ROOT / RESULTS_RELATIVE_DIR / "T88.json", data={"status": "ok"})
     artifacts = FakeRunArtifactReader(results={"T88": result})
@@ -166,7 +185,10 @@ def test_the_body_is_the_services_output_record_for_record() -> None:
 
     project = _project(FAKE_ROOT)
     adapter = FakeFileAdapter(project=project, tickets=[_ticket(i) for i in ticket_ids])
-    expected = RunService(adapter, artifacts).list_run_records(project)
+    expected = [
+        ProjectedRunRecord.from_record(record)
+        for record in RunService(adapter, artifacts).list_run_records(project)
+    ]
 
     body = _get_runs(ticket_ids, artifacts)
 
@@ -288,8 +310,18 @@ def test_real_artifacts_on_disk_reach_the_response_body(tmp_path: Path) -> None:
     body = _get_runs(["T88", "T89"], RealRunArtifactReader(), root=tmp_path)
 
     by_id = {record["ticketId"]: record for record in body["items"]}
-    assert by_id["T89"]["result"]["data"] == json.loads(result_text)
-    assert by_id["T89"]["receipt"]["data"] == json.loads(receipt_text)
+    # The bytes reached the endpoint — and the endpoint disclosed the declared fields
+    # out of them, not the file. The fixture carries six more keys (``branch``,
+    # ``started_at``, ``review_rounds``, …); none of them is on the wire.
+    source = json.loads(result_text)
+    assert by_id["T89"]["result"]["data"] == {
+        "status": source["status"],
+        "pr_url": source["pr_url"],
+    }
+    # The receipt fixture names none of the declared fields, so it discloses nothing —
+    # and still reports itself as READ (``{}`` with a null reason), which is the fact
+    # the frontend needs to tell it from a receipt that is missing.
+    assert by_id["T89"]["receipt"]["data"] == {}
     assert by_id["T89"]["result"]["reason"] is None
     assert by_id["T89"]["receipt"]["reason"] is None
     # The never-run neighbour keeps its own named absence rather than inheriting
@@ -310,6 +342,87 @@ def test_a_malformed_artifact_is_unparseable_over_http_not_a_failed_request(
     (record,) = body["items"]
     assert record["result"]["reason"] == "unparseable", "a file that is there is not 'absent'"
     assert record["receipt"]["reason"] == "absent", "and the missing source keeps its own reason"
+
+
+# --------------------------------------------------------------------------- #
+# The disclosure boundary: only the declared fields leave the process
+# --------------------------------------------------------------------------- #
+
+
+def test_an_undeclared_key_beside_the_declared_ones_never_reaches_the_wire() -> None:
+    """The rule, over HTTP: extra keys stay in the file the console cannot model.
+
+    ``session_id`` and ``raw_log`` stand for what nobody in this repo can rule out of a
+    lane's result — the factory's own metrics carry session ids, model names and cost,
+    and ``tests/fixtures/runs/README.md`` says plainly that this console does not know
+    what else these artifacts contain. That unknowability is the ARGUMENT for the
+    projection, not a reason to forward it: the declared fields come through and
+    everything else stops here.
+
+    Asserted over the whole serialised body, not just the ``data`` object, so a key that
+    reappeared anywhere — hoisted onto the record, echoed in an error detail — still
+    fails.
+    """
+    result = ArtifactRead(
+        path=FAKE_ROOT / RESULTS_RELATIVE_DIR / "T89.json",
+        data={
+            "status": "ready",
+            "pr_url": "https://example.test/pr/1",
+            "session_id": "sess-deadbeef",
+            "raw_log": "line one\nline two",
+        },
+    )
+    body = _get_runs(["T89"], FakeRunArtifactReader(results={"T89": result}))
+
+    (record,) = body["items"]
+    assert record["result"]["data"] == {
+        "status": "ready",
+        "pr_url": "https://example.test/pr/1",
+    }
+    serialised = json.dumps(body)
+    assert "session_id" not in serialised
+    assert "sess-deadbeef" not in serialised
+    assert "raw_log" not in serialised
+
+
+def test_a_declared_key_holding_a_non_string_is_omitted_rather_than_coerced() -> None:
+    # "Read a field or do not, never guess" — the same rule the view's ``readString``
+    # applies. ``str(value)`` on an object this console cannot model would publish a
+    # rendering of a payload it does not understand, which is the disclosure the
+    # projection exists to refuse. The neighbouring declared key is unaffected: the
+    # projection is per field, not per artifact.
+    result = ArtifactRead(
+        path=FAKE_ROOT / RESULTS_RELATIVE_DIR / "T89.json",
+        data={"status": "ready", "pr_url": {"href": "https://example.test/pr/1"}},
+    )
+    body = _get_runs(["T89"], FakeRunArtifactReader(results={"T89": result}))
+
+    (record,) = body["items"]
+    assert record["result"]["data"] == {"status": "ready"}
+    assert "example.test" not in json.dumps(body)
+
+
+def test_the_disclosed_fields_are_the_ones_the_frontend_declares() -> None:
+    """The server's allowlist and the view's ``PROJECTED_FIELDS`` are the SAME two names.
+
+    Read out of the frontend source rather than transcribed, because a transcription is
+    a third copy that drifts silently. Two declarations, one set of names: this is what
+    keeps them from becoming two independent guesses (``ARCHITECTURE.md``, "Other
+    factory artefacts (read-only)").
+    """
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "frontend"
+        / "src"
+        / "routes"
+        / "runs"
+        / "+page.svelte"
+    ).read_text(encoding="utf-8")
+    declaration = re.search(r"export const PROJECTED_FIELDS = \[(.*?)\] as const;", source)
+
+    assert declaration is not None, "PROJECTED_FIELDS is no longer declared as this test reads it"
+    frontend_fields = tuple(re.findall(r"'([^']+)'", declaration.group(1)))
+    assert frontend_fields == DISCLOSED_ARTIFACT_FIELDS
 
 
 # --------------------------------------------------------------------------- #
