@@ -127,7 +127,8 @@ class FakeFileWriter:
 
         Validates existence FIRST (raising
         :class:`~factory_console.file_adapter.write_render.UnknownTicket`, 404, for
-        an absent id), then enforces the todo-only mutability gate over the SEEDED
+        an absent id), then enforces the EDIT mutability gate (``todo``/``unknown``,
+        NOT the wider delete allowlist) over the SEEDED
         run-state (raising :class:`~factory_console.file_adapter.write_gate.TicketNotMutable`,
         409, for a non-mutable state).
 

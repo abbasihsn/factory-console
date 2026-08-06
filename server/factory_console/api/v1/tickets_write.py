@@ -20,8 +20,8 @@ read adapter, construct a request-scoped
 :class:`~factory_console.services.write_service.WriteService` over the two injected
 ports, and delegate. All request *logic* lives below this layer, so the handlers are
 wiring plus one audit line (:func:`_log_write`): the service owns the create-collision
-guard and the existence check (both on the dry-run path too), and the todo-only
-mutability gate lives one layer further down, inside the writer's
+guard and the existence check (both on the dry-run path too), and the run-state
+mutability gates live one layer further down, inside the writer's
 ``edit_ticket``/``delete_ticket``
 (:func:`~factory_console.file_adapter.write_gate.ensure_mutable` and its
 delete-path sibling :func:`~factory_console.file_adapter.write_gate.ensure_deletable`,
@@ -218,8 +218,8 @@ async def edit_ticket(
 
     Always ``200``: an edit creates no resource on either path. Delegates to
     :meth:`~factory_console.services.write_service.WriteService.edit`, whose
-    ``TicketNotFound`` (404) and ``TicketNotMutable`` (409, the todo-only editing rule)
-    propagate to the registered handlers.
+    ``TicketNotFound`` (404) and ``TicketNotMutable`` (409, for a run-state outside the
+    EDIT allowlist ``todo``/``unknown``) propagate to the registered handlers.
     """
     root: Path = request.app.state.project_root
     project = adapter.load_project(root)

@@ -3,18 +3,24 @@
 
 This is the concrete realization of the deliberate MVP "no watcher" extension
 flagged in the :mod:`~factory_console.file_adapter.watcher` port (T39): a single,
-opt-in, single-process, read-only component that observes what v1 cares about —
-planning docs under ``docs/planning/**``, factory lane markers under
-``.factory/run-state/**``, and the factory's primary run-state artifact, the FILE
-``.factory/run-state.json`` — and streams project-relative :class:`ChangeEvent`s
-to per-client subscribers so the backend SSE endpoint can drive the SPA's live
-refresh.
+opt-in, single-process, read-only component that observes what the console cares
+about — planning docs under ``docs/planning/**``, factory lane markers under
+``.factory/run-state/**``, and a small SET of factory FILE artefacts (today
+``.factory/run-state.json`` and the spend ledger ``.factory/metrics/ledger.jsonl``)
+— and streams project-relative :class:`ChangeEvent`s to per-client subscribers so
+the backend SSE endpoint can drive the SPA's live refresh.
 
-The file source is watched by scheduling its PARENT directory non-recursively and
-filtering events down to that one filename (T91). Two reasons it cannot be watched
-directly: watchdog schedules directories, and the factory replaces the file via
-``mktemp`` + ``mv`` (INV-03), so anything bound to the file's inode would go quiet
-after the first update. That parent watch is a means to observe ONE file — every
+That set is NOT enumerated here. It is
+:data:`~factory_console.domain.watched_artifacts.WATCHED_JSON_ARTIFACTS`, the one
+list the readers take their path constants from as well, so an artefact the console
+learns to read cannot be one the watcher never learns to schedule — the omission
+that left run-state unwatched (T91) and then the ledger unwatched (T95).
+
+Each file artefact is watched by scheduling its PARENT directory non-recursively and
+filtering events down to that one filename. Two reasons it cannot be watched
+directly: watchdog schedules directories, and the factory replaces these files via
+``mktemp`` + ``mv`` (INV-03), so anything bound to a file's inode would go quiet
+after the first update. A parent watch is a means to observe ONE file — every
 other entry under it is dropped in the handler, so scope does not widen to the
 rest of ``.factory``.
 
@@ -45,8 +51,8 @@ from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 from factory_console.domain.watch import ChangeEvent, ChangeKind, ChangeScope
+from factory_console.domain.watched_artifacts import WATCHED_JSON_ARTIFACTS
 from factory_console.file_adapter.run_state import (
-    RUN_STATE_JSON_RELATIVE_LOCATIONS,
     RUN_STATE_RELATIVE_LOCATIONS,
     is_run_state_marker,
 )
@@ -73,13 +79,21 @@ _ALLOWED_KINDS = frozenset(get_args(ChangeKind))
 # ``planning`` and refresh the wrong pane.
 _RUN_STATE_PREFIXES = tuple(loc.as_posix() for loc in RUN_STATE_RELATIVE_LOCATIONS)
 
-# The run-state FILE sources, as project-relative POSIX paths — the exact set an
-# event under a JSON parent watch must match to be surfaced. Same single source
-# of truth as the prefixes above, its ``json`` half. An event matching one of
-# these is scoped ``run-state`` like any directory-source event: the scope says
-# WHAT changed, not which on-disk form stored it, and a subscriber must not be
-# able to tell the two apart.
-_RUN_STATE_JSON_PATHS = frozenset(loc.as_posix() for loc in RUN_STATE_JSON_RELATIVE_LOCATIONS)
+# The factory FILE artefacts, as project-relative POSIX path -> ``ChangeScope`` —
+# the exact set an event under a JSON parent watch must match to be surfaced, and
+# what each match MEANS. Derived from
+# :data:`~factory_console.domain.watched_artifacts.WATCHED_JSON_ARTIFACTS`, the same
+# single list the readers use and the same list ``start()`` schedules from, so a
+# path can never be scheduled without a scope or scoped without being scheduled.
+#
+# The scope is looked up rather than hardcoded (T95): before the ledger joined, every
+# file match was ``run-state`` and the constant was a bare frozenset. A run-state file
+# event is still scoped exactly like a directory-source one — the scope says WHAT
+# changed, not which on-disk form stored it, and a subscriber must not be able to tell
+# the two apart.
+_WATCHED_JSON_SCOPES: dict[str, ChangeScope] = {
+    relative.as_posix(): scope for scope, relative in WATCHED_JSON_ARTIFACTS
+}
 
 
 class _ChangeEventHandler(FileSystemEventHandler):
@@ -120,17 +134,19 @@ class _ChangeEventHandler(FileSystemEventHandler):
             # Outside the project root (should not happen for scheduled roots) —
             # skip rather than leak an out-of-tree or absolute path.
             return
-        if rel_path in _RUN_STATE_JSON_PATHS and not event.is_directory:
-            # The run-state FILE source (T91). Scoped exactly like a
-            # directory-source event, and checked BEFORE the prefix rule below,
-            # which cannot match it: ``.factory/run-state.json`` is a sibling of
-            # ``.factory/run-state``, not a path under it.
-            self._watcher._dispatch_from_thread(kind, "run-state", rel_path)
+        file_scope = _WATCHED_JSON_SCOPES.get(rel_path)
+        if file_scope is not None and not event.is_directory:
+            # A watched FILE artefact (T91 for run-state, T95 for the ledger),
+            # dispatched under the scope the shared list pairs it with. Checked
+            # BEFORE the prefix rule below, which cannot match either of them:
+            # ``.factory/run-state.json`` is a sibling of ``.factory/run-state``,
+            # not a path under it, and the ledger is under neither.
+            self._watcher._dispatch_from_thread(kind, file_scope, rel_path)
             return
         if Path(rel_path).parent.as_posix() in self._watcher._json_only_roots:
-            # This root is scheduled ONLY to see the run-state file above, and
-            # this event is not it. Dropping everything else here is what keeps
-            # the watch from widening to the rest of ``.factory``.
+            # This root is scheduled ONLY to see a file artefact above, and this
+            # event is not it. Dropping everything else here is what keeps the
+            # watch from widening to the rest of ``.factory``.
             return
         scope: ChangeScope = (
             "run-state"
@@ -153,12 +169,14 @@ class _ChangeEventHandler(FileSystemEventHandler):
 
 
 class RealFileWatcher:
-    """Production ``FileWatcher``: a watchdog ``Observer`` over what v1 observes.
+    """Production ``FileWatcher``: a watchdog ``Observer`` over what the console observes.
 
-    That is the two planning/run-state SUBTREES plus the run-state JSON FILE — see
-    the module docstring for the exact set and for why the file is reached through a
-    non-recursive watch on its parent. Deliberately not restated here: a count kept
-    in two places is what let the JSON source go unwatched (T91) in the first place.
+    That is the two planning/run-state SUBTREES plus the FILE artefacts of
+    :data:`~factory_console.domain.watched_artifacts.WATCHED_JSON_ARTIFACTS` — see
+    the module docstring for why a file is reached through a non-recursive watch on
+    its parent. The set is deliberately not restated here or there: a list kept in two
+    places is what let the JSON run-state source go unwatched (T91), and then the
+    spend ledger (T95).
 
     Opt-in, single-process, and read-only — constructed and :meth:`start`-ed only
     when the backend enables live updates. Satisfies the ``FileWatcher`` Protocol
@@ -177,12 +195,13 @@ class RealFileWatcher:
         self._project_root = Path(project_root).resolve()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._observer: Observer | None = None
-        # Project-relative POSIX directories scheduled ONLY to observe a run-state
-        # JSON file inside them (``.factory`` for ``.factory/run-state.json``).
-        # Filled by start(); the handler drops every event under one of these that
-        # is not the JSON file itself, so the parent watch never widens scope. A
-        # JSON parent that is ALREADY covered by a substantive watch is absent
-        # here — its other entries keep whatever meaning that watch gives them.
+        # Project-relative POSIX directories scheduled ONLY to observe a watched file
+        # artefact inside them (``.factory`` for ``.factory/run-state.json``,
+        # ``.factory/metrics`` for the spend ledger). Filled by start(); the handler
+        # drops every event under one of these that is not a watched file itself, so
+        # a parent watch never widens scope. A parent that is ALREADY covered by a
+        # substantive watch is absent here — its other entries keep whatever meaning
+        # that watch gives them.
         self._json_only_roots: frozenset[str] = frozenset()
         # The register/unregister/fan-out mechanics are shared with FakeFileWatcher
         # via _SubscriberHub (in watcher.py, NOT this guard-scanned source, so it
@@ -206,9 +225,10 @@ class RealFileWatcher:
         Called from the backend's async lifespan, so it captures the running loop
         here (there is no running loop on the watchdog thread later). Schedules a
         recursive handler on each of ``docs/planning`` and ``.factory/run-state``
-        that exists on disk, plus a NON-recursive one on the parent of each
-        run-state JSON file (``.factory``) whose events the handler filters down
-        to that file. Missing roots are skipped.
+        that exists on disk, plus a NON-recursive one on the parent of each watched
+        file artefact (``.factory`` for ``run-state.json``, ``.factory/metrics`` for
+        the ledger) whose events the handler filters down to that file. Missing roots
+        are skipped.
         """
         if self._observer is not None:
             return
@@ -230,10 +250,10 @@ class RealFileWatcher:
                 candidate.relative_to(planning_root)
             except ValueError:
                 roots.append(candidate)
-        # Recursive roots first, then the JSON sources' parents — so an already
+        # Recursive roots first, then the file artefacts' parents — so an already
         # listed root WINS. Scheduling one physical path twice would report every
         # event under it twice, and a parent already covered by a recursive watch
-        # needs no watch of its own; being watched for more than the JSON file, it
+        # needs no watch of its own; being watched for more than the one file, it
         # is also not a json-only root, so the handler leaves its other entries
         # alone. Only these parents are scheduled non-recursively: they exist to
         # see ONE file, and recursing would drag all of ``.factory`` in for no gain.
@@ -247,12 +267,19 @@ class RealFileWatcher:
         # not be reached THROUGH the descendant branch. Treating a non-recursive
         # root as covering its descendants would skip a nested JSON parent as
         # "already watched" by a watch that cannot see into it, and skip it out of
-        # ``json_only_roots`` too — a run-state source scheduled nowhere and
-        # filtered nowhere, which is silently no live updates: precisely the
-        # failure T91 exists to fix, reintroduced one directory deeper.
+        # ``json_only_roots`` too — an artefact scheduled nowhere and filtered
+        # nowhere, which is silently no live updates: precisely the failure T91
+        # exists to fix, reintroduced one directory deeper. That case is no longer
+        # hypothetical since T95: the ledger's parent ``.factory/metrics`` sits
+        # exactly one level under ``.factory``, the non-recursive parent of
+        # ``run-state.json``, so this is the branch that keeps the ledger watched.
+        #
+        # The loop iterates the SHARED artefact list rather than a run-state-only
+        # one; only each entry's PATH matters here, since scheduling a parent says
+        # nothing about what a change there means — the handler's scope map owns that.
         scheduled: list[tuple[Path, bool]] = [(root, True) for root in roots]
         json_only_roots: set[str] = set()
-        for relative in RUN_STATE_JSON_RELATIVE_LOCATIONS:
+        for _scope, relative in WATCHED_JSON_ARTIFACTS:
             parent = self._project_root / relative.parent
             if any(
                 root == parent or (recursive and parent.is_relative_to(root))

@@ -81,6 +81,7 @@ from factory_console.file_adapter.path_safety import (
     # file_adapter module has, which is a drift risk of its own.
     ABSENT_ERRNOS,
     PathTraversal,  # noqa: F401
+    is_regular_file,
     validate_ticket_id_as_segment,
 )
 
@@ -181,11 +182,17 @@ RUN_STATE_RELATIVE_LOCATIONS: tuple[Path, ...] = tuple(
 # ``<location>/<state>/<ticket_id>``, a shape a FILE source has no room for, so
 # folding the two together would silently change marker classification.
 #
-# The T40 ``RealFileWatcher`` (T91) schedules the PARENT directory of each of
-# these and filters events down to these exact paths. Watchdog cannot watch a
-# single file that gets replaced: the factory writes ``run-state.json`` via
-# ``mktemp`` + ``mv`` (INV-03), so a file watch would keep observing the
-# replaced inode and go quiet after the first update.
+# THE WATCHER NO LONGER READS THIS TUPLE, and editing it in the hope of changing
+# what is watched will not (T95). The run-state files are watched as part of
+# :data:`~factory_console.domain.watched_artifacts.WATCHED_JSON_ARTIFACTS`, which
+# covers every factory FILE artefact the console reads — the ledger as well — and
+# derives its run-state half from :data:`RUN_STATE_SOURCE_LOCATIONS` directly, the
+# same tuple this one derives from. So the two still cannot drift; they are simply
+# siblings now rather than one feeding the other. The mechanism there is unchanged
+# from T91: schedule each file's PARENT directory and filter events down to the exact
+# path, because watchdog cannot watch a single file that gets replaced — the factory
+# writes ``run-state.json`` via ``mktemp`` + ``mv`` (INV-03), so a file watch would
+# keep observing the replaced inode and go quiet after the first update.
 RUN_STATE_JSON_RELATIVE_LOCATIONS: tuple[Path, ...] = tuple(
     relative for kind, relative in RUN_STATE_SOURCE_LOCATIONS if kind == "json"
 )
@@ -254,24 +261,6 @@ def _is_directory(path: Path) -> bool:
         return False
 
 
-def _is_regular_file(path: Path) -> bool:
-    """``True`` if ``path`` is a regular file, ``False`` if it definitively is not, else RAISE.
-
-    :meth:`Path.is_file` with the same errno split :func:`_node_exists` makes, and for
-    the same reason — see its docstring. The JSON half of :func:`find_run_state_source`'s
-    probe, so that discovering a source obeys the same "I could not look" rule as reading
-    one.
-    """
-    try:
-        return stat.S_ISREG(path.stat().st_mode)
-    except OSError as exc:
-        if exc.errno in _ABSENT_ERRNOS:
-            return False
-        raise
-    except ValueError:
-        return False
-
-
 def find_run_state_source(project_root: Path) -> RunStateSource | None:
     """Return the project's resolved run-state source, or ``None`` if it has none.
 
@@ -283,8 +272,9 @@ def find_run_state_source(project_root: Path) -> RunStateSource | None:
     2. ``<project_root>/.factory/run-state`` (directory).
     3. ``<project_root>/docs/planning/.run-state`` (directory).
 
-    The node type is checked, not merely existence (:func:`_is_regular_file` for the
-    JSON form, :func:`_is_directory` for the directory form), so a stray file where
+    The node type is checked, not merely existence (:func:`~factory_console.file_adapter.
+    path_safety.is_regular_file` for the JSON form, :func:`_is_directory` for the
+    directory form), so a stray file where
     a directory belongs — or a directory named ``run-state.json`` — is skipped
     rather than resolved into a source that cannot be read.
 
@@ -299,8 +289,9 @@ def find_run_state_source(project_root: Path) -> RunStateSource | None:
     it were absent is the "I could not look" / "there is nothing to find" conflation this
     ticket has now been amended for four times, one step further upstream.
 
-    This is also why the probe goes through :func:`_is_regular_file` /
-    :func:`_is_directory` rather than :meth:`Path.is_file` / :meth:`Path.is_dir`: those
+    This is also why the probe goes through :func:`~factory_console.file_adapter.
+    path_safety.is_regular_file` / :func:`_is_directory` rather than :meth:`Path.is_file` /
+    :meth:`Path.is_dir`: those
     two RE-RAISE ``EACCES`` through CPython 3.12 and SWALLOW it from 3.13 (gh-113978, see
     :func:`_node_exists`), so on the older interpreter an unreadable ``.factory`` escaped
     this read-only prober as an unmapped 500 on every request, and on the newer one it
@@ -311,7 +302,7 @@ def find_run_state_source(project_root: Path) -> RunStateSource | None:
     for kind, relative in RUN_STATE_SOURCE_LOCATIONS:
         candidate = project_root / relative
         try:
-            present = _is_regular_file(candidate) if kind == "json" else _is_directory(candidate)
+            present = is_regular_file(candidate) if kind == "json" else _is_directory(candidate)
         except OSError:
             _LOGGER.warning(
                 "run-state: %s could not be probed; it is treated as the project's source "

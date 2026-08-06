@@ -2,8 +2,8 @@
 
 A :class:`ChangeEvent` is the payload the ``FileWatcher`` port streams to the
 backend SSE endpoint (``/api/v1/events``, T45): one observed change under the
-watched project, tagged with the ``scope`` (planning docs vs factory run-state)
-that lets the frontend decide what to refresh.
+watched project, tagged with the ``scope`` (planning docs, factory run-state, or
+the factory spend ledger) that lets the frontend decide what to refresh.
 
 Security note — ``path`` is ALWAYS project-relative, never absolute. A watcher
 never discloses the host's filesystem layout: the real (watchdog-backed)
@@ -27,16 +27,26 @@ from pydantic import BaseModel, ConfigDict, field_validator
 # watcher) share ONE source of truth instead of re-listing the verbs/scopes or
 # scraping them back out of Pydantic internals. ``ChangeKind`` is the change
 # verb; ``ChangeScope`` is the watched subtree a change belongs to.
+#
+# ``ChangeScope`` names WHAT changed, not which on-disk form stored it: a run-state
+# change is ``run-state`` whether it arrived as a marker directory or as
+# ``.factory/run-state.json``. ``ledger`` is the factory's spend ledger,
+# ``.factory/metrics/ledger.jsonl`` (T95) — a factory artefact the console reads
+# (``GET /api/v1/spend``) that is neither planning nor run-state, so folding it into
+# either would tell a subscriber something untrue about which pane went stale. The
+# set grows with the artefacts the watcher observes; see
+# :data:`~factory_console.domain.watched_artifacts.WATCHED_JSON_ARTIFACTS`.
 ChangeKind = Literal["created", "modified", "deleted", "moved"]
-ChangeScope = Literal["planning", "run-state"]
+ChangeScope = Literal["planning", "run-state", "ledger"]
 
 
 class ChangeEvent(BaseModel):
     """One filesystem change observed under the watched project.
 
     ``kind`` is the change verb; ``path`` is the project-relative path that
-    changed (never absolute — see the module security note); ``scope`` names the
-    watched subtree (``planning`` docs or factory ``run-state``); ``at`` is when
+    changed (never absolute — see the module security note); ``scope`` names what
+    changed (``planning`` docs, factory ``run-state``, or the spend ``ledger``);
+    ``at`` is when
     the change was observed. Frozen and ``extra='forbid'`` like the other domain
     models, and JSON-serializable so it round-trips through ``model_dump_json``
     for the SSE wire.
