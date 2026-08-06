@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import errno
 import re
+import stat
 from pathlib import Path
 
 from factory_console.domain.ticket import TICKET_ID_PATTERN
@@ -147,6 +148,39 @@ def within_root(resolved: Path, project_root: Path) -> bool | None:
     if root is None:
         return None
     return resolved.is_relative_to(root)
+
+
+def is_regular_file(path: Path) -> bool:
+    """``True`` if ``path`` is a regular file, ``False`` if it definitively is not, else RAISE.
+
+    The errno-split ``stat`` + ``S_ISREG`` probe T80 made normative, hoisted here so every
+    reader that needs to answer "is this node a regular file?" shares ONE implementation
+    rather than restating it. :meth:`Path.is_file` cannot carry the split portably — through
+    CPython 3.12 it re-raises ``EACCES``, and from 3.13 (gh-113978) it swallows every
+    ``OSError`` and answers ``False`` — and this project's ``requires-python = ">=3.11"`` has
+    no upper bound, so both behaviours are in the supported range. Left to the interpreter, an
+    unsearchable node would report "not a regular file" on a new Python and crash the caller
+    on an old one, from the same code. This module's :data:`ABSENT_ERRNOS` is the ONE errno
+    set every caller of this function agrees means "definitively not there"; anything else
+    propagates as "I could not look", which a caller must never collapse into ``False``.
+
+    ``ValueError`` answers ``False``, for parity with :meth:`Path.is_file`, which treats a
+    non-encodable path as absent rather than as an error.
+
+    This was previously two byte-identical copies, in ``ledger.py`` (``find_ledger_path``) and
+    ``run_state.py`` (``_is_regular_file``), kept in step only by a comment asking future
+    editors to — the same drift hazard :data:`ABSENT_ERRNOS` above was hoisted here to close,
+    one level up: sharing the errno *constant* alone still left the surrounding probe logic
+    itself free to drift between the two readers.
+    """
+    try:
+        return stat.S_ISREG(path.stat().st_mode)
+    except OSError as exc:
+        if exc.errno in ABSENT_ERRNOS:
+            return False
+        raise
+    except ValueError:
+        return False
 
 
 def validate_ticket_id_as_segment(ticket_id: str) -> None:
