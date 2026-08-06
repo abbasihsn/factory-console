@@ -77,6 +77,11 @@ import logging
 from pathlib import Path
 
 from factory_console.domain.runs import ArtifactRead
+from factory_console.domain.watched_artifacts import (
+    LAST_STOP_RELATIVE_PATH,
+    RECEIPTS_RELATIVE_DIR,
+    RESULTS_RELATIVE_DIR,
+)
 from factory_console.file_adapter.bounded_read import read_bounded
 from factory_console.file_adapter.path_safety import (
     resolve_or_none,
@@ -86,11 +91,15 @@ from factory_console.file_adapter.path_safety import (
 
 _LOGGER = logging.getLogger(__name__)
 
-# The artifacts' project-relative locations. Single source of truth for WHERE
-# each lives; the public readers probe exactly these under a project root.
-RESULTS_RELATIVE_DIR = Path(".factory") / "results"
-RECEIPTS_RELATIVE_DIR = Path(".factory") / "receipts"
-LAST_STOP_RELATIVE_PATH = Path(".factory") / "last-stop.json"
+# The artifacts' project-relative locations are NOT declared here. They live in
+# :mod:`~factory_console.domain.watched_artifacts` — the ONE list the watcher
+# schedules from as well — and are imported above, exactly as
+# :mod:`~factory_console.file_adapter.ledger` takes ``LEDGER_RELATIVE_PATH`` from
+# there. They are re-exported from this module because every existing caller
+# (``run_artifacts``, the tests) knows them by this name, and because a reader's
+# own path constant reading naturally from the reader is the point; what may not
+# happen is a SECOND literal. Declaring them here is what let all three be read for
+# two milestones without the watcher ever learning them (T99).
 
 # Hard cap on the bytes this reader will pull into memory for ONE artifact. Each
 # of these files is written by a process the console does not control, so "read

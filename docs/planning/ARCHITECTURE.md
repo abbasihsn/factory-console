@@ -294,6 +294,13 @@ the artefact. Growing that list is a deliberate, reviewable edit in one place; n
 stack may read a named field out of an untyped artefact payload (the ledger's typed model above is
 not one).
 
+All four are also WATCHED, and by construction rather than by four separate decisions: every path in
+the table below is declared once in `domain/watched_artifacts.py` (`WATCHED_JSON_ARTIFACTS`), which
+is both where the readers take their path constant from and the only list the watcher schedules
+from — so an artefact the console learns to read cannot be one the watcher never learns to observe,
+and a change to any of them bumps the SSE stream and refreshes its view. Results and receipts are
+declared as DIRECTORIES (their filenames are ticket ids); the ledger and last stop as files.
+
 | Artefact | Path | Read by |
 |---|---|---|
 | Spend ledger | `<root>/.factory/metrics/ledger.jsonl` | `GET /api/v1/spend` |
