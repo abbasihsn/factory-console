@@ -22,11 +22,12 @@
 	// there would be a false claim about real money. See T82's `SourceInfo`.
 	const hasLedger = $derived(spend.source.found);
 
-	// A ledger that was found but never opened (over the reader's size cap, or
-	// unreadable) reports zero entries exactly like an empty one — so its bill is
-	// UNKNOWN, not partial by a countable number of lines. It therefore gets its
-	// OWN top-level branch beside the no-ledger case rather than falling through to
-	// the totals: the figure it would carry measures nothing.
+	// A ledger that was found but never opened — over the size cap, unreadable, or
+	// (T86) resolving outside the project root — reports zero entries exactly like
+	// an empty one, so its bill is UNKNOWN, not partial by a countable number of
+	// lines. It therefore gets its OWN top-level branch beside the no-ledger case
+	// rather than falling through to the totals: the figure it would carry
+	// measures nothing.
 	//
 	// Read off `source.read` and never off `skipped`: the line-0 skip that names the
 	// reason is T82's convention, not a schema guarantee, so keying on it would let
@@ -101,15 +102,26 @@
 			</p>
 		</div>
 	{:else if unread}
-		<!-- The ledger EXISTS but could not be opened (over the reader's size cap, or
-		     unreadable), so `totals` is a placeholder for a bill nobody counted — NOT a
-		     measured zero. Rendering the figure here with a caveat under it would make
-		     exactly the false claim about real money the no-ledger branch above refuses
-		     to make, merely relocated: "$0.00" over "0 ledger entries" and three "No X
-		     spend recorded." panels all assert a measurement that never happened. So
-		     this branch, like that one, emits NO money figure and NO tables. See
-		     `SourceInfo` in the generated types: `read` exists to carry precisely this
-		     distinction one step past `found`. -->
+		<!-- The ledger EXISTS but could not be opened, so `totals` is a placeholder for
+		     a bill nobody counted — NOT a measured zero. Rendering the figure here with a
+		     caveat under it would make exactly the false claim about real money the
+		     no-ledger branch above refuses to make, merely relocated: "$0.00" over "0
+		     ledger entries" and three "No X spend recorded." panels all assert a
+		     measurement that never happened. So this branch, like that one, emits NO
+		     money figure and NO tables. See `SourceInfo` in the generated types: `read`
+		     exists to carry precisely this distinction one step past `found`.
+
+		     T101: this branch does NOT enumerate why the ledger could not be opened —
+		     "over the size cap, or unreadable" used to, and that became false the moment
+		     a THIRD cause (T86's containment refusal) started landing here too: three
+		     conditions with three different remedies, only two nameable from this
+		     response. `source`/`skipped` stay coarse at the wire on purpose (T82) rather
+		     than widen what a read-only endpoint discloses about the filesystem, so per
+		     ARCHITECTURE.md:262-274 — the authorization answer may be shared while the
+		     remedy differs, but the refusal must still name the remedy SOMEWHERE — the
+		     remedy lives in the console's server log instead (see the distinct log lines
+		     `find_ledger_path`/`read_ledger`/`read_bounded` already emit per cause). This
+		     sentence just says so, uniformly, whichever of the three produced `unread`. -->
 		<div class="space-y-2 rounded-lg border border-slate-200 bg-surface px-4 py-6">
 			<p data-testid="unread-ledger" class="font-medium text-amber-700">
 				Spend unknown — the ledger could not be read.
@@ -121,7 +133,7 @@
 				{:else}
 					in the project's <code class="font-mono text-text">.factory/</code> directory
 				{/if}
-				but could not open it — it is over the reader's size cap, or unreadable.
+				but could not open it. The reason is recorded in the console's own server log.
 			</p>
 			<p class="text-sm text-muted">
 				Nothing was counted, so this project's cost is unknown here, not zero.

@@ -373,6 +373,196 @@ async def test_nested_content_under_the_json_parent_yields_nothing(tmp_path: Pat
         watcher.stop()
 
 
+async def test_new_lane_result_emits_runs_event(tmp_path: Path) -> None:
+    # T99: ``.factory/results/<ticket_id>.json`` is read by ``GET /api/v1/runs`` and
+    # was scheduled by nobody, so /runs — the one view whose whole content is these
+    # files — could never live-update: a lane finished and the page kept showing the
+    # previous answer until something unrelated happened to bump it. The filename is
+    # a TICKET ID, which no constant can spell in advance, so the exact-path match
+    # that covers run-state.json and the ledger cannot express it; the DIRECTORY is
+    # the watched thing and any file directly inside it is a lane's result.
+    (tmp_path / ".factory" / "results").mkdir(parents=True)
+    watcher = RealFileWatcher(tmp_path)
+    watcher.start()
+    stream, first = await _primed_stream(watcher)
+    try:
+        (tmp_path / ".factory" / "results" / "T99.json").write_text('{"status": "ready"}')
+        event = await _next_event(stream, first)
+        assert event.scope == "runs"
+        assert event.path == ".factory/results/T99.json"
+        assert event.kind in {"created", "modified"}
+    finally:
+        first.cancel()
+        await stream.aclose()
+        watcher.stop()
+
+
+async def test_new_lane_receipt_emits_runs_event(tmp_path: Path) -> None:
+    # The receipts half of the pair. A receipt and a result are two artefacts of the
+    # same kind and the console must not treat one as live and the other as static.
+    (tmp_path / ".factory" / "receipts").mkdir(parents=True)
+    watcher = RealFileWatcher(tmp_path)
+    watcher.start()
+    stream, first = await _primed_stream(watcher)
+    try:
+        (tmp_path / ".factory" / "receipts" / "T99.json").write_text('{"verdict": "pass"}')
+        event = await _next_event(stream, first)
+        assert event.scope == "runs"
+        assert event.path == ".factory/receipts/T99.json"
+    finally:
+        first.cancel()
+        await stream.aclose()
+        watcher.stop()
+
+
+@pytest.mark.parametrize("artifact_dir", ["results", "receipts"])
+async def test_atomic_rename_onto_a_run_artifact_emits_event(
+    tmp_path: Path, artifact_dir: str
+) -> None:
+    # INV-03 applies to the per-run artefacts exactly as it does to run-state and the
+    # ledger: the factory replaces them via mktemp + mv, so the inode changes on every
+    # rewrite. Watching the artefact DIRECTORY and matching on the parent — names,
+    # never inodes — is what keeps a re-run's replacement firing.
+    target_dir = tmp_path / ".factory" / artifact_dir
+    target_dir.mkdir(parents=True)
+    (target_dir / "T99.json").write_text('{"status": "in-flight"}')
+    watcher = RealFileWatcher(tmp_path)
+    watcher.start()
+    stream, first = await _primed_stream(watcher)
+    try:
+        temp = target_dir / "T99.json.tmp"
+        temp.write_text('{"status": "ready"}')
+        temp.rename(target_dir / "T99.json")
+
+        event = await _drain_until(stream, f".factory/{artifact_dir}/T99.json", first)
+        assert event.scope == "runs"
+    finally:
+        first.cancel()
+        await stream.aclose()
+        watcher.stop()
+
+
+async def test_temp_file_inside_a_run_artifact_dir_emits_nothing(tmp_path: Path) -> None:
+    # The factory writes an artefact via mktemp + mv IN THE SAME DIRECTORY
+    # (INV-03): the temp file's own create must not itself surface as a `runs`
+    # event, or every write fires twice — once for the transient `.tmp` name
+    # (never a valid artefact) and once for the real rename. Matching the
+    # directory branch by NAME, not just by parent, is what keeps one write to
+    # one event.
+    (tmp_path / ".factory" / "results").mkdir(parents=True)
+    watcher = RealFileWatcher(tmp_path)
+    watcher.start()
+    stream, first = await _primed_stream(watcher)
+    try:
+        (tmp_path / ".factory" / "results" / "T99.json.tmp").write_text('{"status": "ready"}')
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(first, _QUIET_WINDOW)
+    finally:
+        first.cancel()
+        await stream.aclose()
+        watcher.stop()
+
+
+async def test_run_artifact_dir_created_after_start_is_still_watched(tmp_path: Path) -> None:
+    # ``.factory/`` is gitignored, so `.factory/results` and `.factory/receipts`
+    # are routinely absent when the console starts — before the first lane
+    # finishes, or on a fresh clone. `start()` only schedules a "dir" target that
+    # already exists on disk; without late scheduling, the directory's own later
+    # creation is a directory event whose parent (`.factory`) is already a
+    # json-only root for the other file artefacts, so it is silently dropped and
+    # nothing ever watches it — /runs would never live-update for the rest of the
+    # process's life.
+    (tmp_path / ".factory").mkdir()
+    watcher = RealFileWatcher(tmp_path)
+    watcher.start()
+    stream, first = await _primed_stream(watcher)
+    try:
+        (tmp_path / ".factory" / "results").mkdir()
+        # Give the watchdog thread a beat to observe the directory's own create
+        # event and register the late watch (`_schedule_late`) before anything
+        # lands inside it — a real lane run has this same ordering, just at a much
+        # coarser timescale, so this is closing a real registration gap, not
+        # padding a debounce window.
+        await asyncio.sleep(0.3)
+        (tmp_path / ".factory" / "results" / "T99.json").write_text('{"status": "ready"}')
+
+        event = await _drain_until(stream, ".factory/results/T99.json", first)
+        assert event.scope == "runs"
+    finally:
+        first.cancel()
+        await stream.aclose()
+        watcher.stop()
+
+
+async def test_last_stop_write_emits_runs_event(tmp_path: Path) -> None:
+    # ``.factory/last-stop.json`` is the third /runs source and the one that already
+    # fits the exact-path mechanism: one file, fixed name, in ``.factory`` — a
+    # directory the watcher has scheduled since T91 for run-state.json. Only the
+    # scope-map entry was missing, and without it the event was DROPPED by the
+    # json-only-root filter rather than delivered.
+    (tmp_path / ".factory").mkdir()
+    watcher = RealFileWatcher(tmp_path)
+    watcher.start()
+    stream, first = await _primed_stream(watcher)
+    try:
+        (tmp_path / ".factory" / "last-stop.json").write_text('{"reason": "budget"}')
+        event = await _next_event(stream, first)
+        assert event.scope == "runs"
+        assert event.path == ".factory/last-stop.json"
+        assert event.kind in {"created", "modified"}
+    finally:
+        first.cancel()
+        await stream.aclose()
+        watcher.stop()
+
+
+async def test_last_stop_atomic_rename_emits_event(tmp_path: Path) -> None:
+    # INV-03 for last stop, matching the run-state.json and ledger rename tests.
+    factory_dir = tmp_path / ".factory"
+    factory_dir.mkdir()
+    (factory_dir / "last-stop.json").write_text('{"reason": "budget"}')
+    watcher = RealFileWatcher(tmp_path)
+    watcher.start()
+    stream, first = await _primed_stream(watcher)
+    try:
+        temp = factory_dir / "last-stop.json.tmp"
+        temp.write_text('{"reason": "merged"}')
+        temp.rename(factory_dir / "last-stop.json")
+
+        event = await _drain_until(stream, ".factory/last-stop.json", first)
+        assert event.scope == "runs"
+    finally:
+        first.cancel()
+        await stream.aclose()
+        watcher.stop()
+
+
+async def test_nested_content_under_a_run_artifact_dir_yields_nothing(tmp_path: Path) -> None:
+    # The depth guard for the DIRECTORY-matched artefacts, mirroring
+    # test_nested_content_under_the_json_parent_yields_nothing. A results directory is
+    # scheduled ``recursive=False`` and the handler matches on the IMMEDIATE parent, so
+    # a file one level deeper is invisible at both layers. It should not occur — the
+    # factory writes ``<ticket_id>.json`` flat — but if the watch were ever flipped to
+    # recursive, such an event would miss the dir match, miss the json-only drop (its
+    # parent is not a watched root) and be dispatched as ``planning``: the scope
+    # widening this design forbids. The subdirectory's OWN creation is a directory
+    # event, which the named drop discards for the stated reason that only files carry
+    # artefact signal.
+    (tmp_path / ".factory" / "results").mkdir(parents=True)
+    watcher = RealFileWatcher(tmp_path)
+    watcher.start()
+    stream, first = await _primed_stream(watcher)
+    try:
+        (tmp_path / ".factory" / "results" / "archive").mkdir()
+        (tmp_path / ".factory" / "results" / "archive" / "T88.json").write_text("{}")
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(first, _QUIET_WINDOW)
+    finally:
+        first.cancel()
+        await stream.aclose()
+        watcher.stop()
+
+
 async def test_both_run_state_sources_present_do_not_double_fire(tmp_path: Path) -> None:
     # With BOTH a run-state directory and the JSON file, one logical change must
     # still yield exactly one ChangeEvent — the ``.factory`` watch (scheduled for
@@ -397,13 +587,15 @@ async def test_both_run_state_sources_present_do_not_double_fire(tmp_path: Path)
         watcher.stop()
 
 
-async def test_run_state_json_and_ledger_are_scoped_independently(tmp_path: Path) -> None:
-    # Two DISTINCT json-only parents are now scheduled (``.factory`` for
-    # run-state.json, ``.factory/metrics`` for ledger.jsonl), and ``.factory/metrics``
-    # is nested inside the other. Each file must fire once, under its OWN scope: a
-    # ledger append tagged ``run-state`` (or vice versa) would refresh the wrong pane,
-    # and a double-fire would mean the nested parent got scheduled twice.
+async def test_run_state_json_ledger_and_results_are_scoped_independently(tmp_path: Path) -> None:
+    # SEVERAL DISTINCT json-only roots are now scheduled — ``.factory`` for
+    # run-state.json and last-stop.json, ``.factory/metrics`` for ledger.jsonl,
+    # ``.factory/results`` for a lane's result — and every one but the first is nested
+    # inside the first. Each artefact must fire once, under its OWN scope: a ledger
+    # append tagged ``run-state``, or a result tagged ``planning``, refreshes the wrong
+    # pane, and a double-fire would mean a nested root got scheduled twice.
     (tmp_path / ".factory" / "metrics").mkdir(parents=True)
+    (tmp_path / ".factory" / "results").mkdir()
     (tmp_path / ".factory" / "run-state.json").write_text('{"version": 1, "tickets": {}}')
     ledger = tmp_path / ".factory" / "metrics" / "ledger.jsonl"
     ledger.write_text('{"ticket_id": "T94"}\n')
@@ -427,6 +619,14 @@ async def test_run_state_json_and_ledger_are_scoped_independently(tmp_path: Path
         event = await _next_event(stream)
         assert event.path == ".factory/metrics/ledger.jsonl"
         assert event.scope == "ledger"
+
+        # And the third mechanism in the same stream: a DIRECTORY-matched artefact,
+        # whose filename is a ticket id. Cross-artefact scoping is only really pinned
+        # when all of it is pinned at once.
+        (tmp_path / ".factory" / "results" / "T99.json").write_text('{"status": "ready"}')
+        event = await _next_event(stream)
+        assert event.path == ".factory/results/T99.json"
+        assert event.scope == "runs"
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(stream.__anext__(), _QUIET_WINDOW)
     finally:

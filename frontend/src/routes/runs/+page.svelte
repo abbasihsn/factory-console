@@ -7,8 +7,19 @@
 	 * `tests/fixtures/runs/README.md`), so they are a guess, and the two columns
 	 * that use them render a miss honestly: "no PR url / no status under any key
 	 * this console recognises". Nothing below this view models a field — the
-	 * reading layer, `RunRecord` and the wire all keep `data` untyped — and this
-	 * declaration does not ask any of them to change.
+	 * server's reading layer and its `RunRecord` keep `data` untyped — and this
+	 * declaration does not ask either of them to change.
+	 *
+	 * The WIRE does narrow, to these same two names, and independently: `GET
+	 * /api/v1/runs` discloses only the keys in `DISCLOSED_ARTIFACT_FIELDS`
+	 * (`server/factory_console/api/v1/runs.py`), so `data` arrives holding at most
+	 * `pr_url` and `status`, string-valued, per the disclosure rule in
+	 * `docs/planning/ARCHITECTURE.md`. That is a rule about what may LEAVE the
+	 * server; this list is about what this view may READ, and they are kept the
+	 * same two names on purpose. Adding an entry here without adding it there
+	 * yields a field the server will not send — a read that renders as a miss,
+	 * never as a wrong value. The readers below therefore stay defensive: they
+	 * still treat a missing or unusable value as "not there".
 	 *
 	 * What it buys is a BOUND. This constant is the single place that must be
 	 * edited before any code reads a new field out of an artifact payload:
@@ -121,9 +132,12 @@
 		return reason !== null && reason !== undefined && reason !== 'absent';
 	}
 
-	// `data` is an untyped JSON object by contract — the backend models no field
-	// inside a factory artifact because it has verified none — so every field is
-	// read through a guard and a missing or non-string value is simply "not there".
+	// The backend models no field inside a factory artifact because it has verified
+	// none; it only declines to disclose the ones nothing asked for. So a declared key
+	// may still be absent from `data` — the artifact simply did not carry it — and
+	// every field is read through a guard: a missing or non-string value is "not
+	// there". The `typeof` check stays even though the wire type says `string`, as
+	// defence against a body that disagrees with its own schema.
 	function readString(artifact: ArtifactRead, key: ProjectedField): string | null {
 		const value = artifact.data?.[key];
 		return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;

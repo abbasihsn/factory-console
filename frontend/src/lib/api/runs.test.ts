@@ -26,7 +26,10 @@ afterEach(() => {
 describe('getRuns', () => {
 	// `satisfies` so the fixture cannot drift from the published contract: a stale
 	// field or an invalid `reason` fails the type-check here rather than letting this
-	// test pass against a body the server can no longer send.
+	// test pass against a body the server can no longer send. Since T102 that also
+	// pins the NARROWING: `data` is `Record<string, string>` holding only the server's
+	// `DISCLOSED_ARTIFACT_FIELDS`, so a fixture carrying an undisclosed key — or a
+	// non-string under a disclosed one — no longer type-checks as a body at all.
 	const body = {
 		items: [
 			{
@@ -56,8 +59,10 @@ describe('getRuns', () => {
 		fetchMock.mockResolvedValue(jsonResponse(body));
 
 		// Envelope-unwrapped like `listTickets`/`searchTickets`, but every per-source
-		// `data`/`reason` pair survives verbatim: flattening one into a boolean is the
-		// exact ambiguity the server built `ArtifactRead` to remove.
+		// `data`/`reason` pair survives this wrapper untouched: flattening one into a
+		// boolean is the exact ambiguity the server built `ArtifactRead` to remove.
+		// The narrowing of `data` happens server-side, before this module sees a byte —
+		// nothing here filters, and nothing here may.
 		await expect(getRuns()).resolves.toEqual(body.items);
 	});
 

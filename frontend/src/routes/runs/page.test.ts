@@ -51,8 +51,19 @@ function skipped(path: string, reason: NonNullable<ArtifactRead['reason']>): Art
 	return { path, data: null, reason };
 }
 
+/**
+ * A read that yielded data, taking a WIDER `data` than the wire can now carry.
+ *
+ * The server narrows every disclosed value to a string (`ProjectedArtifactRead` in
+ * `server/factory_console/api/v1/runs.py`), so a number under `pr_url` is no longer
+ * a body it can send. The cast is deliberate and stays: the view's own `typeof`
+ * guard in `readString` is defence-in-depth against a body that disagrees with its
+ * schema, and a guard nothing exercises is a guard that gets deleted. The cases
+ * below that feed a non-string are therefore about the VIEW's three-way
+ * none/unusable/value distinction, not about a shape the server may produce.
+ */
 function read(path: string, data: Record<string, unknown>): ArtifactRead {
-	return { path, data, reason: null };
+	return { path, data: data as Record<string, string>, reason: null };
 }
 
 function record(id: string, result: ArtifactRead, receipt: ArtifactRead): RunRecord {

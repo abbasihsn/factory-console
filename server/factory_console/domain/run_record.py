@@ -52,6 +52,14 @@ class RunRecord(BaseModel):
     ``ticketId`` comes from the manifest, not from the artifacts — the artifacts
     are keyed BY it — and is :data:`~factory_console.domain.ticket.TicketId`
     constrained like every other id on the domain surface.
+
+    This is the composed DOMAIN answer and not the wire shape. ``GET
+    /api/v1/runs`` serves its own narrower twin (``ProjectedRunRecord`` /
+    ``ProjectedArtifactRead`` in ``api/v1/runs.py``), which discloses only the
+    artifact keys declared there — see ``ARCHITECTURE.md``'s "Other factory
+    artefacts (read-only)". That is a rule about DISCLOSURE and it asks nothing of
+    this type: composing verbatim is what lets the endpoint above narrow
+    deliberately rather than inherit a schema nobody verified.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
