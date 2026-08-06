@@ -55,7 +55,12 @@ from pydantic import ValidationError
 from factory_console.domain.ledger import LedgerEntry, LedgerRead, SkippedLine, SkipReason
 from factory_console.file_adapter.bounded_read import read_bounded
 from factory_console.domain.watched_artifacts import LEDGER_RELATIVE_PATH
-from factory_console.file_adapter.path_safety import ABSENT_ERRNOS, resolve_or_none, within_root
+from factory_console.file_adapter.path_safety import (
+    ABSENT_ERRNOS,
+    is_regular_file,
+    resolve_or_none,
+    within_root,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -109,6 +114,16 @@ class LedgerNotContained(OSError):
     ``$0.00``. So containment joins that case rather than inventing a second one the
     endpoint would have to learn, and the ``None`` that means "definitively no ledger"
     stays reserved for a ledger that is definitively not there.
+
+    T101: sharing that wire answer with the size-cap and probe-failure cases is a
+    DECISION, not an oversight — ``ARCHITECTURE.md:262-274``'s rule ("the
+    authorization answer may be shared while the remedy differs") is normally paid
+    by naming the remedy in the response; here it is paid by the ``_LOGGER.warning``
+    a few lines below instead, because widening the public envelope with a
+    ``not_contained`` reason is exactly the filesystem disclosure T82's coarse
+    ``unreadable`` exists to avoid. The remedy still has to be findable SOMEWHERE —
+    it is this log line, not the HTTP body — and ``spend/+page.svelte`` says so
+    rather than guessing at causes it cannot tell apart.
     """
 
 

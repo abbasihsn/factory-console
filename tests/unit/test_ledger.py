@@ -16,6 +16,7 @@ guard.
 """
 
 import errno
+import logging
 import math
 import os
 from datetime import timedelta
@@ -33,6 +34,7 @@ from factory_console.file_adapter.ledger import (
     EXCERPT_MAX_CHARS,
     MAX_LEDGER_BYTES,
     MAX_SKIPPED_LINES,
+    LedgerNotContained,
     find_ledger_path,
     read_ledger,
 )
@@ -405,6 +407,50 @@ def test_a_ledger_symlinked_out_of_the_project_root_is_refused(tmp_path: Path) -
 
     with pytest.raises(OSError):
         find_ledger_path(project)
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="platform has no symlinks")
+def test_the_containment_refusal_is_distinguishable_from_the_size_cap_case_by_its_log(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # T101 / ARCHITECTURE.md:262-274 — the authorization answer may be shared while
+    # the remedy differs, and the refusal must name the remedy SOMEWHERE. Over HTTP,
+    # a containment refusal and an over-cap ledger answer identically:
+    # `source.found: true, read: false`, skip reason `unreadable` (T82's envelope
+    # stays coarse on purpose — see LedgerNotContained's docstring). So the only
+    # channel left to tell them apart is the operator log, and a test asserting only
+    # that both raise / both report `read: false` proves nothing about that — this
+    # asserts the two log lines actually read apart.
+    caplog.set_level(logging.WARNING)
+
+    outsider = tmp_path / "outside" / "secrets.jsonl"
+    outsider.parent.mkdir(parents=True)
+    outsider.write_text(REAL_ENTRY_LINE + "\n", encoding="utf-8")
+    project = tmp_path / "project"
+    ledger = project / _LEDGER_RELATIVE
+    ledger.parent.mkdir(parents=True)
+    ledger.symlink_to(outsider)
+
+    with pytest.raises(LedgerNotContained):
+        find_ledger_path(project)
+    containment_log = caplog.text
+    caplog.clear()
+
+    over_cap = tmp_path / "cap-project" / _LEDGER_RELATIVE
+    over_cap.parent.mkdir(parents=True)
+    with over_cap.open("wb") as handle:
+        handle.write(REAL_ENTRY_LINE.encode("utf-8") + b"\n")
+        # Sparse-extend past the cap rather than materialising 10 MiB of bytes.
+        handle.truncate(MAX_LEDGER_BYTES + 1)
+    read_ledger(over_cap)
+    size_cap_log = caplog.text
+
+    assert "does not resolve inside the project root" in containment_log, (
+        "the containment log line must name containment as the cause"
+    )
+    assert "does not resolve inside the project root" not in size_cap_log
+    assert "byte cap" in size_cap_log, "the size-cap log line must name the cap as the cause"
+    assert "byte cap" not in containment_log
 
 
 @pytest.mark.skipif(not hasattr(os, "symlink"), reason="platform has no symlinks")
