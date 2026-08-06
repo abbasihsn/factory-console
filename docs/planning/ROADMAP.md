@@ -25,7 +25,8 @@ timeline
     v2 : Safe editing of todo tickets : Manifest + roadmap co-writer : Loopback write token
     v2.1 : Real run-state source & vocabulary : Corrected write gate : Runs view : Spend view : One lint gate
     v2.2 : Watch every artifact the console reads : One errno split : One disclosure rule : Docs match the code
-    v3.0 : Multi-project registry : Switchable project view : GitHub PR status & links
+    v3.0 : Multi-project registry : Switchable project view : Per-request project resolution
+    v3.0.1 : Read-only GitHub PR status & links
     v3.1 : serve mode + username/password : Tailscale remote access (phone + laptop)
     v3.2 : Live log streaming : All-projects dashboard
     v3.3 : Open-Claude launcher (optional)
@@ -191,8 +192,9 @@ managing many imported projects. Files stay the source of truth; a tiny SQLite s
 console's own registry + credentials. Staged so each slice is usable on its own:
 
 - **v3.0 — Multi-project read plane (local):** SQLite project registry; add/select project; switchable
-  single-project view (today's console + a project dropdown); `GitHubAdapter` for PR status + links.
-  Still `127.0.0.1`.
+  single-project view (today's console + a project dropdown). Still `127.0.0.1`. **Ticketed below.**
+- **v3.0.1 — GitHub PR status:** read-only `GitHubAdapter` for per-project PR status + links.
+  **Ticketed below.** Split out of v3.0 during elaboration — see the note under that heading.
 - **v3.1 — Hosting + auth:** `factory-console serve` mode; configurable bind; single username/password
   login (hashed + session cookie); Tailscale deploy doc → reachable from phone + laptop.
 - **v3.2 — Live + dashboard:** factory loop/QA **log streaming** (reuses the v1 `FileWatcher` port);
@@ -201,5 +203,77 @@ console's own registry + credentials. Staged so each slice is usable on its own:
   phone-driven work; pending confirmation that Claude Code can attach to a server-started session.
 - **v3.4+ — Hardening options:** public-with-TLS deploy path; audit log; multi-user; PR caching.
 
-→ Elaborate later with `/factory-plan-milestone v3` (after v2 is built), continuing the global ticket
-IDs — never renumbering existing ones.
+→ v3.0 and v3.0.1 are elaborated below. Elaborate **v3.1** later with
+`/factory-plan-milestone v3.1`, continuing the global ticket IDs — never renumbering existing ones.
+
+## v3.0 — multi-project read plane (local)
+
+The console stops being about the directory you launched it in. A SQLite registry at
+`~/.factory-console/console.db` holds the console's **own** state only — `projects` plus the current
+selection — while tickets, run-state and roadmap stay read-through from each project's files. Every
+endpoint resolves the *selected* project per request instead of one fixed at boot. Still
+`127.0.0.1`, still auth-free, and the v2 write token remains the only write credential.
+
+**`factory-console PATH` is unchanged** — same argument, same four exit codes, same stdout line, no
+subcommand. The path it names becomes the session's initial selection; switching overrides it in
+process and persists for the next boot. A pathless boot still exits 1; `serve` is v3.1.
+
+**Elaborated 2026-08-06 at 28 tickets.** Not split further: none of the candidate sub-seams is
+independently usable — a registry with no UI shows nothing, and a switcher with no add form can only
+ever contain the project already on the command line.
+
+- [ ] **T103** — Registry domain vocabulary, and the store's place in the architecture → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T103-registry-domain-vocabulary.md`
+- [ ] **T104** — Console store location: `FACTORY_CONSOLE_DB_PATH`, side-effect-free resolution → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T104-console-store-location.md`
+- [ ] **T105** — Console DB schema + `user_version` migration runner → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T105-console-db-schema-and-migrations.md`
+- [ ] **T106** — ProjectRegistry port + the canonical path rule → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T106-project-registry-port.md`
+- [ ] **T107** — FakeProjectRegistry + the shared port-contract suite → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T107-fake-project-registry.md`
+- [ ] **T108** — SqliteProjectRegistry — the real, lazily-opened registry → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T108-sqlite-project-registry.md`
+- [ ] **T109** — ProjectConditionProbe — named per-project conditions from disk → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T109-project-condition-probe.md`
+- [ ] **T110** — `resolve_entries` — the length-preserving registry/condition join → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T110-registry-entry-join.md`
+- [ ] **T111** — Selection seam + the pinned-PATH-vs-persisted-selection precedence → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T111-selection-seam.md`
+- [ ] **T112** — `GET /api/v1/projects` + `/projects/current` → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T112-projects-read-endpoints.md`
+- [ ] **T113** — Registry mutations (write-token gated) → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T113-registry-mutations.md`
+- [ ] **T114** — Watcher supervisor — one watcher, swapped on selection change → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T114-watcher-supervisor.md`
+- [ ] **T115** — `/events` resolves per connection and ends on a selection change → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T115-events-per-connection.md`
+- [ ] **T116** — Per-request resolution for `/project`, `/health`, `/graph`, `/roadmap` → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T116-resolve-project-health-graph-roadmap.md`
+- [ ] **T117** — Per-request resolution for `/tickets`, `/search`, `/spend`, `/runs` → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T117-resolve-tickets-search-spend-runs.md`
+- [ ] **T118** — Per-request resolution for the ticket write routes → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T118-resolve-write-routes.md`
+- [ ] **T119** — CLI + dev app wire the registry and the watcher factory → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T119-cli-registry-wiring.md`
+- [ ] **T120** — Test-harness isolation: no test may touch the real console DB → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T120-test-harness-isolation.md`
+- [ ] **T121** — Registry API client + regenerated types → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T121-registry-api-client.md`
+- [ ] **T122** — Project switcher in the TopBar, over a registry-aware layout load → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T122-project-switcher.md`
+- [ ] **T123** — `/projects` route — list, select and remove → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T123-projects-route.md`
+- [ ] **T124** — Add a project by path, rendering the server's named refusal → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T124-add-project-form.md`
+- [ ] **T125** — The selected project's degraded conditions, named in the shell → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T125-project-conditions-banner.md`
+- [ ] **T126** — The live stream follows the selection → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T126-live-stream-follows-selection.md`
+- [ ] **T127** — Multi-project e2e — switch, deep-link, add and remove → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T127-multi-project-e2e.md`
+- [ ] **T128** — DevOps for the console's first writable state → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T128-devops-writable-state.md`
+- [ ] **T129** — Amend the durable contracts for what v3.0 shipped → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T129-v3.0-planning-docs.md`
+- [ ] **T130** — v3.0 user docs + README screenshots refresh → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T130-v3.0-docs-and-screenshots.md`
+
+## v3.0.1 — GitHub PR status
+
+Additive on v3.0: a read-only `GitHubAdapter` over `gh`, one invocation per project, joined to the
+manifest per ticket id. Every failure mode is a **named** reason — `gh` absent, wrong account, not a
+git repo, no remote, non-GitHub remote, invisible repo, rate-limited, timed out — because none of
+them is "no PR".
+
+**Split out of v3.0** because the combined set was 40 tickets, larger than any milestone this project
+has shipped, and this half is independently usable. Two decisions worth knowing before building it:
+the account pin is **console-owned** (`FACTORY_CONSOLE_GITHUB_ACCOUNT`) rather than a copy of
+app-factory's `gh` guard — that guard is a Claude Code hook with no executable to call, baked to one
+repo, reading uncommitted files, and copying it would make every ordinary `uvx` user fail closed. And
+`/runs` gains **one** PR answer with a declared precedence, not a second column.
+
+- [ ] **T131** — Domain result types for the GitHub PR read → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0.1/T131-github-domain-types.md`
+- [ ] **T132** — GitHubAdapter port + FakeGitHubAdapter → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0.1/T132-github-adapter-port.md`
+- [ ] **T133** — Bounded, timed subprocess runner → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0.1/T133-bounded-exec.md`
+- [ ] **T134** — The account check: a console-owned pin → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0.1/T134-github-account-pin.md`
+- [ ] **T135** — Project GitHub remote resolution — the WHERE check → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0.1/T135-github-remote-resolution.md`
+- [ ] **T136** — `gh` payload parse + `tkt/<id>` branch join → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0.1/T136-github-pulls-parse.md`
+- [ ] **T137** — RealGitHubAdapter — `gh pr list`, degrading honestly → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0.1/T137-real-github-adapter.md`
+- [ ] **T138** — GitHubPullService — one entry per manifest ticket → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0.1/T138-github-pull-service.md`
+- [ ] **T139** — `GET /api/v1/github/pulls` + DI wiring → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0.1/T139-github-pulls-endpoint.md`
+- [ ] **T140** — PR status client + `PrStatusBadge` on ticket detail → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0.1/T140-pr-status-client-and-badge.md`
+- [ ] **T141** — `/runs` — one PR answer, with its source named → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0.1/T141-runs-pr-precedence.md`
+- [ ] **T142** — Document the GitHubAdapter port and its operator setup → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0.1/T142-github-docs.md`

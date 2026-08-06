@@ -1411,6 +1411,588 @@
       "source": "Incremental Integration Audit run 3, 2026-08-05",
       "audit_finding": "F5",
       "audit_lens": "architecture-drift"
+    },
+    {
+      "id": "T103",
+      "title": "Registry domain vocabulary, and the store's place in the architecture",
+      "track": "store",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T07",
+        "T102"
+      ],
+      "provides": "domain/registry.py - RegisteredProject, the exhaustive RegistryEntryCondition union and RegistryEntry, plus the PROJECT_STRUCTURE/ARCHITECTURE amendment giving store and github documented track rows.",
+      "path": "docs/planning/tickets/v3.0/T103-registry-domain-vocabulary.md",
+      "status": "todo"
+    },
+    {
+      "id": "T104",
+      "title": "Console store location: FACTORY_CONSOLE_DB_PATH and side-effect-free resolution",
+      "track": "store",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T04"
+      ],
+      "provides": "store/ package plus store/location.py - the FACTORY_CONSOLE_DB_PATH override, a pure resolve_db_path() that creates nothing, and ensure_store_dir() at 0700.",
+      "path": "docs/planning/tickets/v3.0/T104-console-store-location.md",
+      "status": "todo"
+    },
+    {
+      "id": "T105",
+      "title": "Console DB schema + user_version migration runner",
+      "track": "store",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T104"
+      ],
+      "provides": "store/schema.py - per-operation connect() with foreign_keys ON and a 0600 db file, plus a user_version migration runner; migration 1 creates projects (UNIQUE path) and the one-row console_state holding the persisted selection.",
+      "path": "docs/planning/tickets/v3.0/T105-console-db-schema-and-migrations.md",
+      "status": "todo"
+    },
+    {
+      "id": "T106",
+      "title": "ProjectRegistry port: the synchronous Protocol, the canonical path rule, and its named errors",
+      "track": "store",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T103",
+        "T10",
+        "T88"
+      ],
+      "provides": "store/registry_protocol.py - the runtime-checkable seven-method ProjectRegistry Protocol with its named errors, plus store/paths.py and the canonical-path rule.",
+      "path": "docs/planning/tickets/v3.0/T106-project-registry-port.md",
+      "status": "todo"
+    },
+    {
+      "id": "T107",
+      "title": "FakeProjectRegistry + the shared port-contract suite",
+      "track": "store",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T106",
+        "T10"
+      ],
+      "provides": "store/fake_registry.py plus tests/_registry_contract.py - the conformance suite both registry implementations run against, so the fake and the real one cannot drift.",
+      "path": "docs/planning/tickets/v3.0/T107-fake-project-registry.md",
+      "status": "todo"
+    },
+    {
+      "id": "T108",
+      "title": "SqliteProjectRegistry - the real, lazily-opened console-DB registry",
+      "track": "store",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T105",
+        "T107",
+        "T17"
+      ],
+      "provides": "store/sqlite_registry.py - the production registry whose construction is side-effect-free, creating the db only on first method call, passing the shared contract suite alongside the fake.",
+      "path": "docs/planning/tickets/v3.0/T108-sqlite-project-registry.md",
+      "status": "todo"
+    },
+    {
+      "id": "T109",
+      "title": "ProjectConditionProbe - named per-project conditions, established from disk",
+      "track": "file-adapter",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T103",
+        "T11",
+        "T88",
+        "T89"
+      ],
+      "provides": "file_adapter/project_condition.py - a read-only, TOTAL port (Protocol + Real + Fake) resolving each registered path to one named condition, most-degraded-first, never raising.",
+      "path": "docs/planning/tickets/v3.0/T109-project-condition-probe.md",
+      "status": "todo"
+    },
+    {
+      "id": "T110",
+      "title": "resolve_entries - the length-preserving registry/condition join",
+      "track": "store",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T109",
+        "T107"
+      ],
+      "provides": "store/entries.py::resolve_entries() - the pure fold producing one RegistryEntry per row, where a degraded row is transformed and never filtered.",
+      "path": "docs/planning/tickets/v3.0/T110-registry-entry-join.md",
+      "status": "todo"
+    },
+    {
+      "id": "T111",
+      "title": "Selection seam: get_current_project_root, and the precedence between a pinned PATH and the persisted selection",
+      "track": "backend",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T106",
+        "T107",
+        "T20",
+        "T98"
+      ],
+      "provides": "One async get_current_project_root dependency resolving the selected project per request, the shared selection-failure vocabulary, and the written rule that a pinned PATH is the session's initial selection.",
+      "path": "docs/planning/tickets/v3.0/T111-selection-seam.md",
+      "status": "todo"
+    },
+    {
+      "id": "T112",
+      "title": "GET /api/v1/projects + GET /api/v1/projects/current",
+      "track": "backend",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T111",
+        "T110",
+        "T102"
+      ],
+      "provides": "The two read endpoints the project dropdown is built from - registered projects with their per-row condition, and the current selection - plus the OpenAPI schemas the SPA generates types from.",
+      "path": "docs/planning/tickets/v3.0/T112-projects-read-endpoints.md",
+      "status": "todo"
+    },
+    {
+      "id": "T113",
+      "title": "Registry mutations: POST /projects, DELETE /projects/{id}, PUT /projects/current",
+      "track": "backend",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T112",
+        "T64",
+        "T65"
+      ],
+      "provides": "Add, remove and select registered projects over HTTP, all three gated by the v2 X-Factory-Write-Token.",
+      "path": "docs/planning/tickets/v3.0/T113-registry-mutations.md",
+      "status": "todo"
+    },
+    {
+      "id": "T114",
+      "title": "Watcher supervisor - one watcher for the selected project, swapped on selection change",
+      "track": "backend",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T111",
+        "T39",
+        "T40",
+        "T44"
+      ],
+      "provides": "services/watcher_supervisor.py owning at most one live FileWatcher, swapped on selection change through an injected factory, with a monotonic generation counter.",
+      "path": "docs/planning/tickets/v3.0/T114-watcher-supervisor.md",
+      "status": "todo"
+    },
+    {
+      "id": "T115",
+      "title": "/events resolves its watcher per connection and ends the stream on a selection change",
+      "track": "backend",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T114",
+        "T45"
+      ],
+      "provides": "A live stream bound to the project selected at connection time, terminating with a named stale frame when the selection changes.",
+      "path": "docs/planning/tickets/v3.0/T115-events-per-connection.md",
+      "status": "todo"
+    },
+    {
+      "id": "T116",
+      "title": "Per-request resolution for /project, /health, /graph, /roadmap",
+      "track": "backend",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T111",
+        "T21",
+        "T24",
+        "T98"
+      ],
+      "provides": "Four endpoints resolved from the current selection and offloaded per the house rule, with /health made honest about having no selection (nullable projectRoot plus a named selectionReason).",
+      "path": "docs/planning/tickets/v3.0/T116-resolve-project-health-graph-roadmap.md",
+      "status": "todo"
+    },
+    {
+      "id": "T117",
+      "title": "Per-request resolution for /tickets, /search, /spend, /runs",
+      "track": "backend",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T111",
+        "T22",
+        "T23",
+        "T90",
+        "T98"
+      ],
+      "provides": "The four read-heavy endpoints resolved per request, with per-project run-state and .factory artefacts looped by the existing v2.1 rules rather than redesigned.",
+      "path": "docs/planning/tickets/v3.0/T117-resolve-tickets-search-spend-runs.md",
+      "status": "todo"
+    },
+    {
+      "id": "T118",
+      "title": "Per-request resolution for the ticket write routes",
+      "track": "backend",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T117",
+        "T65",
+        "T80",
+        "T92",
+        "T96"
+      ],
+      "provides": "Create/edit/delete targeting the selected project, with the write token checked before the selection and an unresolvable selection refusing rather than falling back to the pinned root.",
+      "path": "docs/planning/tickets/v3.0/T118-resolve-write-routes.md",
+      "status": "todo"
+    },
+    {
+      "id": "T119",
+      "title": "CLI + dev app wire the SQLite registry and the watcher factory",
+      "track": "backend",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T113",
+        "T114",
+        "T108",
+        "T25"
+      ],
+      "provides": "The shipped boot becomes multi-project-capable - registry wired, watcher factory injected, the discovered root pinned as an ephemeral session project - with no subcommand and all four exit codes unchanged.",
+      "path": "docs/planning/tickets/v3.0/T119-cli-registry-wiring.md",
+      "status": "todo"
+    },
+    {
+      "id": "T120",
+      "title": "Test-harness isolation: no test may touch the developer's real console DB",
+      "track": "testing",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T119",
+        "T104"
+      ],
+      "provides": "Every Playwright run and every CLI-subprocess pytest run boots against a throwaway registry DB, plus the startMulti/registerProject helpers a multi-project spec needs.",
+      "path": "docs/planning/tickets/v3.0/T120-test-harness-isolation.md",
+      "status": "todo"
+    },
+    {
+      "id": "T121",
+      "title": "Registry API client (lib/api/projects.ts) + regenerated types",
+      "track": "frontend",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T113",
+        "T103",
+        "T28",
+        "T64",
+        "T66"
+      ],
+      "provides": "A typed, tested door to the console registry with write-token handling, plus the one regeneration of the generated types file for the registry endpoints.",
+      "path": "docs/planning/tickets/v3.0/T121-registry-api-client.md",
+      "status": "todo"
+    },
+    {
+      "id": "T122",
+      "title": "Project switcher in the TopBar, over a registry-aware layout load",
+      "track": "frontend",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T121",
+        "T111",
+        "T27",
+        "T49"
+      ],
+      "provides": "v3.0's headline - a dropdown listing registered projects that switches the server-side selection and correctly re-loads whatever route the user is on.",
+      "path": "docs/planning/tickets/v3.0/T122-project-switcher.md",
+      "status": "todo"
+    },
+    {
+      "id": "T123",
+      "title": "/projects route - list registered projects, select and remove",
+      "track": "frontend",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T121",
+        "T122",
+        "T112",
+        "T103",
+        "T69"
+      ],
+      "provides": "A /projects route listing every registered project with its named condition, selecting one, and removing one behind the existing ConfirmDialog.",
+      "path": "docs/planning/tickets/v3.0/T123-projects-route.md",
+      "status": "todo"
+    },
+    {
+      "id": "T124",
+      "title": "Add a project by path, and render the server's named refusal",
+      "track": "frontend",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T123",
+        "T113"
+      ],
+      "provides": "The add-project form, whose failure state is the server's named validation error rather than a generic message the console invented.",
+      "path": "docs/planning/tickets/v3.0/T124-add-project-form.md",
+      "status": "todo"
+    },
+    {
+      "id": "T125",
+      "title": "The selected project's degraded conditions, named in the shell",
+      "track": "frontend",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T122",
+        "T103",
+        "T83"
+      ],
+      "provides": "A shell-level banner naming when the selected project's path has moved, is no longer a factory project, cannot be read, or has no .factory dir.",
+      "path": "docs/planning/tickets/v3.0/T125-project-conditions-banner.md",
+      "status": "todo"
+    },
+    {
+      "id": "T126",
+      "title": "The live stream follows the selection",
+      "track": "frontend",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T122",
+        "T125",
+        "T115",
+        "T50",
+        "T45"
+      ],
+      "provides": "The SSE subscription and its indicator are re-established on a switch, immediately and without a backoff penalty, via an explicit stale-frame listener.",
+      "path": "docs/planning/tickets/v3.0/T126-live-stream-follows-selection.md",
+      "status": "todo"
+    },
+    {
+      "id": "T127",
+      "title": "Multi-project e2e - switch, deep-link, add and remove in a real browser",
+      "track": "testing",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T120",
+        "T122",
+        "T124",
+        "T125",
+        "T126",
+        "T08"
+      ],
+      "provides": "v3.0's acceptance harness - a real browser against a real two-project console, proving the switch, the deep-link answer, add/remove, the PATH precedence rule, and that the live stream recovers.",
+      "path": "docs/planning/tickets/v3.0/T127-multi-project-e2e.md",
+      "status": "todo"
+    },
+    {
+      "id": "T128",
+      "title": "DevOps for the console's first writable state: Dockerfile, CI, and the packaging note",
+      "track": "infra-devops",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T119",
+        "T120"
+      ],
+      "provides": "The Docker image and CI reckon with the console now creating persistent state in the user's home directory - or record, deliberately, that the image stays single-project.",
+      "path": "docs/planning/tickets/v3.0/T128-devops-writable-state.md",
+      "status": "todo"
+    },
+    {
+      "id": "T129",
+      "title": "Amend the durable contracts for what v3.0 actually shipped",
+      "track": "docs",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T127",
+        "T128"
+      ],
+      "provides": "ARCHITECTURE.md, PROJECT_STRUCTURE.md and ROADMAP.md describe the multi-project console that now exists - the registry endpoints, the changed /health and /events, per-request resolution, and the v3.0/v3.0.1 split.",
+      "path": "docs/planning/tickets/v3.0/T129-v3.0-planning-docs.md",
+      "status": "todo"
+    },
+    {
+      "id": "T130",
+      "title": "v3.0 user docs + README screenshots refresh",
+      "track": "docs",
+      "milestone": "v3.0",
+      "depends_on": [
+        "T129",
+        "T34",
+        "T54",
+        "T77",
+        "T86",
+        "T94"
+      ],
+      "provides": "The screenshot pipeline captures the multi-project console, and README plus docs/usage.md describe the registry, the switcher and the named conditions.",
+      "path": "docs/planning/tickets/v3.0/T130-v3.0-docs-and-screenshots.md",
+      "status": "todo"
+    },
+    {
+      "id": "T131",
+      "title": "Domain result types for the GitHub PR read (found/read/reason vocabulary)",
+      "track": "github",
+      "milestone": "v3.0.1",
+      "depends_on": [
+        "T129",
+        "T07",
+        "T88",
+        "T90"
+      ],
+      "provides": "domain/github.py - the named-missing vocabulary and typed result shapes, plus the one statement of how a gh-sourced PR relates to the artifact-sourced pr_url on /runs.",
+      "path": "docs/planning/tickets/v3.0.1/T131-github-domain-types.md",
+      "status": "todo"
+    },
+    {
+      "id": "T132",
+      "title": "GitHubAdapter port + FakeGitHubAdapter",
+      "track": "github",
+      "milestone": "v3.0.1",
+      "depends_on": [
+        "T131",
+        "T10",
+        "T88",
+        "T89"
+      ],
+      "provides": "The one-method TOTAL GitHubAdapter Protocol and a deterministic in-memory fake, plus the github_adapter tree and ownership row in PROJECT_STRUCTURE.md.",
+      "path": "docs/planning/tickets/v3.0.1/T132-github-adapter-port.md",
+      "status": "todo"
+    },
+    {
+      "id": "T133",
+      "title": "Bounded, timed subprocess runner for the GitHub adapter",
+      "track": "github",
+      "milestone": "v3.0.1",
+      "depends_on": [
+        "T132",
+        "T97"
+      ],
+      "provides": "github_adapter/bounded_exec.py - the single argv-only, timeout-bounded, output-capped, env-scrubbed, secret-safe subprocess sequence, plus the CommandRunner seam that keeps tests network-free.",
+      "path": "docs/planning/tickets/v3.0.1/T133-bounded-exec.md",
+      "status": "todo"
+    },
+    {
+      "id": "T134",
+      "title": "The account check: a console-owned pin, not a copy of another tool's guard",
+      "track": "github",
+      "milestone": "v3.0.1",
+      "depends_on": [
+        "T132",
+        "T133",
+        "T04",
+        "T97"
+      ],
+      "provides": "github_adapter/account.py plus GitHubSettings - resolves the gh executable and the account it acts as, refuses on a configured-pin mismatch, and acts as the authenticated account when no pin is set.",
+      "path": "docs/planning/tickets/v3.0.1/T134-github-account-pin.md",
+      "status": "todo"
+    },
+    {
+      "id": "T135",
+      "title": "Project GitHub remote resolution - the WHERE check",
+      "track": "github",
+      "milestone": "v3.0.1",
+      "depends_on": [
+        "T131",
+        "T133"
+      ],
+      "provides": "github_adapter/remote.py - resolves the owner/name slug from origin so every query names its repo, distinguishing git_absent, not_a_git_repo, no_remote and not_github as separate answers.",
+      "path": "docs/planning/tickets/v3.0.1/T135-github-remote-resolution.md",
+      "status": "todo"
+    },
+    {
+      "id": "T136",
+      "title": "gh pull-request payload parse + tkt/<id> branch join",
+      "track": "github",
+      "milestone": "v3.0.1",
+      "depends_on": [
+        "T131",
+        "T102"
+      ],
+      "provides": "github_adapter/pulls_parse.py - the one declaration of the fields requested from gh, the typed narrowing so no untyped payload exists in the process, and the one declaration of the ticket/branch convention.",
+      "path": "docs/planning/tickets/v3.0.1/T136-github-pulls-parse.md",
+      "status": "todo"
+    },
+    {
+      "id": "T137",
+      "title": "RealGitHubAdapter - gh pr list, degrading honestly",
+      "track": "github",
+      "milestone": "v3.0.1",
+      "depends_on": [
+        "T132",
+        "T133",
+        "T134",
+        "T135",
+        "T136"
+      ],
+      "provides": "The concrete adapter composing account, remote, bounded exec and parse into one gh invocation per project, with every failure mode a named reason and a timeout never reading as an empty list.",
+      "path": "docs/planning/tickets/v3.0.1/T137-real-github-adapter.md",
+      "status": "todo"
+    },
+    {
+      "id": "T138",
+      "title": "GitHubPullService - one entry per manifest ticket, monotone in the source",
+      "track": "github",
+      "milestone": "v3.0.1",
+      "depends_on": [
+        "T132",
+        "T131",
+        "T10",
+        "T89"
+      ],
+      "provides": "services/github_service.py - composes the project-wide read into one entry per manifest ticket, so a source that could not be read yields its reason for every ticket and no_pull_request for none.",
+      "path": "docs/planning/tickets/v3.0.1/T138-github-pull-service.md",
+      "status": "todo"
+    },
+    {
+      "id": "T139",
+      "title": "GET /api/v1/github/pulls + GitHubAdapter DI wiring",
+      "track": "backend",
+      "milestone": "v3.0.1",
+      "depends_on": [
+        "T138",
+        "T137",
+        "T119",
+        "T116",
+        "T20",
+        "T25",
+        "T98",
+        "T102"
+      ],
+      "provides": "The endpoint the SPA consumes - per-ticket PR entries plus a project-level source block, joinable per ticket id against /runs - plus the get_github_adapter seam and create_app/CLI wiring.",
+      "path": "docs/planning/tickets/v3.0.1/T139-github-pulls-endpoint.md",
+      "status": "todo"
+    },
+    {
+      "id": "T140",
+      "title": "PR status client + PrStatusBadge, surfaced on ticket detail",
+      "track": "frontend",
+      "milestone": "v3.0.1",
+      "depends_on": [
+        "T139",
+        "T121",
+        "T31",
+        "T102"
+      ],
+      "provides": "lib/api/pullRequests.ts and a PrStatusBadge rendering a PR state and link or the named reason there is none, fetched client-side and excluded from the SSE invalidation path.",
+      "path": "docs/planning/tickets/v3.0.1/T140-pr-status-client-and-badge.md",
+      "status": "todo"
+    },
+    {
+      "id": "T141",
+      "title": "/runs - one PR answer, with its source named",
+      "track": "frontend",
+      "milestone": "v3.0.1",
+      "depends_on": [
+        "T140",
+        "T83",
+        "T100",
+        "T102"
+      ],
+      "provides": "The existing /runs PR column becomes one answer with a declared precedence - the GitHub source when it carries a pull request, the artifact pr_url labelled as such otherwise - with no second column.",
+      "path": "docs/planning/tickets/v3.0.1/T141-runs-pr-precedence.md",
+      "status": "todo"
+    },
+    {
+      "id": "T142",
+      "title": "Document the GitHubAdapter port, its REST contract and its operator setup",
+      "track": "docs",
+      "milestone": "v3.0.1",
+      "depends_on": [
+        "T139",
+        "T141",
+        "T130",
+        "T19",
+        "T102"
+      ],
+      "provides": "The durable contract for the GitHub read - the port, the reason vocabulary, the account-pin decision and the recorded guard finding, the two-boundary disclosure narrowing, and the /runs precedence rule.",
+      "path": "docs/planning/tickets/v3.0.1/T142-github-docs.md",
+      "status": "todo"
     }
   ]
 }
