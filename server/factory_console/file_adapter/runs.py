@@ -74,11 +74,10 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import stat
 from pathlib import Path
 
 from factory_console.domain.runs import ArtifactRead
+from factory_console.file_adapter.bounded_read import read_bounded
 from factory_console.file_adapter.path_safety import (
     resolve_or_none,
     validate_ticket_id_as_segment,
@@ -323,7 +322,10 @@ def _read_json_artifact(path: Path) -> ArtifactRead:
     in a FIFO reinstated the blocking ``open`` the ``S_ISREG`` gate was written to
     prevent. Opening once and interrogating the DESCRIPTOR closes both: there is only
     one lookup left to race, and ``os.fstat`` cannot describe a different file from
-    the one the bytes come from.
+    the one the bytes come from. That sequence is the shared
+    :func:`~factory_console.file_adapter.bounded_read.read_bounded` — see there for
+    why it has exactly one copy rather than two kept in step by hand with
+    :mod:`~factory_console.file_adapter.ledger`.
 
     KNOWN RESIDUAL, stated so it is not mistaken for closed: the containment check in
     :func:`_safe_artifact_path`/:func:`read_last_stop` still runs against a NAME, and
@@ -339,133 +341,18 @@ def _read_json_artifact(path: Path) -> ArtifactRead:
     descent refuses that case too, so choosing it is a contract decision about which
     project layouts the console supports, not a bug fix — see T89/T90 before making it.
     """
-    try:
-        # ``O_NOFOLLOW`` refuses a symlink swapped in as the final component — the path
-        # was already fully resolved by the caller, so a symlink here is by definition
-        # one that appeared after the containment check and has no legitimate reading.
-        # ``O_NONBLOCK`` makes the open itself total: on a FIFO it returns immediately
-        # instead of blocking forever waiting for a writer, so the node-type check below
-        # gets to run and reject it. Both are absent on some platforms; ``getattr``
-        # degrades to 0 rather than an AttributeError, which is the same
-        # interpreter/platform-drift care ``_resolve_or_none`` takes.
-        flags = (
-            os.O_RDONLY
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_NONBLOCK", 0)
-            | getattr(os, "O_CLOEXEC", 0)
-        )
-        descriptor = os.open(path, flags)
-    except (FileNotFoundError, NotADirectoryError):
+    result = read_bounded(path, max_bytes=MAX_ARTIFACT_BYTES, label="runs")
+    if result.outcome == "not_found":
         # Nothing is there — no file, or a path component that is not a directory,
         # which amounts to the same thing. The ordinary state of a fresh clone, so
         # it is not logged: a project the factory has not run on is not a
         # degradation.
         return ArtifactRead(path=path, reason="absent")
-    except OSError as error:
-        # It may well be there and we could not look: EACCES, EIO, EISDIR (a directory
-        # cannot be opened O_RDONLY), and ELOOP for the swapped-in symlink O_NOFOLLOW
-        # just refused. ``%r`` on the cause, per this package's convention: an
-        # OSError's text carries the offending filename, the log formatter is one
-        # record per line, and an unescaped newline in it would forge a record.
-        _LOGGER.warning("runs: %s could not be opened: %r", path, error)
+    if result.outcome == "unreadable":
         return ArtifactRead(path=path, reason="unreadable")
-    except ValueError:
-        # A path that cannot be encoded (an embedded NUL). ``os.open`` raises this
-        # rather than an ``OSError``, so the clause above does not cover it, and the
-        # NEVER-raises contract is stated without exceptions — the same
-        # ``except ValueError`` the run-state probes carry.
-        _LOGGER.warning("runs: an artifact path could not be encoded; it is not read")
-        return ArtifactRead(path=path, reason="unreadable")
-
-    try:
-        try:
-            info = os.fstat(descriptor)
-        except OSError as error:
-            _LOGGER.warning("runs: %s could not be stat'd: %r", path, error)
-            return ArtifactRead(path=path, reason="unreadable")
-
-        if not stat.S_ISREG(info.st_mode):
-            # Only a REGULAR file is read, and the question is now asked of the OPENED
-            # file, so the answer cannot be invalidated by a later swap. A size is a
-            # bound on a regular file and on nothing else: a FIFO and a character
-            # device both stat as ``st_size == 0``, so each would sail past the cap
-            # below — and ``/dev/zero`` reached this way never sees EOF and would be
-            # read until the process dies. The same rule ``ledger.find_ledger_path``
-            # states with ``is_file()`` and ``run_state.find_run_state_source`` with
-            # ``_is_regular_file``.
-            #
-            # This also settles the DIRECTORY case, and it is the ONLY thing that does,
-            # on every platform this project supports. ``O_RDONLY`` does NOT fail on a
-            # directory: EISDIR is raised for ``O_WRONLY``/``O_RDWR`` only, so the open
-            # above succeeds on Linux and macOS and this check is the load-bearing
-            # refusal, not a backstop for some other gate — do not remove it as
-            # redundant. Before it, a directory reached ``unreadable`` only because
-            # ``read_bytes`` raised ``IsADirectoryError``, which meant a directory whose
-            # ``st_size`` happened to exceed the cap (large directories on ext4/XFS) was
-            # reported ``too_large`` instead — two of the four reasons this module
-            # promises never to conflate.
-            _LOGGER.warning("runs: %s is not a regular file; it is not read", path)
-            return ArtifactRead(path=path, reason="unreadable")
-
-        if info.st_size > MAX_ARTIFACT_BYTES:
-            _LOGGER.warning(
-                "runs: %s is %d bytes, over the %d-byte cap; not read",
-                path,
-                info.st_size,
-                MAX_ARTIFACT_BYTES,
-            )
-            return ArtifactRead(path=path, reason="too_large")
-
-        try:
-            with os.fdopen(descriptor, "rb", closefd=False) as handle:
-                # Bounded at the READ, not merely at the fstat above. That size is
-                # already stale by the time it is acted on — this module's own comments
-                # note the factory rewrites these files while the console is running —
-                # so a file that stats at 18 bytes and is extended to gigabytes before
-                # this line would otherwise be pulled into memory whole, which is the
-                # unbounded read on a request path the cap exists to prevent. Reading
-                # ``MAX + 1`` makes the cap a property of this call: at most one byte
-                # over is ever held, and that byte is what distinguishes "exactly at
-                # the cap" (read) from "over it" (reported).
-                raw = handle.read(MAX_ARTIFACT_BYTES + 1)
-        except OSError as error:
-            # An I/O error on a descriptor that is already open. Note ``absent`` is NOT
-            # reachable here any more and must not be restored: the file is open, so it
-            # cannot vanish mid-read — unlinking it only drops the name, and this
-            # descriptor keeps reading the inode. "It disappeared between the check and
-            # the read" was an artefact of checking by name, and holding the descriptor
-            # is what removed it.
-            _LOGGER.warning("runs: %s could not be read: %r", path, error)
-            return ArtifactRead(path=path, reason="unreadable")
-    finally:
-        # ``closefd=False`` above so this one owner closes the descriptor on every
-        # path, including the early returns that never reach ``fdopen`` at all.
-        #
-        # Guarded, because ``close(2)`` is not infallible: it reports deferred errors
-        # (EIO on NFS and some FUSE mounts) and can fail EBADF/EINTR under a descriptor
-        # race. Raising from a ``finally`` REPLACES the ``ArtifactRead`` the branches
-        # above already computed, so an unguarded close is the one hole in this
-        # function's NEVER-raises contract — and the escaping ``OSError`` is not a
-        # :class:`~factory_console.errors.FactoryConsoleError`, so the edge layer has no
-        # handler for it and it surfaces as an unmapped 500. Swallowing is safe here and
-        # nowhere else: the bytes are already read and the verdict already decided, so a
-        # failed close cannot change the answer, only lose the descriptor.
-        try:
-            os.close(descriptor)
-        except OSError as error:
-            _LOGGER.warning("runs: %s could not be closed: %r", path, error)
-
-    if len(raw) > MAX_ARTIFACT_BYTES:
-        # The file GREW past the cap between the fstat and the read. Reported, never
-        # parsed from the truncated prefix: a short read of a rewritten artifact is
-        # a smaller, wrong record, and ``too_large`` is the same answer the
-        # pre-read check gives for the same file one moment earlier.
-        _LOGGER.warning(
-            "runs: %s grew past the %d-byte cap while being read; not read",
-            path,
-            MAX_ARTIFACT_BYTES,
-        )
+    if result.outcome == "too_large":
         return ArtifactRead(path=path, reason="too_large")
+    raw = result.data
 
     # Decode with replacement rather than strictly, for the same reason the ledger
     # does: a byte-level corruption must not cost more than this one file. Note the
