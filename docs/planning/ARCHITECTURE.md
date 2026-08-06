@@ -276,7 +276,19 @@ authorization answer is shared while the **remedy** differs:
 ### Other factory artefacts (read-only)
 
 Beside the run-state source, the console reads four more factory-owned artefacts. It writes to
-none of them, and it models no field inside them beyond what it has verified.
+none of them, and the reading layer — the file adapter, the domain types, and the wire — models no
+field inside them: an artefact payload is carried as an untyped JSON object all the way to the
+frontend.
+
+One layer above that does depend on two names, and declares it. The Runs view reads `pr_url` and
+`status` out of a lane result to render its PR and Outcome columns. Those names are **unverified** —
+no captured artefact from a real factory run exists in this repo to check them against — so they are
+declared as a bounded, UI-only projection rather than a schema: enumerated once in `PROJECTED_FIELDS`
+(`frontend/src/routes/runs/+page.svelte`), narrowed into the field readers so an undeclared key is a
+compile error, guarded by `frontend/src/routes/runs/projected-fields.test.ts`, and rendered so a miss
+reads as "no PR url / no status under any key this console recognises" rather than as a claim about
+the artefact. Growing that list is a deliberate, reviewable edit in one place; nothing else in the
+stack may read a named field out of an artefact payload.
 
 | Artefact | Path | Read by |
 |---|---|---|
