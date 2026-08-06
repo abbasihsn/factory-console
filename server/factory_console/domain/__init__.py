@@ -10,6 +10,12 @@ from __future__ import annotations
 
 from factory_console.domain.deps import DepNeighborhood, Roadmap
 from factory_console.domain.project import Project
+from factory_console.domain.registry import (
+    REGISTERED_PROJECT_ID_PATTERN,
+    RegisteredProject,
+    RegistryEntry,
+    RegistryEntryCondition,
+)
 from factory_console.domain.run_record import RunRecord
 from factory_console.domain.run_state import RunState
 from factory_console.domain.run_state_source import (
@@ -26,11 +32,15 @@ from factory_console.domain.ticket import (
 )
 
 __all__ = [
+    "REGISTERED_PROJECT_ID_PATTERN",
     "RUN_STATE_SOURCE_LOCATIONS",
     "TICKET_ID_PATTERN",
     "DepNeighborhood",
     "JsonRunState",
     "Project",
+    "RegisteredProject",
+    "RegistryEntry",
+    "RegistryEntryCondition",
     "Roadmap",
     "RunRecord",
     "RunState",
