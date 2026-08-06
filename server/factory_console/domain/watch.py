@@ -2,8 +2,9 @@
 
 A :class:`ChangeEvent` is the payload the ``FileWatcher`` port streams to the
 backend SSE endpoint (``/api/v1/events``, T45): one observed change under the
-watched project, tagged with the ``scope`` (planning docs, factory run-state, or
-the factory spend ledger) that lets the frontend decide what to refresh.
+watched project, tagged with the ``scope`` (planning docs, factory run-state, the
+factory spend ledger, or the per-run artefacts) that lets the frontend decide what
+to refresh.
 
 Security note — ``path`` is ALWAYS project-relative, never absolute. A watcher
 never discloses the host's filesystem layout: the real (watchdog-backed)
@@ -33,11 +34,14 @@ from pydantic import BaseModel, ConfigDict, field_validator
 # ``.factory/run-state.json``. ``ledger`` is the factory's spend ledger,
 # ``.factory/metrics/ledger.jsonl`` (T95) — a factory artefact the console reads
 # (``GET /api/v1/spend``) that is neither planning nor run-state, so folding it into
-# either would tell a subscriber something untrue about which pane went stale. The
-# set grows with the artefacts the watcher observes; see
+# either would tell a subscriber something untrue about which pane went stale.
+# ``runs`` is the per-run artefacts behind ``GET /api/v1/runs`` — a lane result, its
+# receipt, and last stop (T99) — which are likewise read by the console and belong to
+# neither of the earlier scopes: a lane finishing is not a run-state transition and
+# not a planning edit. The set grows with the artefacts the watcher observes; see
 # :data:`~factory_console.domain.watched_artifacts.WATCHED_JSON_ARTIFACTS`.
 ChangeKind = Literal["created", "modified", "deleted", "moved"]
-ChangeScope = Literal["planning", "run-state", "ledger"]
+ChangeScope = Literal["planning", "run-state", "ledger", "runs"]
 
 
 class ChangeEvent(BaseModel):
@@ -45,8 +49,8 @@ class ChangeEvent(BaseModel):
 
     ``kind`` is the change verb; ``path`` is the project-relative path that
     changed (never absolute — see the module security note); ``scope`` names what
-    changed (``planning`` docs, factory ``run-state``, or the spend ``ledger``);
-    ``at`` is when
+    changed (``planning`` docs, factory ``run-state``, the spend ``ledger``, or the
+    per-run ``runs`` artefacts); ``at`` is when
     the change was observed. Frozen and ``extra='forbid'`` like the other domain
     models, and JSON-serializable so it round-trips through ``model_dump_json``
     for the SSE wire.

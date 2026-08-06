@@ -5,24 +5,31 @@ This is the concrete realization of the deliberate MVP "no watcher" extension
 flagged in the :mod:`~factory_console.file_adapter.watcher` port (T39): a single,
 opt-in, single-process, read-only component that observes what the console cares
 about — planning docs under ``docs/planning/**``, factory lane markers under
-``.factory/run-state/**``, and a small SET of factory FILE artefacts (today
-``.factory/run-state.json`` and the spend ledger ``.factory/metrics/ledger.jsonl``)
-— and streams project-relative :class:`ChangeEvent`s to per-client subscribers so
-the backend SSE endpoint can drive the SPA's live refresh.
+``.factory/run-state/**``, and a small SET of factory JSON artefacts (today
+``.factory/run-state.json``, the spend ledger ``.factory/metrics/ledger.jsonl``, and
+the ``/runs`` sources: the ``.factory/results/`` and ``.factory/receipts/``
+directories plus ``.factory/last-stop.json``) — and streams project-relative
+:class:`ChangeEvent`s to per-client subscribers so the backend SSE endpoint can drive
+the SPA's live refresh.
 
 That set is NOT enumerated here. It is
 :data:`~factory_console.domain.watched_artifacts.WATCHED_JSON_ARTIFACTS`, the one
 list the readers take their path constants from as well, so an artefact the console
 learns to read cannot be one the watcher never learns to schedule — the omission
-that left run-state unwatched (T91) and then the ledger unwatched (T95).
+that left run-state unwatched (T91), then the ledger (T95), then results, receipts
+and last stop (T99).
 
-Each file artefact is watched by scheduling its PARENT directory non-recursively and
-filtering events down to that one filename. Two reasons it cannot be watched
-directly: watchdog schedules directories, and the factory replaces these files via
-``mktemp`` + ``mv`` (INV-03), so anything bound to a file's inode would go quiet
-after the first update. A parent watch is a means to observe ONE file — every
-other entry under it is dropped in the handler, so scope does not widen to the
-rest of ``.factory``.
+Both of that list's shapes are reached through a NON-RECURSIVE directory watch, and
+which directory is what the entry's
+:data:`~factory_console.domain.watched_artifacts.ArtifactKind` decides. A ``"file"``
+artefact is watched by scheduling its PARENT and filtering events down to that one
+filename; a ``"dir"`` artefact (results, receipts — a lane's file lands at a
+``<ticket_id>.json`` no constant can spell in advance) by scheduling that directory
+ITSELF and taking any file directly inside it. Neither is watched as a file: watchdog
+schedules directories, and the factory replaces these via ``mktemp`` + ``mv``
+(INV-03), so anything bound to an inode would go quiet after the first update. Each
+such watch is a means to observe exactly its artefact — everything else under it is
+dropped in the handler, so scope does not widen to the rest of ``.factory``.
 
 Design (all three properties are load-bearing):
 
@@ -92,7 +99,21 @@ _RUN_STATE_PREFIXES = tuple(loc.as_posix() for loc in RUN_STATE_RELATIVE_LOCATIO
 # changed, not which on-disk form stored it, and a subscriber must not be able to tell
 # the two apart.
 _WATCHED_JSON_SCOPES: dict[str, ChangeScope] = {
-    relative.as_posix(): scope for scope, relative in WATCHED_JSON_ARTIFACTS
+    relative.as_posix(): scope for scope, relative, kind in WATCHED_JSON_ARTIFACTS if kind == "file"
+}
+
+# The factory ARTEFACT DIRECTORIES, as project-relative POSIX directory ->
+# ``ChangeScope``: any FILE whose immediate parent is one of these is that artefact
+# (T99). Derived from the same single list, and disjoint from the map above by
+# construction — an entry declares one ``ArtifactKind``, so a path is matched either
+# by its own name or by its parent's, never by both.
+#
+# A directory match is the only way to express ``.factory/results/<ticket_id>.json``,
+# where the FILENAME is a lane's ticket id and no constant can hold it. Matching on
+# the parent instead is exactly as narrow: the watch is non-recursive, so the only
+# events that reach it are the directory's own direct children.
+_WATCHED_JSON_DIR_SCOPES: dict[str, ChangeScope] = {
+    relative.as_posix(): scope for scope, relative, kind in WATCHED_JSON_ARTIFACTS if kind == "dir"
 }
 
 
@@ -136,17 +157,39 @@ class _ChangeEventHandler(FileSystemEventHandler):
             return
         file_scope = _WATCHED_JSON_SCOPES.get(rel_path)
         if file_scope is not None and not event.is_directory:
-            # A watched FILE artefact (T91 for run-state, T95 for the ledger),
-            # dispatched under the scope the shared list pairs it with. Checked
-            # BEFORE the prefix rule below, which cannot match either of them:
-            # ``.factory/run-state.json`` is a sibling of ``.factory/run-state``,
-            # not a path under it, and the ledger is under neither.
+            # A watched FILE artefact (T91 for run-state, T95 for the ledger, T99
+            # for last stop), dispatched under the scope the shared list pairs it
+            # with. Checked BEFORE the prefix rule below, which cannot match any of
+            # them: ``.factory/run-state.json`` is a sibling of
+            # ``.factory/run-state``, not a path under it, and the others are under
+            # neither.
             self._watcher._dispatch_from_thread(kind, file_scope, rel_path)
             return
-        if Path(rel_path).parent.as_posix() in self._watcher._json_only_roots:
-            # This root is scheduled ONLY to see a file artefact above, and this
-            # event is not it. Dropping everything else here is what keeps the
-            # watch from widening to the rest of ``.factory``.
+        parent = Path(rel_path).parent.as_posix()
+        dir_scope = _WATCHED_JSON_DIR_SCOPES.get(parent)
+        if dir_scope is not None and not event.is_directory:
+            # A file directly inside a watched artefact DIRECTORY — one lane's
+            # result or receipt, whose filename is a ticket id (T99). The scope
+            # comes from the directory the shared list declared, so a new lane's
+            # artefact is matched the moment it appears, under no fixed name.
+            # Ordered after the exact-path check so a file artefact declared inside
+            # a watched directory would keep its OWN scope; the two maps are
+            # disjoint today, so this order is a statement of precedence rather
+            # than a live case.
+            self._watcher._dispatch_from_thread(kind, dir_scope, rel_path)
+            return
+        if parent in self._watcher._json_only_roots:
+            # A NAMED drop, not a silent one (T99, criterion 2). This root is
+            # scheduled ONLY to observe the artefact(s) the two maps above declare,
+            # and this event matched neither, so it is one of exactly two things:
+            # an unrelated neighbour under a watched parent (another file in
+            # ``.factory``), or a DIRECTORY event where only files carry artefact
+            # signal — a subdirectory appearing under ``.factory/results``, or the
+            # watched directory's own create/delete reaching its parent's watch.
+            # Both are noise for the artefact this root exists to see, and dropping
+            # them is what keeps the watch from widening to the rest of
+            # ``.factory`` — falling through would tag them ``planning`` and
+            # refresh a pane nothing changed in.
             return
         scope: ChangeScope = (
             "run-state"
@@ -171,12 +214,12 @@ class _ChangeEventHandler(FileSystemEventHandler):
 class RealFileWatcher:
     """Production ``FileWatcher``: a watchdog ``Observer`` over what the console observes.
 
-    That is the two planning/run-state SUBTREES plus the FILE artefacts of
+    That is the two planning/run-state SUBTREES plus the JSON artefacts of
     :data:`~factory_console.domain.watched_artifacts.WATCHED_JSON_ARTIFACTS` — see
-    the module docstring for why a file is reached through a non-recursive watch on
-    its parent. The set is deliberately not restated here or there: a list kept in two
-    places is what let the JSON run-state source go unwatched (T91), and then the
-    spend ledger (T95).
+    the module docstring for which non-recursive directory each of that list's two
+    kinds is reached through. The set is deliberately not restated here or there: a
+    list kept in two places is what let the JSON run-state source go unwatched (T91),
+    then the spend ledger (T95), then the ``/runs`` artefacts (T99).
 
     Opt-in, single-process, and read-only — constructed and :meth:`start`-ed only
     when the backend enables live updates. Satisfies the ``FileWatcher`` Protocol
@@ -195,11 +238,13 @@ class RealFileWatcher:
         self._project_root = Path(project_root).resolve()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._observer: Observer | None = None
-        # Project-relative POSIX directories scheduled ONLY to observe a watched file
-        # artefact inside them (``.factory`` for ``.factory/run-state.json``,
-        # ``.factory/metrics`` for the spend ledger). Filled by start(); the handler
-        # drops every event under one of these that is not a watched file itself, so
-        # a parent watch never widens scope. A parent that is ALREADY covered by a
+        # Project-relative POSIX directories scheduled ONLY to observe watched JSON
+        # artefacts — a parent holding a named file (``.factory`` for
+        # ``run-state.json`` and ``last-stop.json``, ``.factory/metrics`` for the
+        # spend ledger), or an artefact directory watched for its own contents
+        # (``.factory/results``, ``.factory/receipts``). Filled by start(); the
+        # handler drops every event under one of these that is not a watched artefact
+        # itself, so such a watch never widens scope. A directory ALREADY covered by a
         # substantive watch is absent here — its other entries keep whatever meaning
         # that watch gives them.
         self._json_only_roots: frozenset[str] = frozenset()
@@ -225,10 +270,12 @@ class RealFileWatcher:
         Called from the backend's async lifespan, so it captures the running loop
         here (there is no running loop on the watchdog thread later). Schedules a
         recursive handler on each of ``docs/planning`` and ``.factory/run-state``
-        that exists on disk, plus a NON-recursive one on the parent of each watched
-        file artefact (``.factory`` for ``run-state.json``, ``.factory/metrics`` for
-        the ledger) whose events the handler filters down to that file. Missing roots
-        are skipped.
+        that exists on disk, plus a NON-recursive one per watched JSON artefact —
+        on the PARENT of a ``"file"`` artefact (``.factory`` for ``run-state.json``
+        and ``last-stop.json``, ``.factory/metrics`` for the ledger) and on a
+        ``"dir"`` artefact ITSELF (``.factory/results``, ``.factory/receipts``) —
+        whose events the handler filters down to that artefact. Missing roots are
+        skipped.
         """
         if self._observer is not None:
             return
@@ -250,44 +297,58 @@ class RealFileWatcher:
                 candidate.relative_to(planning_root)
             except ValueError:
                 roots.append(candidate)
-        # Recursive roots first, then the file artefacts' parents — so an already
+        # Recursive roots first, then the JSON artefacts' directories — so an already
         # listed root WINS. Scheduling one physical path twice would report every
-        # event under it twice, and a parent already covered by a recursive watch
-        # needs no watch of its own; being watched for more than the one file, it
+        # event under it twice, and a directory already covered by a recursive watch
+        # needs no watch of its own; being watched for more than its artefact, it
         # is also not a json-only root, so the handler leaves its other entries
-        # alone. Only these parents are scheduled non-recursively: they exist to
-        # see ONE file, and recursing would drag all of ``.factory`` in for no gain.
+        # alone. Only these are scheduled non-recursively: they exist to see ONE
+        # artefact, and recursing would drag all of ``.factory`` in for no gain —
+        # including, for the results and receipts directories, whatever a lane may
+        # one day nest inside them, which is not the per-ticket file ``/runs`` reads.
         #
         # "Already covered" therefore has to consult the RECURSION FLAG, not just
         # containment: only a RECURSIVE root observes its descendants. A
         # non-recursive root covers the path itself and nothing below it, so it
-        # discharges a later JSON parent only when it IS that parent — hence the
-        # explicit ``root == parent``, which containment alone would also satisfy
+        # discharges a later JSON directory only when it IS that directory — hence
+        # the explicit ``root == target``, which containment alone would also satisfy
         # (``Path.is_relative_to`` is true of a path against itself) but which must
         # not be reached THROUGH the descendant branch. Treating a non-recursive
-        # root as covering its descendants would skip a nested JSON parent as
+        # root as covering its descendants would skip a nested JSON directory as
         # "already watched" by a watch that cannot see into it, and skip it out of
         # ``json_only_roots`` too — an artefact scheduled nowhere and filtered
         # nowhere, which is silently no live updates: precisely the failure T91
         # exists to fix, reintroduced one directory deeper. That case is no longer
         # hypothetical since T95: the ledger's parent ``.factory/metrics`` sits
         # exactly one level under ``.factory``, the non-recursive parent of
-        # ``run-state.json``, so this is the branch that keeps the ledger watched.
+        # ``run-state.json``, so this is the branch that keeps the ledger watched —
+        # and since T99 it carries ``.factory/results`` and ``.factory/receipts``,
+        # which sit at that same depth, twice more.
         #
         # The loop iterates the SHARED artefact list rather than a run-state-only
-        # one; only each entry's PATH matters here, since scheduling a parent says
-        # nothing about what a change there means — the handler's scope map owns that.
+        # one; only each entry's PATH and KIND matter here, since scheduling a
+        # directory says nothing about what a change there means — the handler's
+        # scope maps own that.
         scheduled: list[tuple[Path, bool]] = [(root, True) for root in roots]
         json_only_roots: set[str] = set()
-        for _scope, relative in WATCHED_JSON_ARTIFACTS:
-            parent = self._project_root / relative.parent
+        for _scope, relative, kind in WATCHED_JSON_ARTIFACTS:
+            # WHICH directory to watch is the entry's kind, and nothing else: a
+            # ``"file"`` artefact is seen from its PARENT, a ``"dir"`` artefact
+            # (results, receipts) from ITSELF — its files are named after ticket
+            # ids, so its parent would be one level too high to filter by name and
+            # the directory is what the handler matches on instead. Everything
+            # after this line is identical for the two, which is the point of
+            # putting the discriminator on the shared list rather than branching
+            # into a second scheduling path.
+            watched_dir = relative.parent if kind == "file" else relative
+            target = self._project_root / watched_dir
             if any(
-                root == parent or (recursive and parent.is_relative_to(root))
+                root == target or (recursive and target.is_relative_to(root))
                 for root, recursive in scheduled
             ):
                 continue
-            scheduled.append((parent, False))
-            json_only_roots.add(relative.parent.as_posix())
+            scheduled.append((target, False))
+            json_only_roots.add(watched_dir.as_posix())
         self._json_only_roots = frozenset(json_only_roots)
         for root, recursive in scheduled:
             if root.is_dir():
