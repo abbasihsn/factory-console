@@ -52,13 +52,18 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from factory_console.domain.ledger import LedgerEntry, LedgerRead, SkippedLine, SkipReason
+from factory_console.domain.watched_artifacts import LEDGER_RELATIVE_PATH
 from factory_console.file_adapter.path_safety import ABSENT_ERRNOS, resolve_or_none, within_root
 
 _LOGGER = logging.getLogger(__name__)
 
-# The ledger's project-relative location. Single source of truth for WHERE the
-# ledger lives; :func:`find_ledger_path` probes exactly this under a root.
-LEDGER_RELATIVE_PATH = Path(".factory") / "metrics" / "ledger.jsonl"
+# The ledger's project-relative location — IMPORTED, and re-exported here because
+# ``api/v1/spend.py`` and the tests take it from this module as part of the reader's
+# surface. It is defined in :mod:`~factory_console.domain.watched_artifacts`, beside
+# the run-state file locations, because the WATCHER needs the same literal: this
+# reader's path and the watcher's schedule being two independent literals is exactly
+# how the ledger came to be read on every ``/spend`` request and observed by nobody
+# (T95). One list, so the next artefact cannot repeat it.
 
 # Hard cap on the bytes this reader will pull into memory. The ledger is appended
 # to forever by a process the console does not control, so "read the whole file"
