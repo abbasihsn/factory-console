@@ -91,6 +91,7 @@ _REDACTIONS: tuple[re.Pattern[str], ...] = (
 )
 _REDACTED = '"session_id":"<redacted>"'
 
+
 class LedgerNotContained(OSError):
     """The ledger resolved OUTSIDE the project root, so this console will not read it.
 
