@@ -19,6 +19,8 @@ from fastapi.testclient import TestClient
 from factory_console.app import create_app
 from factory_console.domain import Project, RunState, Ticket
 from factory_console.file_adapter import FakeFileAdapter
+from factory_console.services.project_selection import SelectionState
+from factory_console.store.fake_registry import FakeProjectRegistry
 
 _FAKE_PROJECT = Project(
     rootPath=Path("/factory/demo-project"),
@@ -54,7 +56,11 @@ def _tickets() -> list[Ticket]:
     ]
 
 
-def _fake_app() -> FastAPI:
+def _fake_app(
+    *,
+    project_root: Path = Path("/factory/demo-project"),
+    registry: FakeProjectRegistry | None = None,
+) -> FastAPI:
     """Build the real app over a FakeFileAdapter seeded with the dependency web."""
     adapter = FakeFileAdapter(
         project=_FAKE_PROJECT,
@@ -66,7 +72,12 @@ def _fake_app() -> FastAPI:
             "T-131": RunState.unknown,
         },
     )
-    return create_app(adapter, version="0.0.0", project_root=Path("/factory/demo-project"))
+    return create_app(
+        adapter,
+        version="0.0.0",
+        project_root=project_root,
+        project_registry=registry,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -109,6 +120,39 @@ def test_graph_omits_edges_to_unknown_nodes() -> None:
         assert edge["source"] in known_ids
         assert edge["target"] in known_ids
     assert "T-999-missing" not in known_ids
+
+
+# --------------------------------------------------------------------------- #
+# Resolution through the v3.0 selection seam (T116)
+# --------------------------------------------------------------------------- #
+
+
+def test_graph_refuses_with_409_when_nothing_is_selected() -> None:
+    # No selection means no ticket web to draw. A 200 with an empty graph would read
+    # as a measurement of a project ("this one has no tickets") rather than as the
+    # console having nothing to measure.
+    app = _fake_app()
+    app.state.selection = SelectionState(pinned_root=None, registry=None)
+
+    resp = TestClient(app).get("/api/v1/graph")
+
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "no_project_selected"
+
+
+def test_graph_refuses_with_409_when_the_selected_path_is_gone(tmp_path: Path) -> None:
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    registry = FakeProjectRegistry()
+    row = registry.add_project(gone)
+    app = _fake_app(project_root=tmp_path / "pinned", registry=registry)
+    app.state.selection.select(row.id)
+    gone.rmdir()
+
+    resp = TestClient(app).get("/api/v1/graph")
+
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "selected_project_unavailable"
 
 
 # --------------------------------------------------------------------------- #

@@ -92,14 +92,22 @@ class NoProjectSelected(FactoryConsoleError):
     hunting for a URL that was never wrong. ``details`` carries the
     :data:`SelectionFailure` member so a client branches on the machine-readable
     reason instead of matching on prose.
+
+    Attributes:
+        reason: The same :data:`SelectionFailure` member, typed, for the one caller
+            that reports this condition instead of raising it —
+            :mod:`factory_console.api.v1.health`, which answers ``200`` with a named
+            ``selectionReason`` and must not dig it back out of an untyped
+            ``details`` mapping.
     """
 
     def __init__(self) -> None:
+        self.reason: SelectionFailure = "no_selection"
         super().__init__(
             code="no_project_selected",
             message="No project is selected; select one to view it.",
             status=409,
-            details={"reason": "no_selection"},
+            details={"reason": self.reason},
         )
 
 
@@ -115,14 +123,22 @@ class SelectedProjectNotRegistered(FactoryConsoleError):
     Deliberately NOT a fallback to the pinned root or to another project. Falling
     back would answer a question about the project the user selected with a
     different project's data, under the selected project's name.
+
+    Attributes:
+        project_id: The selected id that no row answers to.
+        reason: The :data:`SelectionFailure` member this error names, typed — see
+            :class:`NoProjectSelected` for why both attributes exist beside
+            ``details``.
     """
 
     def __init__(self, project_id: str) -> None:
+        self.project_id = project_id
+        self.reason: SelectionFailure = "selected_project_not_registered"
         super().__init__(
             code="selected_project_not_registered",
             message=f"The selected project {project_id} is no longer registered.",
             status=409,
-            details={"reason": "selected_project_not_registered", "projectId": project_id},
+            details={"reason": self.reason, "projectId": project_id},
         )
 
 
@@ -140,9 +156,19 @@ class SelectedProjectUnavailable(FactoryConsoleError):
     there" about a directory it merely declined to look at — the same distinction
     :func:`~factory_console.file_adapter.project_condition.classify_project_path`
     refuses to blur. ``details`` repeats the reason machine-readably.
+
+    Attributes:
+        path: The selected project's path, which is known even though it cannot be
+            read — ``/health`` still reports it, so an operator sees WHICH directory
+            to go and look at.
+        reason: The :data:`SelectionFailure` member this error names, typed — see
+            :class:`NoProjectSelected` for why both attributes exist beside
+            ``details``.
     """
 
     def __init__(self, path: Path, failure: SelectionFailure) -> None:
+        self.path = path
+        self.reason: SelectionFailure = failure
         what = "is missing" if failure == "selected_project_missing" else "could not be read"
         super().__init__(
             code="selected_project_unavailable",
