@@ -20,12 +20,14 @@ export interface paths {
         };
         /**
          * Get Project
-         * @description Return the discovered target :class:`Project` for the running console.
+         * @description Return the SELECTED target :class:`Project` for the running console.
          *
-         *     Reads the discovered root from ``request.app.state.project_root`` — a ``Path``
-         *     ``create_app`` requires at boot — and returns ``adapter.load_project(root)``.
-         *     Raises nothing itself: a ``ProjectNotFound`` from the adapter propagates to the
-         *     registered domain-error handler, which maps it to the 404 envelope.
+         *     ``root`` is resolved per request by
+         *     :func:`~factory_console.api.deps.get_current_project_root`, so the project
+         *     described is whichever one is currently selected. Raises nothing itself: a
+         *     ``ProjectNotFound`` from the adapter maps to the 404 envelope and a selection
+         *     failure to its ``409`` — both through the registered domain-error handler, so
+         *     there is no error handling in this endpoint.
          */
         readonly get: operations["get_project_api_v1_project_get"];
         readonly put?: never;
@@ -47,9 +49,9 @@ export interface paths {
          * List Tickets
          * @description Return the ticket summaries matching the ``status``/``track``/``milestone``/``q`` filters.
          *
-         *     Loads the discovered project from ``request.app.state.project_root`` and
-         *     delegates filtering to :class:`TicketService`; ``total`` is the number of
-         *     matching items (there is no pagination in the MVP).
+         *     Loads the SELECTED project at the per-request ``root`` and delegates filtering
+         *     to :class:`TicketService`; ``total`` is the number of matching items (there is
+         *     no pagination in the MVP). Both blocking calls are awaited off the event loop.
          */
         readonly get: operations["list_tickets_api_v1_tickets_get"];
         readonly put?: never;
@@ -86,9 +88,10 @@ export interface paths {
          *
          *     ``ticket_id`` is validated at the ``Path`` boundary against the shared
          *     :data:`TICKET_ID_PATTERN` (an invalid id becomes the ``invalid_ticket_id``
-         *     400 envelope and never reaches the adapter). Loads the discovered project and
-         *     delegates to :class:`TicketService`, whose ``TicketNotFound`` propagates to the
-         *     domain-error handler as a 404 for an id absent from the manifest.
+         *     400 envelope and never reaches the adapter). Loads the SELECTED project at the
+         *     per-request ``root`` and delegates to :class:`TicketService`, whose
+         *     ``TicketNotFound`` propagates to the domain-error handler as a 404 for an id
+         *     absent from the manifest. Both blocking calls are awaited off the event loop.
          */
         readonly get: operations["get_ticket_api_v1_tickets__ticket_id__get"];
         /**
@@ -132,9 +135,10 @@ export interface paths {
          *
          *     ``ticket_id`` is validated at the ``Path`` boundary against the shared
          *     :data:`TICKET_ID_PATTERN` (an invalid id becomes the ``invalid_ticket_id``
-         *     400 envelope and never reaches the adapter). Loads the discovered project and
-         *     delegates to :class:`DepsService`, whose ``TicketNotFound`` propagates to the
-         *     domain-error handler as a 404 for an id absent from the manifest.
+         *     400 envelope and never reaches the adapter). Loads the SELECTED project at the
+         *     per-request ``root`` and delegates to :class:`DepsService`, whose
+         *     ``TicketNotFound`` propagates to the domain-error handler as a 404 for an id
+         *     absent from the manifest. Both blocking calls are awaited off the event loop.
          */
         readonly get: operations["get_ticket_deps_api_v1_tickets__ticket_id__deps_get"];
         readonly put?: never;
@@ -154,13 +158,14 @@ export interface paths {
         };
         /**
          * Get Health
-         * @description Return the liveness probe with the resolved ``projectRoot`` from ``app.state``.
+         * @description Return the liveness probe plus what the console currently has selected.
          *
-         *     Reads ``version`` and ``project_root`` that ``create_app`` stashed on
-         *     ``app.state`` at boot and trusts them: ``create_app`` binds a non-optional
-         *     ``project_root`` (the CLI always discovers a root; tests always pass a fixture
-         *     root), so — like its sibling handlers and the ``version`` read beside it — this
-         *     reads the root directly and lets Pydantic serialize the ``Path`` to a string.
+         *     ``version`` is read from ``app.state``, where ``create_app`` stashed it at boot.
+         *     The three selection fields come from :func:`_resolve_selection`, which resolves
+         *     through the same seam every other endpoint uses but reports its failures instead
+         *     of raising them — so this route answers ``200`` whether a project is selected, is
+         *     selected and gone, or was never selected at all. It is the only project-scoped
+         *     route with no 409 and no 503, by design; see the module docstring.
          */
         readonly get: operations["get_health_api_v1_health_get"];
         readonly put?: never;
@@ -180,15 +185,16 @@ export interface paths {
         };
         /**
          * Get Roadmap
-         * @description Return the project's full :class:`Roadmap`, or :class:`RoadmapAbsent`.
+         * @description Return the SELECTED project's full :class:`Roadmap`, or :class:`RoadmapAbsent`.
          *
-         *     Loads the discovered project from ``request.app.state.project_root`` and calls
+         *     Loads the project at the per-request ``root`` and calls
          *     ``adapter.get_roadmap(project)``, returning the full :class:`Roadmap` — its
          *     ``bodyMarkdown``, ``bodyHtml``, and structured ``milestones[]`` — when the
          *     project has one, else :class:`RoadmapAbsent`. Does no error handling of its
-         *     own: a ``ProjectNotFound`` from ``load_project`` or a ``RoadmapUnreadable``
-         *     (500) from ``adapter.get_roadmap`` propagates to the registered domain-error
-         *     handler, which renders the mapped envelope.
+         *     own: a ``ProjectNotFound`` from ``load_project``, a ``RoadmapUnreadable``
+         *     (500) from ``adapter.get_roadmap``, and the selection seam's ``409``s all
+         *     propagate to the registered domain-error handler, which renders the mapped
+         *     envelope.
          */
         readonly get: operations["get_roadmap_api_v1_roadmap_get"];
         readonly put?: never;
@@ -214,9 +220,9 @@ export interface paths {
          *     (``{items: [], total: 0}``) rather than a validation error. ``limit`` bounds
          *     the number of hits to ``ge=1``/``le=200`` (default 50) — an out-of-range value
          *     is rejected at the ``Query`` boundary as the ``validation_error`` 422 envelope
-         *     and never reaches the service. Loads the discovered project from
-         *     ``request.app.state.project_root`` and delegates ranking to
-         *     :class:`SearchService`; ``total`` is the number of returned items.
+         *     and never reaches the service. Loads the SELECTED project at the per-request
+         *     ``root`` and delegates ranking to :class:`SearchService`; ``total`` is the
+         *     number of returned items. Both blocking calls are awaited off the event loop.
          */
         readonly get: operations["search_api_v1_search_get"];
         readonly put?: never;
@@ -236,14 +242,17 @@ export interface paths {
         };
         /**
          * Get Graph
-         * @description Return the whole-project dependency :class:`TicketGraph`.
+         * @description Return the SELECTED project's whole-project dependency :class:`TicketGraph`.
          *
-         *     Reads the discovered root from ``request.app.state.project_root`` — a ``Path``
-         *     ``create_app`` requires at boot — loads the target project, and returns the
-         *     graph resolved by :class:`GraphService`. Returns the ``TicketGraph`` domain
-         *     model directly so OpenAPI publishes its nodes+edges shape. Raises nothing
-         *     itself: a ``ProjectNotFound`` from the adapter propagates to the registered
-         *     domain-error handler, which maps it to the 404 envelope.
+         *     ``root`` is resolved per request by
+         *     :func:`~factory_console.api.deps.get_current_project_root`; the project is then
+         *     loaded and handed to :class:`GraphService`. Returns the ``TicketGraph`` domain
+         *     model directly so OpenAPI publishes its nodes+edges shape. Raises nothing itself:
+         *     a ``ProjectNotFound`` from the adapter maps to the 404 envelope and a selection
+         *     failure to its ``409``, both through the registered domain-error handler.
+         *
+         *     ``functools.partial`` binds the arguments for both offloads because ``run_sync``
+         *     passes positionals only and takes no keywords.
          */
         readonly get: operations["get_graph_api_v1_graph_get"];
         readonly put?: never;
@@ -268,10 +277,27 @@ export interface paths {
          *     Delegates the entire stream body to
          *     :func:`~factory_console.services.events_service.sse_event_stream`, which yields
          *     the initial ``ready`` frame, an ``event: change`` frame per file change while
-         *     the injected ``watcher`` is present, and periodic ``: keepalive`` comments,
+         *     the resolved ``watcher`` is present, and periodic ``: keepalive`` comments,
          *     releasing the watcher subscription when the client disconnects. The
          *     ``no-cache`` / ``X-Accel-Buffering: no`` headers keep the long-lived stream
          *     un-cached and un-buffered by any intermediary.
+         *
+         *     ``generation`` is read FIRST, then ``watcher`` — both off the same ``supervisor``,
+         *     sequentially in this body, never as two separate ``Depends`` (see the module
+         *     docstring for why the order and the single source matter). ``watcher`` is whichever
+         *     was live at that instant and is not re-resolved afterwards: a stream is bound to the
+         *     project selected at connect (see the module docstring for why). What the stream
+         *     re-reads instead is ``supervisor.generation()``, compared on each heartbeat tick
+         *     against the value captured here: once it moves, this connection's watcher has been
+         *     replaced, so the stream emits a terminal ``event: stale`` frame and ends rather than
+         *     heartbeating on a stopped watcher forever. The comparison is a pure integer read with
+         *     no I/O, so the route stays non-blocking.
+         *
+         *     ``supervisor`` is typed non-optional because ``create_app`` ALWAYS binds one —
+         *     a watcher-less app is a supervisor holding nothing, not an absent supervisor —
+         *     so ``get_watcher_supervisor`` raises rather than degrading, exactly like the
+         *     other wiring-bug dependencies. That raise is unreachable in a real app and
+         *     changes no client-visible behaviour here.
          */
         readonly get: operations["events_api_v1_events_get"];
         readonly put?: never;
@@ -291,16 +317,17 @@ export interface paths {
         };
         /**
          * Get Spend
-         * @description Return the project's aggregated spend, or an explicit "no ledger" body.
+         * @description Return the SELECTED project's aggregated spend, or an explicit "no ledger" body.
          *
-         *     Reads the discovered root from ``request.app.state.project_root`` — a ``Path``
-         *     ``create_app`` requires at boot. With no ledger the response is
+         *     Reads the ledger off the per-request ``root``. With no ledger the response is
          *     ``source.found: false`` over zeroed totals; with one, it is the aggregate of
          *     every entry that parsed, plus the line numbers and reasons of those that did
          *     not. A ledger that exists but could not be read at all is the third case, and
          *     says so with ``source.read: false`` rather than passing its zeroed totals off
          *     as a measurement. The ledger's ``excerpt`` and ``session_id`` are projected
-         *     nowhere.
+         *     nowhere. The probe, the read, and the aggregation over what it returned all run
+         *     together in one ``anyio.to_thread.run_sync`` hop, awaited off the event loop —
+         *     see :func:`_load_spend`.
          */
         readonly get: operations["get_spend_api_v1_spend_get"];
         readonly put?: never;
@@ -322,7 +349,7 @@ export interface paths {
          * List Runs
          * @description Return one :class:`ProjectedRunRecord` per manifest ticket, in manifest order.
          *
-         *     Loads the discovered project from ``request.app.state.project_root`` and delegates
+         *     Loads the SELECTED project at the per-request ``root`` and delegates
          *     the whole composition to :class:`RunService` over the injected
          *     :class:`FileAdapter` and :class:`RunArtifactReader`. Both calls are synchronous and
          *     hit the disk, so both are awaited through ``anyio.to_thread.run_sync`` — the
@@ -356,10 +383,258 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/api/v1/projects": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * List Projects
+         * @description Return every project the switcher offers, session row first, with its condition.
+         *
+         *     Delegates the whole composition to :func:`_list_rows` inside a SINGLE
+         *     ``anyio.to_thread.run_sync`` hop — the selection read, the ``sqlite3`` query and the
+         *     per-row ``stat``s together, never one hop per row. ``functools.partial`` binds the
+         *     arguments because ``run_sync`` passes positionals only.
+         *
+         *     This route never fails over the selection: with nothing selected, every row simply
+         *     reports ``selected: false``. That is the point of it — the listing is what a user
+         *     browses in order to choose, so raising the 409s
+         *     :func:`~factory_console.api.deps.get_current_project_root` raises would deny them the
+         *     screen that fixes the condition. A :class:`RegistryUnreadable` from the store still
+         *     propagates as its 503 through ``_read_registry``, which is the honest answer when the
+         *     console cannot read its own table at all.
+         *
+         *     The condition probe is instantiated here rather than injected through ``app.state``.
+         *     :class:`~factory_console.file_adapter.project_condition.RealProjectConditionProbe` is
+         *     stateless, takes no arguments and caches nothing, and no DI seam for it exists yet;
+         *     inventing one for a single call site would add app wiring this contract does not
+         *     need. Tests reach the seam by overriding these dependencies or by pointing real
+         *     ``tmp_path`` directories at the real probe, which is the more faithful test anyway.
+         */
+        readonly get: operations["list_projects_api_v1_projects_get"];
+        readonly put?: never;
+        /**
+         * Add Project
+         * @description Register ``payload.path`` and return the switcher row it becomes.
+         *
+         *     ``201`` with the created row rather than a bodiless ``201 + Location``: the SPA
+         *     inserts the new row into an already-rendered dropdown, and the row carries three
+         *     facts only the server holds (the minted id, the ``addedAt`` stamp and the probed
+         *     ``condition``), so a client that got a URL back would immediately have to GET it.
+         *
+         *     **NOT idempotent, by design.** A second POST of the same directory is
+         *     ``409 duplicate_project_path`` carrying the existing row's id, never a silent
+         *     no-op — so the SPA can say "you already track this" and offer to switch to it,
+         *     which a 200-with-the-old-row could not be distinguished from a fresh add.
+         *
+         *     Adding does NOT select. Registration and selection are separate acts, and conflating
+         *     them would yank the board out from under an operator adding a second project while
+         *     reading the first; the returned row therefore always reports ``selected: false``.
+         *
+         *     The whole body — canonicalise, discover, insert, probe — runs in ONE
+         *     ``anyio.to_thread.run_sync`` hop, plain rather than through
+         *     :func:`~factory_console.api.deps._read_registry` (see :func:`_register_project` for
+         *     the order, the errors it lets through, and why only its ``registry.add_project`` step
+         *     is wrapped in that 503 mapping rather than the whole hop).
+         *
+         *     Note that discovery WALKS UP from the given path, so registering a subdirectory of
+         *     an App Factory project passes validation — and the row records the DISCOVERED root,
+         *     not the subdirectory the caller typed, so two different spellings of one project
+         *     resolve to the one row the ``UNIQUE`` index is meant to guarantee, instead of each
+         *     inserting its own.
+         */
+        readonly post: operations["add_project_api_v1_projects_post"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/v1/projects/current": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Get Current
+         * @description Return the selected project, or ``selected: null`` with the named ``reason``.
+         *
+         *     A 200 in both cases, never a 404: having nothing selected is the ordinary state of a
+         *     fresh console, and the SPA renders the reason as a prompt. The resolution — and the
+         *     argument for why it reuses the selection seam's own servability probe rather than
+         *     re-deriving one — is in :func:`_resolve_current`; like the listing, it runs in one
+         *     ``anyio.to_thread.run_sync`` hop through ``_read_registry``, so a
+         *     :class:`RegistryUnreadable` still surfaces as a 503.
+         *
+         *     Exactly one of the two fields is set, because the resolution returns exactly one of a
+         *     row or a reason and each populates its own field.
+         */
+        readonly get: operations["get_current_api_v1_projects_current_get"];
+        /**
+         * Select Current
+         * @description Point the console at ``payload.projectId`` and report what it now serves.
+         *
+         *     Answers the SAME :class:`CurrentSelectionResponse` as ``GET /projects/current``, and
+         *     builds it from the SAME :func:`_resolve_current` — called after the switch, so it
+         *     describes the new selection. One shape for "what is selected" whether you asked or
+         *     changed it, which is what lets the SPA feed a switch's response straight into the
+         *     header it would otherwise refetch.
+         *
+         *     **A degraded condition is NOT a precondition for selecting.** No servability probe
+         *     runs before the switch: selecting a project whose directory has been deleted must
+         *     SUCCEED, because that is precisely the state an operator selects into in order to
+         *     then remove the row. The consequence is reported rather than refused — the response
+         *     (and every subsequent read) names ``selected_project_missing`` /
+         *     ``selected_project_unreadable`` — instead of the switch failing opaquely and leaving
+         *     the operator pointed at a project they were trying to leave.
+         *
+         *     Two refusals, both ``404 project_not_registered``:
+         *
+         *     * an id no registry row answers to, raised by the registry underneath
+         *       :meth:`~factory_console.services.project_selection.SelectionState._resolve_and_persist`
+         *       — the one write the port makes fail loudly rather than succeed at pointing the
+         *       console at nothing.
+         *     * the reserved ``session`` id when NO root is pinned. Persistence never writes that
+         *       id, so it would otherwise be accepted and move the session to a sentinel that
+         *       names no directory — the same "succeeded at selecting nothing" outcome, reached by
+         *       the one path the registry cannot see. From the caller's side the two are the same
+         *       statement (this id names nothing this console can serve), so they get the same
+         *       code rather than a second one the SPA would have to learn. With a pin present the
+         *       sentinel is a perfectly ordinary target, and is the ONLY selectable target in
+         *       pinned mode — which is why it does not require a registry at all.
+         *
+         *     **The switch is split across the offload, not run whole on the loop.** Only the
+         *     on-change hook needs the event-loop thread — it rebuilds the file watcher for the new
+         *     root, and a ``RealFileWatcher`` captures the running loop when it starts, so off the
+         *     loop every switch would silently degrade to watcher-less. The registry round trip the
+         *     switch also makes (persisting the selection and resolving its root) is a blocking
+         *     ``sqlite3`` call like any other and has no such requirement, so it is offloaded
+         *     through :func:`~factory_console.api.deps._read_registry` — which still names a store
+         *     failure the ``registry_unreadable`` 503 — via
+         *     :meth:`~factory_console.services.project_selection.SelectionState._resolve_and_persist`.
+         *     Only :meth:`~factory_console.services.project_selection.SelectionState._apply_selected`
+         *     (no I/O: it moves the in-memory selection and fires the hook) then runs on this
+         *     thread, which is still the loop. The hook itself still returns immediately (the swap
+         *     is deferred to a task), so nothing here blocks past the registry round trip already
+         *     being awaited off the loop. The resolution that follows is the ordinary single
+         *     offloaded hop.
+         */
+        readonly put: operations["select_current_api_v1_projects_current_put"];
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/v1/projects/{project_id}": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        readonly post?: never;
+        /**
+         * Remove Project
+         * @description Stop tracking ``project_id``. ``204``, and nothing on the project's disk changes.
+         *
+         *     Removal is a CONSOLE-state operation: it deletes one row from the console's own
+         *     table and never touches the project directory, which is why an empty ``204`` is the
+         *     whole answer — there is no diff to preview and no artefact to report, unlike the
+         *     ticket writes.
+         *
+         *     Three answers other than success, each named:
+         *
+         *     * the reserved ``session`` id → :class:`SessionProjectNotRemovable` (409). It is
+         *       published as a row but was never registered, so there is nothing to delete.
+         *     * an id no row answers to → :class:`ProjectNotRegistered` (404), decided in
+         *       :func:`_remove_registered_project` from the port's ``False``.
+         *     * an id that is neither 32 hex digits nor the sentinel → ``422`` at the boundary,
+         *       from :data:`ProjectIdPath`, so a malformed id never reaches the store.
+         *
+         *     **Removing the selected project clears the selection twice over, and both are
+         *     needed.** The schema's ``ON DELETE SET NULL`` clears the PERSISTED selection as part
+         *     of the delete; this handler additionally clears the PROCESS-LOCAL one, which is what
+         *     fires the on-change hook so the watcher supervisor releases the watcher rooted at the
+         *     directory that is no longer tracked. Without it the in-memory selection would outlive
+         *     its row and every project-scoped read would answer
+         *     ``selected_project_not_registered`` instead of the ``no_project_selected`` that is
+         *     actually true.
+         *
+         *     That clear is conditional — only when the removed row WAS the selection — because it
+         *     is not free: it bumps the watcher generation and tears down live updates for every
+         *     SSE client, which removing some unrelated row must not do.
+         *
+         *     **Only the hook stays on the loop; the registry round trip it needs is offloaded.**
+         *     ``selection.select(None)`` used to run here whole, on the event-loop thread, because
+         *     its on-change hook rebuilds the file watcher and a ``RealFileWatcher`` captures the
+         *     running loop when it starts — off the loop every switch would silently degrade to
+         *     watcher-less. But the ``sqlite3`` write that clear performs is a blocking call like
+         *     any other registry access, and running it inline could stall the whole event loop —
+         *     every other open SSE stream included — for as long as the store is contended. So the
+         *     two halves are now split:
+         *     :meth:`~factory_console.services.project_selection.SelectionState._resolve_and_persist`
+         *     (the blocking clear) runs through :func:`~factory_console.api.deps._read_registry`
+         *     like the removal above it, and only
+         *     :meth:`~factory_console.services.project_selection.SelectionState._apply_selected`
+         *     (which does no I/O — it fires the hook, on this thread, which is still the loop) runs
+         *     inline. The hook itself still returns immediately (the watcher swap is deferred to a
+         *     task), so nothing here blocks past the one small ``UPDATE``.
+         */
+        readonly delete: operations["remove_project_api_v1_projects__project_id__delete"];
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AddProjectRequest
+         * @description The body of ``POST /projects``: which directory to start tracking, and its label.
+         *
+         *     ``extra="forbid"`` because this is the request that makes the console open an
+         *     arbitrary path: a key the server does not understand is far more likely to be a
+         *     caller sending a field this contract never agreed to than a harmless typo, and
+         *     silently dropping it would let a client believe an option took effect.
+         */
+        readonly AddProjectRequest: {
+            /** Path */
+            readonly path: string;
+            /** Name */
+            readonly name?: string | null;
+        };
+        /**
+         * CurrentSelectionResponse
+         * @description What the console is serving right now — or the named reason it is serving nothing.
+         *
+         *     Exactly one of ``selected`` and ``reason`` is set, the same one-of discipline
+         *     :class:`~factory_console.api.v1.runs.ProjectedArtifactRead` keeps between its
+         *     ``data`` and ``reason``. The invariant is not restated as a validator because
+         *     :func:`_current_response` is this model's ONLY constructor — called by both
+         *     :func:`get_current` and :func:`select_current`, which is why it belongs there and
+         *     not in either route — from a two-branch union; a second copy of the rule would have
+         *     one owner and two homes.
+         *
+         *     ``reason`` is T111's :data:`SelectionFailure`, imported verbatim so ``/health``'s
+         *     ``selectionReason``, the read endpoints' 409 codes and this field cannot come to
+         *     disagree about spelling.
+         */
+        readonly CurrentSelectionResponse: {
+            readonly selected?: components["schemas"]["RegisteredProjectOut"] | null;
+            /** Reason */
+            readonly reason?: ("no_selection" | "selected_project_not_registered" | "selected_project_missing" | "selected_project_unreadable") | null;
+        };
         /**
          * DepNeighborhood
          * @description A ticket with its direct dependency edges and any unresolved dep ids.
@@ -449,18 +724,36 @@ export interface components {
         };
         /**
          * HealthResponse
-         * @description Liveness probe body: service ``ok``, its ``version``, and the bound ``projectRoot``.
+         * @description Liveness probe body: ``ok``, ``version``, and what the console is looking at.
+         *
+         *     The last three fields are one answer in three parts, and each combination is a
+         *     distinct, named state rather than an accident of nulls:
+         *
+         *     * selection resolved → ``projectRoot`` set, ``selectedProjectId`` set,
+         *       ``selectionReason`` ``None``.
+         *     * nothing selected → all of ``projectRoot`` and ``selectedProjectId`` ``None``,
+         *       ``selectionReason`` ``"no_selection"``.
+         *     * selected but unusable → ``selectedProjectId`` set and ``selectionReason`` naming
+         *       which failure; ``projectRoot`` is the unusable PATH when one is known (the row
+         *       exists, the directory does not), and ``None`` when it is not (the id names no
+         *       row at all).
+         *     * the registry could not be read → every one of the three is ``None``. See
+         *       :func:`_resolve_selection` for why that is not a ``selectionReason``.
+         *
+         *     ``ok`` is ``True`` in all four: it reports the PROCESS, and none of these is a
+         *     process fault.
          */
         readonly HealthResponse: {
             /** Ok */
             readonly ok: boolean;
             /** Version */
             readonly version: string;
-            /**
-             * Projectroot
-             * Format: path
-             */
-            readonly projectRoot: string;
+            /** Projectroot */
+            readonly projectRoot: string | null;
+            /** Selectedprojectid */
+            readonly selectedProjectId: string | null;
+            /** Selectionreason */
+            readonly selectionReason: ("no_selection" | "selected_project_not_registered" | "selected_project_missing" | "selected_project_unreadable") | null;
         };
         /**
          * LevelSpend
@@ -569,6 +862,22 @@ export interface components {
             readonly discoveredAt: string;
         };
         /**
+         * ProjectListResponse
+         * @description Envelope for the projects list: the switcher rows and their count.
+         *
+         *     The ``{items, total}`` shape ``/tickets``, ``/search`` and ``/runs`` already use, so
+         *     a client that unwraps ``items`` for three lists does not special-case a fourth.
+         *     ``total`` is ``len(items)`` — there is no filtering and no pagination, and the count
+         *     INCLUDES the session row when one is present, because that row is a row of the
+         *     dropdown like any other.
+         */
+        readonly ProjectListResponse: {
+            /** Items */
+            readonly items: readonly components["schemas"]["RegisteredProjectOut"][];
+            /** Total */
+            readonly total: number;
+        };
+        /**
          * ProjectedArtifactRead
          * @description One artifact read as it is DISCLOSED: the declared fields only, or the reason.
          *
@@ -589,7 +898,7 @@ export interface components {
          *     projects to ``data={}`` — an empty object, which is NOT ``None`` — so "read, and it
          *     named nothing this console recognises" stays distinct from "not read", exactly as
          *     it is one layer down. The invariant is not re-asserted with a validator here: this
-         *     module is its only constructor and :func:`project_artifact` is its only route, so a
+         *     module is its only constructor and :meth:`from_artifact` is its only route, so a
          *     second copy of the rule would have one owner and two homes.
          */
         readonly ProjectedArtifactRead: {
@@ -620,6 +929,47 @@ export interface components {
             readonly ticketId: string;
             readonly result: components["schemas"]["ProjectedArtifactRead"];
             readonly receipt: components["schemas"]["ProjectedArtifactRead"];
+        };
+        /**
+         * RegisteredProjectOut
+         * @description One row of the project switcher: a tracked project, its condition, its state.
+         *
+         *     The DISCLOSURE BOUNDARY for a registry row, and the wire twin of
+         *     :class:`~factory_console.domain.registry.RegistryEntry` — exactly as
+         *     :class:`~factory_console.api.v1.runs.ProjectedArtifactRead` is for an artefact. The
+         *     two constructors below name every field EXPLICITLY and never ``model_dump()`` the
+         *     store entity, so a column the store track adds later (a last-opened timestamp, a
+         *     cached branch name, an operator note) cannot reach the browser by accident. That
+         *     matters more here than for most models: unlike a factory artefact, these rows are
+         *     the console's OWN writable table, which is the kind of thing that grows columns.
+         *
+         *     ``selected`` and ``registered`` are flattened onto the row rather than left for the
+         *     client to derive. Both are answers only the server holds — the first needs the
+         *     session's selection state, the second is the ``session`` sentinel's defining
+         *     property — and a dropdown that had to compute either would re-derive server state
+         *     from an id string.
+         */
+        readonly RegisteredProjectOut: {
+            /** Id */
+            readonly id: string;
+            /** Name */
+            readonly name: string;
+            /**
+             * Path
+             * Format: path
+             */
+            readonly path: string;
+            /** Addedat */
+            readonly addedAt: string | null;
+            /** Registered */
+            readonly registered: boolean;
+            /** Selected */
+            readonly selected: boolean;
+            /**
+             * Condition
+             * @enum {string}
+             */
+            readonly condition: "unreadable" | "path_missing" | "not_a_project" | "no_factory_dir" | "ok";
         };
         /**
          * Roadmap
@@ -758,6 +1108,18 @@ export interface components {
             readonly items: readonly components["schemas"]["SearchHit"][];
             /** Total */
             readonly total: number;
+        };
+        /**
+         * SelectProjectRequest
+         * @description The body of ``PUT /projects/current``: which row the console should serve next.
+         *
+         *     A body rather than a path parameter because the resource being replaced is
+         *     ``/projects/current`` — "what is selected" — and the id is its new VALUE, not its
+         *     address. ``extra="forbid"`` for the same reason as :class:`AddProjectRequest`.
+         */
+        readonly SelectProjectRequest: {
+            /** Projectid */
+            readonly projectId: string;
         };
         /**
          * SkippedLineInfo
@@ -1568,6 +1930,141 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["RunListResponse"];
+                };
+            };
+        };
+    };
+    readonly list_projects_api_v1_projects_get: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["ProjectListResponse"];
+                };
+            };
+        };
+    };
+    readonly add_project_api_v1_projects_post: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["AddProjectRequest"];
+            };
+        };
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["RegisteredProjectOut"];
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly get_current_api_v1_projects_current_get: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["CurrentSelectionResponse"];
+                };
+            };
+        };
+    };
+    readonly select_current_api_v1_projects_current_put: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["SelectProjectRequest"];
+            };
+        };
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["CurrentSelectionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly remove_project_api_v1_projects__project_id__delete: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly project_id: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 204: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
