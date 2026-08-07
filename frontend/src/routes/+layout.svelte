@@ -3,6 +3,7 @@
 	import { invalidateAll } from '$app/navigation';
 	import TopBar from '$lib/components/TopBar.svelte';
 	import LiveIndicator from '$lib/components/LiveIndicator.svelte';
+	import ProjectStatusBanner from '$lib/components/ProjectStatusBanner.svelte';
 	import { createLiveStore } from '$lib/stores/live';
 	import { onMount, type Snippet } from 'svelte';
 	import type { LayoutData } from './$types';
@@ -24,6 +25,14 @@
 		// Re-runs on each new event; the initial bump of 0 is skipped.
 		if ($bump > 0) invalidateAll();
 	});
+
+	// The registry row the shell is serving, for the condition banner below the
+	// top bar. `null` covers single-project mode (no registry rows at all) and a
+	// selection the registry cannot name — in both cases the banner renders
+	// nothing.
+	const selectedProject = $derived(
+		data.projects.find((project) => project.id === data.selectedId) ?? null
+	);
 </script>
 
 <div class="min-h-screen bg-bg text-text">
@@ -33,6 +42,7 @@
 		selectedId={data.selectedId}
 		onReload={invalidateAll}
 	/>
+	<ProjectStatusBanner project={selectedProject} />
 	<div class="mx-auto flex max-w-5xl justify-end px-4 pt-3">
 		<LiveIndicator status={$status} lastEvent={$lastEvent} />
 	</div>
