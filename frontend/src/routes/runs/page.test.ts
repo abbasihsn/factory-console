@@ -18,8 +18,9 @@ import Page from './+page.svelte';
 const listTicketsMock = vi.mocked(listTickets);
 const getRunsMock = vi.mocked(getRuns);
 
-// `+page.svelte`'s `PageData` merges the root layout's `project`, so the rendered
-// `data` prop must carry it too (the page itself only reads `data.rows`).
+// `+page.svelte`'s `PageData` merges the root layout's data — the `project` plus
+// the switcher's registry rows — so the rendered `data` prop must carry all of it
+// (the page itself only reads `data.rows`).
 const project = {
 	rootPath: '/home/dev/factory-console',
 	ticketsManifestPath: '/home/dev/factory-console/docs/planning/tickets.json',
@@ -103,7 +104,7 @@ function rowsOf(records: RunRecord[], runState: TicketSummary['runState'] = 'rea
 }
 
 function data(rows: RunRow[]): PageData {
-	return { project, rows };
+	return { project, projects: [], selectedId: null, rows };
 }
 
 // Svelte's markup wraps long prose across lines; collapse whitespace before

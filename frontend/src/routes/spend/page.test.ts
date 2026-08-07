@@ -16,8 +16,9 @@ import Page from './+page.svelte';
 
 const getSpendMock = vi.mocked(getSpend);
 
-// `+page.svelte`'s `PageData` merges the root layout's `project`, so the rendered
-// `data` prop must carry it too (the page itself only reads the spend fields).
+// `+page.svelte`'s `PageData` merges the root layout's data — the `project` plus
+// the switcher's registry rows — so the rendered `data` prop must carry all of it
+// (the page itself only reads the spend fields).
 const project = {
 	rootPath: '/home/dev/factory-console',
 	ticketsManifestPath: '/home/dev/factory-console/docs/planning/tickets.json',
@@ -74,7 +75,7 @@ const noLedgerSpend = {
 } satisfies SpendResponse;
 
 function data(spend: SpendResponse): PageData {
-	return { project, spend };
+	return { project, projects: [], selectedId: null, spend };
 }
 
 // Svelte's markup wraps long prose across lines; collapse whitespace before
