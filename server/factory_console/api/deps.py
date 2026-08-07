@@ -8,9 +8,13 @@ handlers stay decoupled from both the wiring and the filesystem implementation.
 
 :func:`get_file_watcher` is the companion seam for the optional long-lived
 :class:`~factory_console.file_adapter.watcher.FileWatcher` (T39): it returns the
-watcher ``create_app`` bound on ``app.state.file_watcher``, or ``None`` when the
-app was built without one — so the SSE endpoint (T45) degrades gracefully rather
-than 500ing, unlike :func:`get_file_adapter` (a missing adapter is a wiring bug).
+watcher live as of THIS request — read through the
+:class:`~factory_console.services.watcher_supervisor.WatcherSupervisor` that owns it,
+since v3.0 replaces the watcher when the selected project changes — or ``None`` when
+none is live, so the SSE endpoint (T45) degrades gracefully rather than 500ing, unlike
+:func:`get_file_adapter` (a missing adapter is a wiring bug). Its companion
+:func:`get_watcher_supervisor` hands out the supervisor itself, for the one consumer
+that needs to know not "which watcher" but "has it been replaced".
 
 :func:`get_file_writer` is the write-side twin of :func:`get_file_adapter`: it
 returns the write-core
@@ -69,6 +73,7 @@ from factory_console.services.project_selection import (
     SelectionFailure,
     SelectionState,
 )
+from factory_console.services.watcher_supervisor import WatcherSupervisor
 from factory_console.store.registry_protocol import ProjectRegistry
 
 _LOGGER = logging.getLogger(__name__)
@@ -107,15 +112,48 @@ def get_file_adapter(request: Request) -> FileAdapter:
 
 
 def get_file_watcher(request: Request) -> FileWatcher | None:
-    """Return the :class:`FileWatcher` bound to the app at boot, or ``None``.
+    """Return the :class:`FileWatcher` live RIGHT NOW, or ``None``.
 
-    Reads ``request.app.state.file_watcher``, which ``create_app`` sets from its
-    optional ``file_watcher`` argument, and is the target of
-    ``Depends(get_file_watcher)`` in the SSE endpoint. Returns ``None`` (never
-    raises) when no watcher was wired — the watcher is opt-in, so an app built
-    without one is a valid configuration the consumer degrades over, not a bug.
+    The target of ``Depends(get_file_watcher)`` in the SSE endpoint. Read through the
+    :class:`~factory_console.services.watcher_supervisor.WatcherSupervisor` on
+    ``app.state.watcher_supervisor``, because since v3.0 the watcher is not a fixed
+    boot-time object: a project switch replaces it, and the answer to "which watcher"
+    is only true as of this request. ``app.state.file_watcher`` remains the fallback
+    for an app not built by ``create_app`` (which always binds a supervisor).
+
+    Returns ``None`` (never raises) when no watcher is live — none was wired, the
+    selection points at nothing, or a swap degraded to watcher-less. The port is
+    opt-in, so all of those are valid configurations the consumer degrades over rather
+    than bugs, and that contract is unchanged by the supervisor arriving behind it.
     """
+    supervisor: WatcherSupervisor | None = getattr(request.app.state, "watcher_supervisor", None)
+    if supervisor is not None:
+        return supervisor.current()
     return getattr(request.app.state, "file_watcher", None)
+
+
+def get_watcher_supervisor(request: Request) -> WatcherSupervisor:
+    """Return the :class:`WatcherSupervisor` ``create_app`` built at boot.
+
+    Reads ``request.app.state.watcher_supervisor``. Raises :class:`RuntimeError` when
+    it is unbound, for the same reason as :func:`get_selection_state` and unlike the
+    opt-in :func:`get_file_watcher` beside it: ``create_app`` ALWAYS constructs one — a
+    watcher-less app is a supervisor holding nothing, not an absent supervisor — so an
+    absent one means the app was not built by ``create_app`` at all.
+
+    The distinction is worth the raise because consumers ask this object a question
+    ``None`` cannot answer: :meth:`~WatcherSupervisor.generation` is how a live SSE
+    connection learns its watcher was replaced, and a missing supervisor would have to
+    be reported as "never replaced" — a claim about the selection made from a fact
+    about the console's own wiring.
+    """
+    supervisor = getattr(request.app.state, "watcher_supervisor", None)
+    if supervisor is None:
+        raise RuntimeError(
+            "No WatcherSupervisor bound on app.state.watcher_supervisor; "
+            "build the app with create_app(...), which always constructs one."
+        )
+    return supervisor
 
 
 def get_file_writer(request: Request) -> FileWriter:
