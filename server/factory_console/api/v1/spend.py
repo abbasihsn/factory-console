@@ -24,12 +24,15 @@ parses, rather than a second, hand-built one that could drift.
 
 Probing the ledger, reading it, and aggregating what it held all scale with the file —
 the reader stats ``.factory/metrics/ledger.jsonl`` and then parses it line by line — so
-all three are awaited through ``anyio.to_thread.run_sync`` rather than run inline on the
-event loop, per ``ARCHITECTURE.md``'s Cross-cutting **Concurrency** rule. ``run_sync``
-propagates the worker's exception unchanged, so the ``OSError`` contract below reads
-exactly as it did when the probe ran inline. The two ``aggregate([])`` calls on the
-absent and unread branches stay inline deliberately: they fold NO entries, so a thread
-hop would buy nothing and only add latency to the two cheapest answers.
+all three run TOGETHER inside ONE ``anyio.to_thread.run_sync`` hop
+(:func:`_load_spend`), never one hop per step: the one-offload-not-N rule
+``ARCHITECTURE.md``'s Cross-cutting **Concurrency** section states, and the same pattern
+``api/v1/projects.py``'s ``_register_project`` already established for its own
+multi-step write. ``run_sync`` propagates the worker's exception unchanged, so the
+``OSError`` contract below reads exactly as it did when the probe ran inline. The two
+``aggregate([])`` calls on the absent and unread branches fold NO entries and cost
+nothing on their own, so bundling them into the same hop rather than special-casing
+them back onto the loop only removes scheduling overhead, never adds it.
 
 It raises nothing of its own; the only errors that leave here are the selection
 seam's ``no_project_selected``/``selected_project_unavailable`` 409s, raised by
@@ -80,21 +83,19 @@ from factory_console.file_adapter.ledger import (
 router = APIRouter(tags=["spend"])
 
 
-@router.get("/spend")
-async def get_spend(root: Path = Depends(get_current_project_root)) -> SpendResponse:
-    """Return the SELECTED project's aggregated spend, or an explicit "no ledger" body.
+def _load_spend(root: Path) -> SpendResponse:
+    """Probe, read and aggregate ``root``'s ledger — SYNCHRONOUS, one hop covers it all.
 
-    Reads the ledger off the per-request ``root``. With no ledger the response is
-    ``source.found: false`` over zeroed totals; with one, it is the aggregate of
-    every entry that parsed, plus the line numbers and reasons of those that did
-    not. A ledger that exists but could not be read at all is the third case, and
-    says so with ``source.read: false`` rather than passing its zeroed totals off
-    as a measurement. The ledger's ``excerpt`` and ``session_id`` are projected
-    nowhere. The probe, the read, and the aggregation over what it returned are all
-    awaited off the event loop.
+    The whole body of :func:`get_spend`, moved here so the caller's single
+    ``anyio.to_thread.run_sync`` covers the probe, the read and the aggregation
+    together rather than one hop per step (see the module docstring). Returns the
+    response DIRECTLY rather than raising for any of its three outcomes — a missing
+    ledger, an unreadable one, or one that read and aggregated cleanly — since none of
+    them is an error this endpoint raises (see the module docstring's last two
+    paragraphs for why).
     """
     try:
-        path = await anyio.to_thread.run_sync(partial(find_ledger_path, root))
+        path = find_ledger_path(root)
     except OSError:
         # ``find_ledger_path`` answers "I could not look" by RAISING rather than by
         # returning ``None``, so that case cannot be mistaken here for the absence
@@ -121,12 +122,29 @@ async def get_spend(root: Path = Depends(get_current_project_root)) -> SpendResp
             source=SourceInfo(found=False, path=str(root / LEDGER_RELATIVE_PATH)),
         )
 
-    result = await anyio.to_thread.run_sync(partial(read_ledger, path))
+    result = read_ledger(path)
     return SpendResponse.from_report(
-        await anyio.to_thread.run_sync(partial(aggregate, result.entries)),
+        aggregate(result.entries),
         source=SourceInfo(found=True, read=was_read(result), path=str(result.path)),
         skipped=[
             SkippedLineInfo(lineNo=line.line_no, reason=line.reason) for line in result.skipped
         ],
         skipped_omitted=result.skipped_omitted,
     )
+
+
+@router.get("/spend")
+async def get_spend(root: Path = Depends(get_current_project_root)) -> SpendResponse:
+    """Return the SELECTED project's aggregated spend, or an explicit "no ledger" body.
+
+    Reads the ledger off the per-request ``root``. With no ledger the response is
+    ``source.found: false`` over zeroed totals; with one, it is the aggregate of
+    every entry that parsed, plus the line numbers and reasons of those that did
+    not. A ledger that exists but could not be read at all is the third case, and
+    says so with ``source.read: false`` rather than passing its zeroed totals off
+    as a measurement. The ledger's ``excerpt`` and ``session_id`` are projected
+    nowhere. The probe, the read, and the aggregation over what it returned all run
+    together in one ``anyio.to_thread.run_sync`` hop, awaited off the event loop —
+    see :func:`_load_spend`.
+    """
+    return await anyio.to_thread.run_sync(partial(_load_spend, root))
