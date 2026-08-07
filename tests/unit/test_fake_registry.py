@@ -33,9 +33,7 @@ _ADDED_AT = datetime(2026, 8, 6, 12, 30, 45, tzinfo=UTC)
 
 def _row(project_id: str, path: Path, *, name: str | None = None) -> RegisteredProject:
     """Build a seed row directly, bypassing ``add_project``'s id/clock seams."""
-    return RegisteredProject(
-        id=project_id, name=name or path.name, path=path, addedAt=_ADDED_AT
-    )
+    return RegisteredProject(id=project_id, name=name or path.name, path=path, addedAt=_ADDED_AT)
 
 
 def _scripted_ids(*ids: str) -> Callable[[], str]:
