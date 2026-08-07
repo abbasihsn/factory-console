@@ -70,14 +70,17 @@ X-Factory-Write-Token: 3s9Kv-1QpZ...
 
 That token authorizes write requests, sent in the `X-Factory-Write-Token` header. It
 lasts only as long as the process, so the one printed by a previous run stops working.
-Reads never need it, so browsing the project is unaffected; the three write endpoints
+Reads never need it, so browsing the project is unaffected; the six write endpoints
 require it on every request:
 
-| Endpoint                      | Effect                                         |
-| ----------------------------- | ---------------------------------------------- |
-| `POST /api/v1/tickets`        | create a ticket (`201`, or `200` on a dry-run) |
-| `PUT /api/v1/tickets/{id}`    | edit a ticket (`200`)                          |
-| `DELETE /api/v1/tickets/{id}` | delete a ticket (`200`)                        |
+| Endpoint                          | Effect                                              |
+| ---------------------------------- | ---------------------------------------------------- |
+| `POST /api/v1/tickets`             | create a ticket (`201`, or `200` on a dry-run)       |
+| `PUT /api/v1/tickets/{id}`         | edit a ticket (`200`)                                |
+| `DELETE /api/v1/tickets/{id}`      | delete a ticket (`200`)                              |
+| `POST /api/v1/projects`            | register a project directory (`201`)                |
+| `DELETE /api/v1/projects/{id}`     | stop tracking a registered project (`204`)           |
+| `PUT /api/v1/projects/current`     | switch which registered project the console serves (`200`) |
 
 Each returns the same `WriteResult` body carrying the unified diff of what changed, and
 each accepts `?dryRun=true` to get that diff back **without** writing anything. `dryRun`

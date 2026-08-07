@@ -402,6 +402,22 @@ def create_app(
     selection = SelectionState(pinned_root=project_root, registry=project_registry)
     selection.subscribe(_watcher_retarget_hook(supervisor))
     app.state.selection = selection
+    # Serialises the two-phase selection switch the write routes perform. `select()`
+    # is atomic, but an HTTP caller cannot use it: its registry round trip blocks and
+    # its on-change hook needs the loop, so `api/v1/projects.py` runs
+    # `_resolve_and_persist` off-loop and `_apply_selected` back on it. That await is
+    # what makes the lock load-bearing — the loop no longer serialises a switch the way
+    # it serialises an ordinary handler, so two concurrent switches (or a switch racing
+    # a delete-triggered clear) could otherwise persist in one order and apply in the
+    # other, leaving the in-memory selection and the watcher pointed at a project the
+    # registry no longer names as selected. Same hazard, and the same remedy, as the
+    # swap lock in `_watcher_retarget_hook`.
+    #
+    # It lives HERE, not on SelectionState, because that class is deliberately
+    # synchronous and loop-free (a test drives `select()` with no loop at all) and an
+    # `asyncio.Lock` attribute would end that. One lock per app, like every other
+    # `app.state` singleton.
+    app.state.selection_lock = asyncio.Lock()
     token = write_token or secrets.token_urlsafe(_WRITE_TOKEN_BYTES)
     app.state.write_token = token
     # ``generated`` mirrors the ``or`` above exactly rather than testing ``is None``:

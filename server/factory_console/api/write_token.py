@@ -39,6 +39,14 @@ from factory_console.errors import FactoryConsoleError
 # the OpenAPI document identifies the write-token scheme by.
 WRITE_TOKEN_SCHEME_NAME = "FactoryWriteToken"
 
+# ``require_write_token`` is a plain dependency rather than a ``SecurityBase``, so
+# FastAPI cannot derive a ``security`` requirement from it. Each write operation across
+# the app therefore names this scheme explicitly via ``openapi_extra=WRITE_TOKEN_SECURITY``
+# — :mod:`factory_console.api.v1.tickets_write` and :mod:`factory_console.api.v1.projects`
+# both import it rather than each declaring their own byte-identical copy — or the OpenAPI
+# document would describe a header that no operation actually requires.
+WRITE_TOKEN_SECURITY: dict[str, Any] = {"security": [{WRITE_TOKEN_SCHEME_NAME: []}]}
+
 # FastAPI's own ``apiKey``-in-header model, used purely to BUILD the OpenAPI scheme
 # object (not as a route dependency — :func:`require_write_token` reads the header
 # itself so that the loopback token check has exactly one implementation).
@@ -134,10 +142,10 @@ def publish_write_token_scheme(app: FastAPI) -> None:
     Publishing the scheme is only half the description on its own. Because
     :func:`require_write_token` is a plain dependency rather than a
     :class:`~fastapi.security.base.SecurityBase`, FastAPI will not stamp a ``security``
-    requirement on the operations that use it, so each write route says so itself —
-    ``openapi_extra={"security": [{WRITE_TOKEN_SCHEME_NAME: []}]}`` in
-    :mod:`factory_console.api.v1.tickets_write` — or the document would name a header
-    that no operation requires.
+    requirement on the operations that use it, so each write route says so itself via
+    ``openapi_extra=WRITE_TOKEN_SECURITY`` (declared above, and imported by both
+    :mod:`factory_console.api.v1.tickets_write` and :mod:`factory_console.api.v1.projects`)
+    — or the document would name a header that no operation requires.
 
     Wraps ``app.openapi`` instead of building the document eagerly, so routes
     registered after ``create_app`` returns are still included. FastAPI caches the

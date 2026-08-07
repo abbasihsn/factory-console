@@ -9,6 +9,9 @@ at the ``Query`` boundary as the ``validation_error`` 422 envelope; a term that
 appears ONLY in a ticket's BODY still hitting (proving body coverage, the
 distinction from T22's id+title substring filter); and the frozen OpenAPI shape
 publishing the route and both the ``SearchHit`` and ``SearchResponse`` schemas.
+Since v3.0 the handler resolves its root through the selection seam, so the two ways
+that resolution can refuse — nothing selected, and a selected path that is gone — are
+pinned as 409s rather than as the empty result a blank ``q`` legitimately gives.
 """
 
 from datetime import datetime
@@ -20,6 +23,8 @@ from fastapi.testclient import TestClient
 from factory_console.app import create_app
 from factory_console.domain import Project, Ticket
 from factory_console.file_adapter import FakeFileAdapter
+from factory_console.services.project_selection import SelectionState
+from factory_console.store.fake_registry import FakeProjectRegistry
 
 _FAKE_PROJECT = Project(
     rootPath=Path("/factory/demo-project"),
@@ -43,13 +48,21 @@ def _fake_ticket(ticket_id: str, *, title: str, body: str) -> Ticket:
     )
 
 
-def _fake_app() -> FastAPI:
+def _fake_app(
+    *,
+    project_root: Path = Path("/factory/demo-project"),
+    registry: FakeProjectRegistry | None = None,
+) -> FastAPI:
     """Build the real app over a FakeFileAdapter seeded with searchable bodies.
 
     Three tickets share the word "streak" in their bodies (so ``limit`` can
     truncate); FAKE-1's body additionally carries the unique word
     "photosynthesis", which appears in NO id or title anywhere — the body-only
     coverage probe.
+
+    ``project_root`` and ``registry`` are the selection seam's two inputs: leaving
+    both at their defaults is pinned mode (what every other case here asserts), and
+    passing a registry lets a case drive the SELECTED project instead.
     """
     tickets = [
         _fake_ticket(
@@ -62,7 +75,12 @@ def _fake_app() -> FastAPI:
         _fake_ticket("FAKE-4", title="Delta doohickey", body="Weekly digest email delivery."),
     ]
     adapter = FakeFileAdapter(project=_FAKE_PROJECT, tickets=tickets)
-    return create_app(adapter, version="0.0.0", project_root=Path("/factory/demo-project"))
+    return create_app(
+        adapter,
+        version="0.0.0",
+        project_root=project_root,
+        project_registry=registry,
+    )
 
 
 def _ids(items: list[dict]) -> list[str]:
@@ -152,6 +170,40 @@ def test_missing_q_is_validation_error_422() -> None:
     resp = client.get("/api/v1/search")
     assert resp.status_code == 422
     assert resp.json()["error"]["code"] == "validation_error"
+
+
+# --------------------------------------------------------------------------- #
+# The selection seam: no project resolved is a 409, never an empty result
+# --------------------------------------------------------------------------- #
+
+
+def test_search_refuses_with_409_when_nothing_is_selected() -> None:
+    # ``{items: [], total: 0}`` is a statement ABOUT a project — "nothing here
+    # matches" — so it must not be the answer when there is no project to search.
+    app = _fake_app()
+    app.state.selection = SelectionState(pinned_root=None, registry=None)
+
+    resp = TestClient(app).get("/api/v1/search", params={"q": "streak"})
+
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "no_project_selected"
+
+
+def test_search_refuses_with_409_when_the_selected_path_is_gone(tmp_path: Path) -> None:
+    # Resolution refuses rather than falling back to the pinned root, which would
+    # rank one project's tickets under another project's name.
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    registry = FakeProjectRegistry()
+    row = registry.add_project(gone)
+    app = _fake_app(project_root=tmp_path / "pinned", registry=registry)
+    app.state.selection.select(row.id)
+    gone.rmdir()
+
+    resp = TestClient(app).get("/api/v1/search", params={"q": "streak"})
+
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "selected_project_unavailable"
 
 
 # --------------------------------------------------------------------------- #

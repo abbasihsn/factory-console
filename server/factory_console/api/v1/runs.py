@@ -1,8 +1,10 @@
 """The ``GET /api/v1/runs`` endpoint: the factory's per-ticket artifacts, listed.
 
 The HTTP surface over T89's :class:`~factory_console.services.run_service.RunService`
-and nothing else. The handler wires its two ports, loads the discovered project, and
-returns what the service composed: one
+and nothing else. The handler wires its two ports, loads the SELECTED project — the root
+is resolved per request by :func:`~factory_console.api.deps.get_current_project_root`,
+not the one ``create_app`` pinned at boot; in pinned mode the two are the same path —
+and returns what the service composed: one
 :class:`~factory_console.domain.run_record.RunRecord` per MANIFEST ticket, in manifest
 order. It adds no logic of its own, deliberately — every decision this listing makes
 (the manifest is the list, a never-run ticket is still a record, an artifact-level
@@ -17,7 +19,9 @@ from ``load_project``, or a
 :class:`~factory_console.file_adapter.manifest.MalformedManifest` from the service's
 ``list_tickets``, reaches the domain-error handler ``create_app`` registers
 (:func:`~factory_console.api.error_handlers.register_error_handlers`) and is rendered
-at the status it declares. What cannot fail the listing is an ARTIFACT. Both of a
+at the status it declares — as do the selection seam's ``no_project_selected`` and
+``selected_project_unavailable`` 409s, raised before the handler body runs at all. What
+cannot fail the listing is an ARTIFACT. Both of a
 record's :class:`~factory_console.domain.runs.ArtifactRead` fields are TOTAL by the
 :class:`~factory_console.file_adapter.run_artifacts.RunArtifactReader` port's
 contract — a missing, unreadable, malformed, oversized or path-unsafe artifact
@@ -79,10 +83,14 @@ from functools import partial
 from pathlib import Path
 
 import anyio.to_thread
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict
 
-from factory_console.api.deps import get_file_adapter, get_run_artifact_reader
+from factory_console.api.deps import (
+    get_current_project_root,
+    get_file_adapter,
+    get_run_artifact_reader,
+)
 from factory_console.domain import RunRecord
 from factory_console.domain.runs import ArtifactRead, ArtifactSkipReason
 from factory_console.domain.ticket import TicketId
@@ -210,13 +218,13 @@ class RunListResponse(BaseModel):
 
 @router.get("/runs")
 async def list_runs(
-    request: Request,
     adapter: FileAdapter = Depends(get_file_adapter),
     artifacts: RunArtifactReader = Depends(get_run_artifact_reader),
+    root: Path = Depends(get_current_project_root),
 ) -> RunListResponse:
     """Return one :class:`ProjectedRunRecord` per manifest ticket, in manifest order.
 
-    Loads the discovered project from ``request.app.state.project_root`` and delegates
+    Loads the SELECTED project at the per-request ``root`` and delegates
     the whole composition to :class:`RunService` over the injected
     :class:`FileAdapter` and :class:`RunArtifactReader`. Both calls are synchronous and
     hit the disk, so both are awaited through ``anyio.to_thread.run_sync`` — the
@@ -241,7 +249,6 @@ async def list_runs(
     is a count of RECORDS, one per manifest ticket, and the projection changes what a
     record discloses, never how many there are.
     """
-    root: Path = request.app.state.project_root
     project = await anyio.to_thread.run_sync(partial(adapter.load_project, root))
     records = await anyio.to_thread.run_sync(
         partial(RunService(adapter, artifacts).list_run_records, project)
