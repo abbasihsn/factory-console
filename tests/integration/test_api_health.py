@@ -10,17 +10,24 @@ endpoint an operator and the SPA's boot sequence hit to find out WHY nothing els
 answers, so it must report a missing or broken selection as a named condition at
 ``200`` and never as a 409, a 503, or a fabricated root.
 
-Three selection states are driven: pinned (which is every pre-v3 app, and must be
-unchanged apart from the two new fields), nothing selected, and selected-but-unusable
-in both of its shapes — the row is gone, and the row's directory is gone. Registry
-work runs against T107's :class:`FakeProjectRegistry`, but the PATHS are real
-``tmp_path`` directories, because "the selected directory was deleted" is only a real
-test if a real directory is really deleted.
+Every state is driven, so all four ``SelectionFailure`` members are asserted: pinned
+(which is every pre-v3 app, and must be unchanged apart from the two new fields),
+nothing selected, and selected-but-unusable in each of its shapes — the row is gone,
+the row's directory is gone, and the row's directory cannot be read. That last one
+matters as much as the others: ``missing`` and ``unreadable`` send an operator to
+different places, so a probe that collapsed them would be precisely as unhelpful as one
+that fabricated a root. Registry work runs against T107's
+:class:`FakeProjectRegistry`, but the PATHS are real ``tmp_path`` directories, because
+"the selected directory was deleted" is only a real test if a real directory is really
+deleted.
 """
 
+import os
+import sys
 from datetime import datetime
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -39,6 +46,11 @@ _PROJECT = Project(
     discoveredAt=datetime(2026, 7, 21, 12, 30, 0),
 )
 _ROOT = Path("/factory/demo-project")
+
+# ``chmod 000`` is meaningless for root (which bypasses the permission bits) and on
+# Windows (which has no such mode), so an ``unreadable`` case would silently assert the
+# opposite of what it means on those hosts. Mirrors ``test_api_projects.py``.
+_CANNOT_REVOKE_READ = sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0)
 
 
 def _make_app(
@@ -115,6 +127,29 @@ def test_health_reports_a_deleted_selected_path_and_still_names_the_project(
     assert body["projectRoot"] == str(row.path)
     assert body["selectedProjectId"] == row.id
     assert body["selectionReason"] == "selected_project_missing"
+
+
+@pytest.mark.skipif(_CANNOT_REVOKE_READ, reason="chmod 000 does not revoke read for this user/OS")
+def test_health_reports_an_unreadable_selected_path(tmp_path: Path) -> None:
+    # The fourth ``SelectionFailure`` member, and the one the probe must not collapse
+    # into "missing": a chmod-000 directory STATS perfectly well, so reporting it as
+    # absent would send the operator hunting for a directory that was there all along.
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    registry = FakeProjectRegistry()
+    row = registry.add_project(locked)
+    app = _make_app(tmp_path / "pinned", registry)
+    app.state.selection.select(row.id)
+    locked.chmod(0o000)
+    try:
+        body = _health(app)
+    finally:
+        locked.chmod(0o700)
+
+    assert body["ok"] is True
+    assert body["projectRoot"] == str(row.path)
+    assert body["selectedProjectId"] == row.id
+    assert body["selectionReason"] == "selected_project_unreadable"
 
 
 def test_health_reports_a_selection_whose_row_was_removed(tmp_path: Path) -> None:

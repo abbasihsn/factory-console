@@ -192,10 +192,20 @@ class WatcherSupervisor:
         Never raises: an exception from the outgoing watcher's ``stop()`` is logged and
         the swap still reports itself on, or one misbehaving watcher would pin the
         supervisor to a root the operator has already left.
+
+        **The target is CLAIMED here, not in :meth:`retarget_rebuild`.** ``_root`` is
+        what the same-root guard above tests, so it has to record the decision the
+        moment the decision is made. Left until the rebuild, a second release for the
+        same root — arriving while this swap is still between its halves — would compare
+        against the root being LEFT, conclude a swap is on, and report ``True`` for a
+        watcher this one already stopped. The caller in :mod:`factory_console.app`
+        serialises swaps as well, so this is the inner of two guards rather than the only
+        one; both are cheap and they fail in different directions.
         """
         if root == self._root or not self._started:
             return False
-        self._release("stopping the outgoing watcher for %s failed", self._root)
+        outgoing, self._root = self._root, root
+        self._release("stopping the outgoing watcher for %s failed", outgoing)
         return True
 
     def retarget_rebuild(self, root: Path | None) -> None:
@@ -208,6 +218,10 @@ class WatcherSupervisor:
         that fails: watcher-less, generation moved. The bump happens even then, because
         what it announces is "the watcher you were reading is gone", which is equally
         true whether a replacement arrived.
+
+        ``_root`` is NOT written here — :meth:`retarget_release` already claimed it, for
+        the reason given there. This half only needs it to still name ``root``, which it
+        does.
 
         **Must run ON the event-loop thread when there is one.** :meth:`_build` calls
         ``FileWatcher.start()``, and a ``RealFileWatcher`` captures the running loop
@@ -227,7 +241,6 @@ class WatcherSupervisor:
         """
         if not self._started:
             return
-        self._root = root
         self._generation += 1
         factory = self._factory
         if factory is None or root is None:

@@ -100,25 +100,28 @@ class HealthResponse(BaseModel):
 
 
 async def _read_selected_id(selection: SelectionState) -> str | None:
-    """Return the currently selected id, or ``None`` when it cannot be established.
+    """Return the currently selected id, RAISING when the store cannot be read.
 
     ``current_id`` reads through to the persisted selection when no session selection
     is set, so it is a blocking ``sqlite3`` call and is offloaded like every other —
     ``ARCHITECTURE.md``'s Cross-cutting **Concurrency** rule.
 
-    Where :func:`~factory_console.api.deps._read_registry` turns a store failure into
-    a ``503``, this one turns it into "unknown", because the two have different jobs:
-    that one is answering a request that cannot proceed without the selection, and
-    this one is the probe an operator uses when things are already failing. Reporting
-    the id as unknown is the honest answer here; refusing to answer at all is not one
-    this endpoint is allowed to give. The cause is logged server-side, since a
-    swallowed store error would otherwise leave no trace anywhere.
+    The store failure is deliberately NOT swallowed here, even though this endpoint may
+    not raise at its edge. Swallowing it to ``None`` made "no id is selected" and "I
+    could not find out" the same value, and the caller then went on to resolve the
+    selection a second time: a read that failed here but succeeded there produced
+    ``projectRoot`` set with both ``selectedProjectId`` and ``selectionReason`` ``None``
+    — a combination :class:`HealthResponse` documents as impossible, and the very shape
+    that is supposed to mean "the console cannot say what is selected". The two answers
+    have to come from one read, so the policy decision belongs to
+    :func:`_resolve_selection`, which owns the whole never-raise contract; this helper
+    just reports what the store did.
+
+    Raises:
+        OSError: the console's own state directory could not be read.
+        sqlite3.Error: the console's own database could not be read.
     """
-    try:
-        return await anyio.to_thread.run_sync(selection.current_id)
-    except (OSError, sqlite3.Error) as error:
-        _LOGGER.warning("health probe could not read the selected project id", exc_info=error)
-        return None
+    return await anyio.to_thread.run_sync(selection.current_id)
 
 
 async def _resolve_selection(request: Request) -> _ResolvedSelection:
@@ -145,10 +148,19 @@ async def _resolve_selection(request: Request) -> _ResolvedSelection:
     currently say what is selected". ``ok`` remains ``True`` — an unreadable registry
     is what ``GET /api/v1/projects`` answers ``503`` about, and the probe's job is to
     report the condition, not to become a second outage signal for it.
+
+    That all-``None`` answer is reached from BOTH store-read failures, and it has to be:
+    :func:`_read_selected_id` and the dependency each read the selection, so either can
+    be the one that finds the store unreadable. Catching the raw ``OSError`` /
+    ``sqlite3.Error`` beside :class:`RegistryUnreadable` — the same condition, only
+    named differently depending on which read hit it — is what keeps every unreadable
+    store landing on the one documented shape instead of on a mix of fields that
+    contradicts the response model. One log line is emitted per probe, here, rather than
+    one per read at two different levels.
     """
     selection = get_selection_state(request)
-    selected_id = await _read_selected_id(selection)
     try:
+        selected_id = await _read_selected_id(selection)
         root = await get_current_project_root(request)
     except NoProjectSelected as failure:
         return _ResolvedSelection(None, None, failure.reason)
@@ -156,7 +168,8 @@ async def _resolve_selection(request: Request) -> _ResolvedSelection:
         return _ResolvedSelection(None, failure.project_id, failure.reason)
     except SelectedProjectUnavailable as failure:
         return _ResolvedSelection(failure.path, selected_id, failure.reason)
-    except RegistryUnreadable:
+    except (RegistryUnreadable, OSError, sqlite3.Error) as error:
+        _LOGGER.warning("health probe could not read the selected project", exc_info=error)
         return _ResolvedSelection(None, None, None)
     return _ResolvedSelection(root, selected_id, None)
 

@@ -231,13 +231,31 @@ def _watcher_retarget_hook(supervisor: WatcherSupervisor) -> Callable[[Path | No
     whichever watcher is current by then). Neither half raises, so there is no result to
     await and nothing for the task to report; the tasks are kept in a set only so the
     loop holds a strong reference and cannot garbage-collect one mid-swap.
+
+    **Swaps are SERIALISED, and the lock is load-bearing.** Fire-and-forget means two
+    ``select()`` calls close together (a double-clicked switcher, two tabs) put two
+    ``_swap`` tasks in flight, and a swap is not atomic: it releases on a worker thread
+    and rebuilds on the loop. Unserialised, both releases run before either rebuild —
+    the second finds ``current()`` already ``None`` and so stops nothing, and then both
+    rebuilds run, the second overwriting the first's watcher WITHOUT stopping it. That
+    orphans a live watchdog observer thread and its recursive watches: shutdown's
+    ``stop()`` only ever sees the current watcher, so nothing joins the abandoned one.
+    Holding the lock across the whole body makes each swap observe the previous one's
+    finished state, so the outgoing watcher of every swap is the one actually released.
+    The lock never serialises anything the operator waits on — the hook already returned.
     """
     pending: set[asyncio.Task[None]] = set()
+    swapping = asyncio.Lock()
 
     async def _swap(root: Path | None) -> None:
-        """Release the outgoing watcher off the loop, then rebuild back on it."""
-        if await anyio.to_thread.run_sync(supervisor.retarget_release, root):
-            supervisor.retarget_rebuild(root)
+        """Release the outgoing watcher off the loop, then rebuild back on it.
+
+        Under ``swapping`` for its whole body so an overlapping swap cannot interleave
+        its release between this one's two halves and orphan the watcher this one built.
+        """
+        async with swapping:
+            if await anyio.to_thread.run_sync(supervisor.retarget_release, root):
+                supervisor.retarget_rebuild(root)
 
     def _retarget_off_loop(root: Path | None) -> None:
         """Schedule the swap as a loop task; do it inline when there is no loop."""

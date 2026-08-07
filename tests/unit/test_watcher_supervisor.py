@@ -292,6 +292,26 @@ def test_retarget_release_reports_whether_the_swap_is_really_happening() -> None
     assert supervisor.generation() == 1
 
 
+def test_a_second_release_for_an_in_flight_root_reports_no_swap() -> None:
+    # The release CLAIMS its target, so a second release naming the same root — arriving
+    # while the first swap is still between its halves — sees the root it is being asked
+    # to move to rather than the one being left, and declines. Claiming only in the
+    # rebuild made this second call report ``True`` and stop nothing (``current`` is
+    # already ``None``), after which both rebuilds ran and the second overwrote the
+    # first's watcher without stopping it, orphaning a live observer thread.
+    factory = _RecordingFactory()
+    supervisor = _started_supervisor(factory)
+
+    assert supervisor.retarget_release(_ROOT_B) is True
+    assert supervisor.retarget_release(_ROOT_B) is False
+
+    # Exactly one release happened, so exactly one rebuild is owed.
+    assert factory.built[0].stops == 1
+    supervisor.retarget_rebuild(_ROOT_B)
+    assert len(factory.built) == 2
+    assert supervisor.generation() == 1
+
+
 def test_retarget_release_reports_no_swap_outside_the_serving_window() -> None:
     factory = _RecordingFactory()
     supervisor = _started_supervisor(factory)

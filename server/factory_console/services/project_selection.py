@@ -222,10 +222,12 @@ class SelectionState:
     :meth:`~factory_console.store.registry_protocol.ProjectRegistry.get_selected_project`),
     not this object's.
 
-    **The on-change hook exists before it has a subscriber.** The file watcher must be
-    re-rooted when the selection moves, and its supervisor lands in a later ticket;
-    exposing :meth:`subscribe` now means that ticket ATTACHES rather than reopens this
-    file and re-derives when a change counts as a change. Nothing subscribes yet.
+    **The one subscriber is the watcher supervisor.** The file watcher must be re-rooted
+    when the selection moves, so :func:`factory_console.app._watcher_retarget_hook` wraps
+    a :class:`~factory_console.services.watcher_supervisor.WatcherSupervisor` and
+    ``create_app`` registers it through :meth:`subscribe`. It is the reason this hook
+    exists, and — see :meth:`subscribe` — it deliberately never raises and never blocks
+    the caller.
     """
 
     def __init__(
@@ -313,9 +315,17 @@ class SelectionState:
 
         Called with the resolved root, or ``None`` when the new selection resolves to
         no path at all (cleared, or an id whose row has gone). Subscribers are invoked
-        in registration order, synchronously, inside :meth:`select` — so a subscriber
-        that raises fails the switch that provoked it, which is the honest outcome for
-        a supervisor that could not re-root itself.
+        in registration order, synchronously, inside :meth:`select`, on the event-loop
+        thread — so a subscriber that raises WOULD fail the switch that provoked it.
+
+        The one real subscriber is careful not to rely on that. ``select()`` is called
+        from a request handler, and re-rooting the watcher both blocks (an observer join)
+        and can fail (a watcher that will not build), so
+        :func:`factory_console.app._watcher_retarget_hook` returns immediately and runs
+        the swap as a task whose halves are documented never to raise. The deliberate
+        consequence: losing live updates never turns a successful project switch into a
+        failed request. Do not build an error path on a raising subscriber — nothing
+        raises, and a switch is never failed by a lost watcher.
         """
         self._on_change.append(callback)
 
