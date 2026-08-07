@@ -19,6 +19,15 @@ disconnecting (closing the stream) drains the hub's subscriber list back to empt
 plus heartbeat comments. Heartbeats use a tiny interval so everything stays
 sub-second. The repo runs ``asyncio_mode=auto`` so ``async def test_...`` needs no
 decorator.
+
+T115 adds the per-connection half: a stream opened before a project switch ends
+with a terminal ``event: stale`` frame on its next heartbeat instead of
+heartbeating forever on the stopped watcher, and a connection opened AFTER the
+switch is served by the new root's watcher. Those tests drive a REAL
+:class:`~factory_console.services.watcher_supervisor.WatcherSupervisor` built by
+``create_app`` — with a ``watcher_factory`` handing out
+:class:`FakeFileWatcher`\\ s — and a real ``retarget()``, so the generation the
+stream reads is the one the production swap moves.
 """
 
 from __future__ import annotations
@@ -33,13 +42,16 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from factory_console.api.deps import get_file_watcher, get_watcher_supervisor
+from factory_console.api.v1 import events as events_module
 from factory_console.api.v1.events import events
 from factory_console.app import create_app
 from factory_console.domain import Project
 from factory_console.domain.watch import ChangeEvent
 from factory_console.file_adapter import FakeFileAdapter
-from factory_console.file_adapter.watcher import FakeFileWatcher
+from factory_console.file_adapter.watcher import FakeFileWatcher, FileWatcher
 from factory_console.services.events_service import sse_event_stream
+from factory_console.services.watcher_supervisor import WatcherSupervisor
 
 _FAKE_PROJECT = Project(
     rootPath=Path("/factory/demo-project"),
@@ -50,7 +62,11 @@ _FAKE_PROJECT = Project(
 
 _READY_FRAME = "event: ready\ndata: {}\n\n"
 _KEEPALIVE_FRAME = ": keepalive\n\n"
+_STALE_FRAME = "event: stale\ndata: {}\n\n"
 _CHANGE_PREFIX = "event: change\ndata: "
+
+_ROOT_A = Path("/factory/demo-project")
+_ROOT_B = Path("/factory/other-project")
 
 
 def _make_event(kind: str = "modified", path: str = "docs/planning/tickets.json") -> ChangeEvent:
@@ -65,9 +81,12 @@ class _FakeRequest:
     of heartbeats instead of running forever.
     """
 
-    def __init__(self, disconnect_after: int) -> None:
+    def __init__(self, disconnect_after: int, app: FastAPI | None = None) -> None:
         self._checks = 0
         self._disconnect_after = disconnect_after
+        # Only the tests that resolve dependencies by hand (``get_file_watcher`` /
+        # ``get_watcher_supervisor``) need an app to read ``.state`` off.
+        self.app = app
 
     async def is_disconnected(self) -> bool:
         self._checks += 1
@@ -95,14 +114,46 @@ class _EmptyWatcher:
         yield  # pragma: no cover - marks this a generator; never reached
 
 
+class _RecordingWatcherFactory:
+    """A ``watcher_factory`` handing out a fresh :class:`FakeFileWatcher` per root.
+
+    Records the roots it was asked for, so a test can assert the supervisor really
+    rebuilt on the NEW root rather than re-serving the old instance.
+    """
+
+    def __init__(self) -> None:
+        self.roots: list[Path] = []
+
+    def __call__(self, root: Path) -> FileWatcher:
+        self.roots.append(root)
+        return FakeFileWatcher()
+
+
 def _make_app(file_watcher: object | None) -> FastAPI:
     """Build the real app over an empty FakeFileAdapter with the given watcher."""
     return create_app(
         FakeFileAdapter(project=_FAKE_PROJECT, tickets=[]),
         version="0.0.0",
-        project_root=Path("/factory/demo-project"),
+        project_root=_ROOT_A,
         file_watcher=file_watcher,
     )
+
+
+def _make_switchable_app() -> tuple[FastAPI, _RecordingWatcherFactory]:
+    """Build the real app whose supervisor CAN build a successor watcher.
+
+    The production v3.0 wiring: no boot-time ``file_watcher``, a ``watcher_factory``
+    instead, so ``create_app``'s always-constructed ``WatcherSupervisor`` builds the
+    first watcher in ``start()`` and a genuinely different one on every ``retarget``.
+    """
+    factory = _RecordingWatcherFactory()
+    app = create_app(
+        FakeFileAdapter(project=_FAKE_PROJECT, tickets=[]),
+        version="0.0.0",
+        project_root=_ROOT_A,
+        watcher_factory=factory,
+    )
+    return app, factory
 
 
 async def _poll_until(
@@ -137,7 +188,9 @@ async def test_handler_streams_ready_then_change_and_releases_on_close() -> None
     request = _FakeRequest(disconnect_after=10)
 
     # Call the real route handler; it wraps sse_event_stream in a StreamingResponse.
-    resp = await events(request, watcher)  # type: ignore[arg-type]
+    # The supervisor is the second DI argument (T115); one that never retargets keeps
+    # this case's behaviour exactly as it was before the generation check existed.
+    resp = await events(request, watcher, WatcherSupervisor(None, initial=watcher))  # type: ignore[arg-type]
     assert resp.media_type == "text/event-stream"
     assert resp.headers["cache-control"] == "no-cache"
     assert resp.headers["x-accel-buffering"] == "no"
@@ -230,3 +283,139 @@ async def test_stream_stops_when_subscription_ends() -> None:
             await anext(stream)
     finally:
         await stream.aclose()
+
+
+# --------------------------------------------------------------------------- #
+# T115: a selection change ends the stream with a terminal `stale` frame
+# --------------------------------------------------------------------------- #
+
+
+async def test_stream_ends_with_stale_frame_when_the_selection_switches() -> None:
+    app, factory = _make_switchable_app()
+    supervisor: WatcherSupervisor = app.state.watcher_supervisor
+    supervisor.start(_ROOT_A)
+    watcher = supervisor.current()
+    assert watcher is not None
+
+    # Exactly what the route builds at connect time: the generation as of now.
+    generation = supervisor.generation()
+    request = _FakeRequest(disconnect_after=10)
+    stream = sse_event_stream(
+        watcher,  # type: ignore[arg-type]
+        request,  # type: ignore[arg-type]
+        heartbeat_interval=0.01,
+        is_stale=lambda: supervisor.generation() != generation,
+    )
+    try:
+        assert await anext(stream) == _READY_FRAME
+        # Still the current watcher: an ordinary keepalive, no stale frame.
+        assert await anext(stream) == _KEEPALIVE_FRAME
+
+        supervisor.retarget(_ROOT_B)
+        assert factory.roots == [_ROOT_A, _ROOT_B]
+
+        # Within ONE heartbeat the stream notices the generation moved, emits the
+        # terminal frame instead of a keepalive, and ends.
+        assert await anext(stream) == _STALE_FRAME
+        with pytest.raises(StopAsyncIteration):
+            await anext(stream)
+    finally:
+        await stream.aclose()
+
+    # Ending this way still runs the single `finally`: no subscription is leaked on
+    # the watcher that was swapped out.
+    assert watcher._hub._subscribers == []  # type: ignore[attr-defined]
+
+
+async def test_watcher_none_stream_also_ends_with_stale_frame() -> None:
+    app, _ = _make_switchable_app()
+    supervisor: WatcherSupervisor = app.state.watcher_supervisor
+    supervisor.start(None)  # watcher-less: nothing to build a watcher for
+
+    generation = supervisor.generation()
+    request = _FakeRequest(disconnect_after=10)
+    stream = sse_event_stream(
+        None,
+        request,  # type: ignore[arg-type]
+        heartbeat_interval=0.01,
+        is_stale=lambda: supervisor.generation() != generation,
+    )
+    try:
+        assert await anext(stream) == _READY_FRAME
+        assert await anext(stream) == _KEEPALIVE_FRAME
+        supervisor.retarget(_ROOT_B)
+        assert await anext(stream) == _STALE_FRAME
+        with pytest.raises(StopAsyncIteration):
+            await anext(stream)
+    finally:
+        await stream.aclose()
+
+
+async def test_handler_captures_the_generation_at_connect_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The route reads ``generation()`` when the response is built, not per frame."""
+    captured: dict[str, object] = {}
+
+    async def _empty() -> AsyncIterator[str]:
+        return
+        yield  # pragma: no cover - marks this a generator; never reached
+
+    def _spy(watcher: object, request: object, **kwargs: object) -> AsyncIterator[str]:
+        # A plain def, not an async generator: the call itself must record the
+        # kwargs, since an async generator's body would not run until first frame.
+        captured.update(kwargs)
+        return _empty()
+
+    monkeypatch.setattr(events_module, "sse_event_stream", _spy)
+
+    app, _ = _make_switchable_app()
+    supervisor: WatcherSupervisor = app.state.watcher_supervisor
+    supervisor.start(_ROOT_A)
+    request = _FakeRequest(disconnect_after=10, app=app)
+
+    await events(request, supervisor.current(), supervisor)  # type: ignore[arg-type]
+
+    is_stale = captured["is_stale"]
+    assert callable(is_stale)
+    assert is_stale() is False
+    supervisor.retarget(_ROOT_B)
+    assert is_stale() is True
+
+
+# --------------------------------------------------------------------------- #
+# T115: a connection opened AFTER the switch is served by the new root's watcher
+# --------------------------------------------------------------------------- #
+
+
+async def test_fresh_connection_after_the_switch_streams_the_new_watchers_changes() -> None:
+    app, factory = _make_switchable_app()
+    supervisor: WatcherSupervisor = app.state.watcher_supervisor
+    supervisor.start(_ROOT_A)
+    old = supervisor.current()
+    supervisor.retarget(_ROOT_B)
+    new = supervisor.current()
+    assert factory.roots == [_ROOT_A, _ROOT_B]
+    assert new is not None and new is not old
+
+    # Resolve the dependencies exactly as FastAPI would, off the real app state.
+    request = _FakeRequest(disconnect_after=10, app=app)
+    watcher = get_file_watcher(request)  # type: ignore[arg-type]
+    assert watcher is new
+    resp = await events(request, watcher, get_watcher_supervisor(request))  # type: ignore[arg-type]
+
+    body = resp.body_iterator
+    assert await anext(body) == _READY_FRAME
+
+    next_frame = asyncio.ensure_future(anext(body))
+    await _poll_until(lambda: bool(new._hub._subscribers))  # type: ignore[attr-defined]
+    new.emit(_make_event(kind="created", path="ROADMAP.md"))  # type: ignore[attr-defined]
+
+    frame = await asyncio.wait_for(next_frame, 1.0)
+    assert frame.startswith(_CHANGE_PREFIX)
+    assert json.loads(frame[len(_CHANGE_PREFIX) :].strip())["path"] == "ROADMAP.md"
+
+    # Nothing is bound to the watcher the switch stopped.
+    assert old._hub._subscribers == []  # type: ignore[attr-defined]
+    await body.aclose()
+    assert new._hub._subscribers == []  # type: ignore[attr-defined]
