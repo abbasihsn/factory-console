@@ -32,6 +32,7 @@ from factory_console.file_adapter import FakeFileAdapter
 from factory_console.file_adapter.discovery import ProjectNotFound
 from factory_console.file_adapter.fake_writer import FakeFileWriter
 from factory_console.file_adapter.run_artifacts import FakeRunArtifactReader
+from factory_console.services.project_selection import SESSION_PROJECT_ID
 
 
 class _Body(BaseModel):
@@ -246,6 +247,27 @@ def test_get_run_artifact_reader_raises_when_unbound() -> None:
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
     with pytest.raises(RuntimeError, match="run_artifact_reader"):
         get_run_artifact_reader(request)  # type: ignore[arg-type]
+
+
+def test_create_app_always_builds_a_selection_state_seeded_from_the_pin() -> None:
+    # v3.0's selection seam is never optional: create_app builds one for every app, so
+    # Depends(get_selection_state) can treat an absent one as a wiring bug. It is seeded
+    # from project_root, which is the precedence rule in one assertion — the typed PATH
+    # is the session's INITIAL selection.
+    app = _make_app()
+    assert app.state.selection.pinned_root == Path("/tmp/fake-root")
+    assert app.state.selection.current_id() == SESSION_PROJECT_ID
+
+
+def test_omitting_the_project_registry_leaves_the_app_usable_in_pinned_mode() -> None:
+    # The milestone's safety property: an app built with no registry is an app that is
+    # permanently pinned, which is every existing test and today's behaviour exactly.
+    # project_root SURVIVES unchanged as the pinned value, and no endpoint sees a
+    # difference — the health probe still answers as before.
+    app = _make_app()
+    assert app.state.project_registry is None
+    assert app.state.project_root == Path("/tmp/fake-root")
+    assert TestClient(app).get("/api/v1/health").status_code == 200
 
 
 def _spa_client(tmp_path: Path) -> TestClient:
