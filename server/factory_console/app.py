@@ -467,7 +467,13 @@ def create_dev_app() -> FastAPI:
     artifact reader is imported the same way for symmetry rather than out of
     necessity: it shares :mod:`~factory_console.file_adapter.run_artifacts` with the
     port this module already imports for its signature, so nothing new arrives with
-    it.
+    it. The console's own
+    :class:`~factory_console.store.sqlite_registry.SqliteProjectRegistry` is imported
+    the same lazy way and wired alongside ``RealFileWatcher`` as the
+    ``watcher_factory``, so the dev loop is multi-project exactly as the shipped CLI
+    is; a store that cannot be addressed warns on stderr and leaves the app pinned.
+    Like the CLI, this factory does NOT register the discovered root — it is an
+    ephemeral session pin, so a dev boot never grows the developer's dropdown.
 
     The write token comes from ``FACTORY_CONSOLE_WRITE_TOKEN`` via
     :func:`~factory_console.config.read_write_token` so a dev loop can pin it across
@@ -486,6 +492,7 @@ def create_dev_app() -> FastAPI:
     from factory_console.file_adapter.real_writer import RealFileWriter
     from factory_console.file_adapter.run_artifacts import RealRunArtifactReader
     from factory_console.file_adapter.watcher_real import RealFileWatcher
+    from factory_console.store.sqlite_registry import SqliteProjectRegistry
 
     # Same exit-2-style handling the CLI gives this variable. A bare ValueError here
     # would surface as an unhandled traceback out of uvicorn's factory loader — and
@@ -497,13 +504,28 @@ def create_dev_app() -> FastAPI:
     except ValueError as exc:
         raise SystemExit(f"{exc}\nSet a valid FACTORY_CONSOLE_WRITE_TOKEN or unset it.") from exc
 
+    # The dev loop wires the SAME registry + watcher factory the CLI does, so
+    # ``scripts/dev.sh`` exercises multi-project rather than a pinned-only app the
+    # shipped binary does not match. Degrading to ``None`` on an unaddressable store
+    # matters MORE here than in the CLI: ``--reload`` re-runs this factory on every
+    # save, so a raise would crash-loop the dev server. See the CLI's own construction
+    # for why ``ValueError``/``RuntimeError`` is the whole failure surface of a
+    # side-effect-free constructor.
+    try:
+        project_registry: SqliteProjectRegistry | None = SqliteProjectRegistry()
+    except (ValueError, RuntimeError) as exc:
+        print(f"warning: could not open the project registry: {exc}", file=sys.stderr)
+        project_registry = None
+
     root = discover_project(None, Path.cwd())
     return create_app(
         RealFileAdapter(),
         version=__version__,
         project_root=root,
         file_watcher=RealFileWatcher(root),
+        watcher_factory=RealFileWatcher,
         file_writer=RealFileWriter(),
         run_artifact_reader=RealRunArtifactReader(),
+        project_registry=project_registry,
         write_token=write_token,
     )

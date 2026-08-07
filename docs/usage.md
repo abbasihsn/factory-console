@@ -155,6 +155,24 @@ the local `factory-console PATH` viewer described above **never creates it** —
 the console over a project leaves no `~/.factory-console/` behind on a machine whose
 owner never asked for one.
 
+## Multiple projects
+
+The project you launch on is a **session** project: it is served for as long as the
+process lives and is deliberately **not** written to the console store, so running the
+console over a clone leaves no trace behind. To keep a project across runs, use the
+SPA's **Add this project** button (`POST /api/v1/projects` underneath) — that is the one
+act that registers it. Registered projects, plus the session one, fill the header's
+project **dropdown**; picking one switches what every page shows, live-update stream
+included. Registering never switches, and switching never unregisters. With nothing
+selected — a console whose registered projects you have not chosen between — pages say
+so and prompt you to pick one rather than guessing at a project on your behalf; the same
+happens when the selected project's directory has been moved away or made unreadable.
+
+Starting the console **without** a project directory is not available yet: without a
+`PATH` (and with no App Factory project above the current directory) the CLI still exits
+`1`, even when the store holds registered projects. The pathless long-running mode,
+`factory-console serve`, arrives in a later version.
+
 ## Exit codes
 
 | Code | Meaning                                                                                                                                                 |
