@@ -1,0 +1,32 @@
+{
+  "project": "harborlight",
+  "schemaVersion": 1,
+  "tickets": [
+    {
+      "id": "HL-001",
+      "title": "Tide-table importer for the harbour almanac",
+      "status": "todo",
+      "track": "ingestion",
+      "milestone": "MVP",
+      "dependsOn": [],
+      "provides": "Daily import of the published tide almanac into the canonical tide-window store",
+      "files": [
+        "server/harborlight/ingest/almanac.py",
+        "tests/unit/test_almanac.py"
+      ]
+    },
+    {
+      "id": "HL-007",
+      "title": "Berth availability board",
+      "status": "todo",
+      "track": "api",
+      "milestone": "v1",
+      "dependsOn": ["HL-001"],
+      "provides": "GET /api/v1/berths returning each berth's next free window against the tide table",
+      "files": [
+        "server/harborlight/api/berths.py",
+        "tests/integration/test_berths_endpoint.py"
+      ]
+    }
+  ]
+}
