@@ -153,24 +153,35 @@ the first time something actually reads or writes it** — a registry endpoint c
 just the CLI boot — and the directory is created `0700` and the database file `0600`,
 because a later version keeps credentials in it. Starting `factory-console PATH` never
 creates it by itself (`SqliteProjectRegistry()` construction is side-effect-free), so a
-boot that calls no registry endpoint at all — a throwaway clone, a CI job, a Playwright
-run — leaves no `~/.factory-console/` behind; the first `GET /api/v1/projects`, same as
-the first `POST`, is what creates it.
+boot that never opens the browser UI and calls no registry endpoint at all — a CI job or
+script driving the API directly — leaves no `~/.factory-console/` behind.
+
+**Opening the browser UI now does create it.** The header's project dropdown (see
+["Multiple projects"](#multiple-projects) below) reads the registry on every page, so the
+first `GET /api/v1/projects` that load fires — same as the first `POST` from a
+headless caller — is what creates the store. A throwaway clone visited only through the
+API, never through the browser, still leaves no trace; a Playwright run or any other
+browser visit does not, which is why the e2e and integration suites both point
+`FACTORY_CONSOLE_DB_PATH` at an isolated temp file rather than sharing this one.
 
 ## Multiple projects
 
-v3.0 lays the backend groundwork for multiple projects; the switcher UI itself — the
-header's dropdown, its **Add this project** button, and the no-selection prompt — is not
-part of this release and arrives with a later version. What is live today is the
-`/api/v1/projects` endpoint family: `POST` registers a directory, `GET` lists the
-session row plus every registered one (each with its `condition`), `PUT /current`
-switches which project every page reads from (live-update stream included, registering
-never switches, and switching never unregisters), and `DELETE /{id}` unregisters a row.
+v3.0 lays the backend groundwork for multiple projects. The header's project dropdown is
+live today — every route offers it once two or more projects are registered, and it
+switches which project the whole shell reads from. Its **Add this project** button and
+the no-selection prompt are not part of this release and arrive with a later version.
+Also live is the `/api/v1/projects` endpoint family behind the dropdown: `POST` registers
+a directory, `GET` lists the session row plus every registered one (each with its
+`condition`), `PUT /current` switches which project every page reads from (live-update
+stream included, registering never switches, and switching never unregisters), and
+`DELETE /{id}` unregisters a row.
 
 The project you launch on is a **session** project: it is served for as long as the
-process lives and is deliberately **not** written to the console store, so running the
-console over a clone leaves no trace behind, unless something actually calls one of the
-endpoints above (see ["The console store"](#the-console-store) above).
+process lives and is deliberately **not** written to the console store on its own. But
+opening the browser UI over that clone is not trace-free either, because the dropdown's
+own registry read creates the store the first time it runs (see
+["The console store"](#the-console-store) above) — only driving the API directly,
+without ever loading the browser UI, stays trace-free.
 
 Starting the console **without** a project directory is not available yet: without a
 `PATH` (and with no App Factory project above the current directory) the CLI still exits

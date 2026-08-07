@@ -29,8 +29,9 @@ import Page from './+page.svelte';
 
 const getGraphMock = vi.mocked(getGraph);
 
-// `+page.svelte`'s `PageData` merges the root layout's `project`, so the rendered
-// `data` prop must carry it too (the page itself only reads `data.graph`).
+// `+page.svelte`'s `PageData` merges the root layout's data — the `project` plus
+// the switcher's registry rows — so the rendered `data` prop must carry all of it
+// (the page itself only reads `data.graph`).
 const project = {
 	rootPath: '/home/dev/factory-console',
 	ticketsManifestPath: '/home/dev/factory-console/docs/planning/tickets.json',
@@ -46,7 +47,7 @@ const graph: TicketGraph = {
 };
 
 function pageData(g: TicketGraph): PageData {
-	return { project, graph: g };
+	return { project, projects: [], selectedId: null, graph: g };
 }
 
 describe('graph load', () => {

@@ -18,8 +18,9 @@ import Page from './+page.svelte';
 
 const searchTicketsMock = vi.mocked(searchTickets);
 
-// `+page.svelte`'s `PageData` merges the root layout's `project`, so the rendered
-// `data` prop must carry it too (the page itself only reads `data.q`/`data.results`).
+// `+page.svelte`'s `PageData` merges the root layout's data — the `project` plus
+// the switcher's registry rows — so the rendered `data` prop must carry all of it
+// (the page itself only reads `data.q`/`data.results`).
 const project = {
 	rootPath: '/home/dev/factory-console',
 	ticketsManifestPath: '/home/dev/factory-console/docs/planning/tickets.json',
@@ -51,7 +52,7 @@ function urlFor(q: string | null): { url: URL } {
 }
 
 function pageData(q: string, results: SearchHit[]): PageData {
-	return { project, q, results };
+	return { project, projects: [], selectedId: null, q, results };
 }
 
 describe('search load', () => {

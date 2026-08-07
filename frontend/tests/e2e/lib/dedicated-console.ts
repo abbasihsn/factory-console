@@ -18,6 +18,20 @@ import { fileURLToPath } from 'node:url';
 // global-setup owns the SHARED console's lifecycle (a PID file, a single
 // `--port 0` server, an exported base-URL env var), and coupling to it would
 // entangle the two lifecycles. The mechanisms below mirror those files exactly.
+//
+// Like the shared console, a dedicated one gets its OWN temp FACTORY_CONSOLE_DB_PATH
+// (never the developer's real ~/.factory-console/console.db), removed in `dispose`
+// alongside its fixture copy.
+//
+// `registerProject` adds a SECOND project to an already-running dedicated console
+// through the live `POST /api/v1/projects` HTTP endpoint, authorized with the
+// console's own write token — never through a second CLI subcommand. `cli.py` is a
+// single-command Typer app (`factory-console [PATH] --no-browser --port 0`, T119's
+// byte-for-byte contract), and giving the harness its own `register` subcommand would
+// change how that one command must be invoked — a compatibility constraint on the
+// shipped CLI that a TEST HARNESS has no business forcing onto it. Going through the
+// API instead exercises the same write path a real operator (or the SPA) uses, so the
+// harness never verifies a shortcut nobody else takes.
 
 // The console prints exactly ONE line to stdout at boot:
 //   "Factory Console v{version} — serving {root} at http://127.0.0.1:{port}"
@@ -72,10 +86,18 @@ const DEFAULT_FIXTURE = 'with_run_state';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '../../../..');
 
+/** One project `registerProject` added to a dedicated console's registry. */
+export interface RegisteredProject {
+	readonly id: string;
+	readonly name: string;
+	readonly path: string;
+}
+
 /**
  * A handle to a running dedicated console over a disposable fixture copy.
  * The owning test mutates the copy through `moveRunState` (it is the sole
- * writer) and MUST call `dispose` in `afterAll` to reap the child and temp dir.
+ * writer) and MUST call `dispose` in `afterAll` to reap the child and every
+ * temp dir it (or `registerProject`) created.
  */
 export interface DedicatedConsole {
 	/** Base URL of the dedicated console, e.g. `http://127.0.0.1:54321`. */
@@ -89,6 +111,8 @@ export interface DedicatedConsole {
 	 * the SPA's own key, exactly as a pasted token would land there.
 	 */
 	readonly writeToken: string;
+	/** Projects `registerProject` has added to this console's registry, in order. */
+	readonly projects: RegisteredProject[];
 	/**
 	 * Move a run-state marker on the copy from one status dir to another by
 	 * renaming `<tempDir>/.factory/run-state/<from>/<id>` → `.../<to>/<id>`.
@@ -96,9 +120,18 @@ export interface DedicatedConsole {
 	 * watcher-visible mutation a live test asserts a refresh for.
 	 */
 	moveRunState(id: string, from: string, to: string): void;
-	/** SIGTERM→poll→SIGKILL the child, then remove the temp dir. Idempotent. */
+	/**
+	 * SIGTERM→poll→SIGKILL the child, then remove every temp dir this handle
+	 * owns (its fixture copy, its private DB dir, and any `registerProject`
+	 * added). Idempotent.
+	 */
 	dispose(): Promise<void>;
 }
+
+// Tracks the temp dirs a handle owns beyond its own `tempDir`/db dir (its DB dir
+// and any fixture copies `registerProject` creates), so `dispose` reaps all of
+// them without widening the public interface with an internal bookkeeping field.
+const _ownedTempDirs = new WeakMap<DedicatedConsole, string[]>();
 
 // The console binary is `factory-console` (installed from the wheel in CI — the
 // default). FC_E2E_CONSOLE_CMD overrides the launcher so the harness stays
@@ -206,6 +239,12 @@ export async function start(fixtureName: string = DEFAULT_FIXTURE): Promise<Dedi
 	const tempDir = mkdtempSync(path.join(tmpdir(), 'factory-console-e2e-'));
 	cpSync(src, tempDir, { recursive: true });
 
+	// A private temp dir for this console's OWN SQLite store, exactly like
+	// global-setup's shared boot — never the developer's real
+	// ~/.factory-console/console.db. Kept separate from `tempDir` (the fixture
+	// copy the console SERVES) so the two lifecycles don't collide on disk.
+	const dbDir = mkdtempSync(path.join(tmpdir(), 'factory-console-e2e-db-'));
+
 	// CRITICAL: cwd must be REPO_ROOT so a relative `PYTHONPATH=server` in the
 	// env resolves to `<repo>/server` during from-source verification — exactly
 	// as global-setup relies on it. The fixture PATH arg is absolute (the temp
@@ -213,7 +252,7 @@ export async function start(fixtureName: string = DEFAULT_FIXTURE): Promise<Dedi
 	const { bin, args } = resolveLaunch(tempDir);
 	const child = spawn(bin, args, {
 		cwd: REPO_ROOT,
-		env: process.env,
+		env: { ...process.env, FACTORY_CONSOLE_DB_PATH: path.join(dbDir, 'console.db') },
 		stdio: ['ignore', 'pipe', 'pipe']
 	});
 
@@ -270,9 +309,10 @@ export async function start(fixtureName: string = DEFAULT_FIXTURE): Promise<Dedi
 		writeToken = await awaitWriteToken(() => stderr, describe);
 	} catch (err) {
 		// Setup failed: never leak the child (the timeout path leaves it running)
-		// or the temp dir. Both cleanups swallow their own errors.
+		// or either temp dir. Both cleanups swallow their own errors.
 		await killChild(child).catch(() => {});
 		rmSync(tempDir, { recursive: true, force: true });
+		rmSync(dbDir, { recursive: true, force: true });
 		throw err;
 	}
 
@@ -281,16 +321,120 @@ export async function start(fixtureName: string = DEFAULT_FIXTURE): Promise<Dedi
 		renameSync(path.join(runState, from, id), path.join(runState, to, id));
 	};
 
+	const projects: RegisteredProject[] = [];
+
 	// Robust to a partial/failed start (temp dir without a live child, or vice
-	// versa) and to being called more than once: always attempts BOTH the child
-	// kill and the temp-dir removal, swallowing ESRCH and missing-path errors.
+	// versa) and to being called more than once: always attempts the child kill
+	// and EVERY owned temp dir's removal (this console's own two, plus any
+	// `registerProject` added), swallowing ESRCH and missing-path errors.
 	const dispose = async (): Promise<void> => {
 		try {
 			await killChild(child);
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
+			rmSync(dbDir, { recursive: true, force: true });
+			for (const extra of _ownedTempDirs.get(handle) ?? []) {
+				rmSync(extra, { recursive: true, force: true });
+			}
 		}
 	};
 
-	return { baseURL, tempDir, writeToken, moveRunState, dispose };
+	const handle: DedicatedConsole = {
+		baseURL,
+		tempDir,
+		writeToken,
+		projects,
+		moveRunState,
+		dispose
+	};
+	_ownedTempDirs.set(handle, []);
+	return handle;
+}
+
+// Grace period for the console to accept connections, exactly like BOOT_TIMEOUT_MS
+// covers printing the URL line: the contract line is printed BEFORE server.run()
+// binds the socket (see global-setup's own comment), so the very first request can
+// race the bind and see ECONNREFUSED. Retried rather than delayed by a fixed sleep,
+// same reasoning as global-setup's `_get_health` twin in `test_cli.py`.
+const CONNECT_RETRY_TIMEOUT_MS = 5_000;
+const CONNECT_RETRY_INTERVAL_MS = 50;
+
+async function fetchWithConnectRetry(url: string, init: RequestInit): Promise<Response> {
+	const deadline = Date.now() + CONNECT_RETRY_TIMEOUT_MS;
+	for (;;) {
+		try {
+			return await fetch(url, init);
+		} catch (err) {
+			if (Date.now() >= deadline) throw err;
+			await sleep(CONNECT_RETRY_INTERVAL_MS);
+		}
+	}
+}
+
+/**
+ * Register a SECOND project on an already-running `handle`: copy `fixtureName`
+ * into its own private temp dir (so it never shares the fixture copy `start`
+ * made) and `POST` it to `/api/v1/projects`, authorized with `handle`'s write
+ * token. Appends the new row to `handle.projects` and returns it.
+ *
+ * The new temp dir is owned by `handle` from this call onward — `dispose` reaps
+ * it exactly as it reaps `handle.tempDir`, so a multi-project spec still leaks
+ * nothing.
+ */
+export async function registerProject(
+	handle: DedicatedConsole,
+	fixtureName: string
+): Promise<RegisteredProject> {
+	const src = path.join(REPO_ROOT, 'tests', 'fixtures', 'projects', fixtureName);
+	const tempDir = mkdtempSync(path.join(tmpdir(), 'factory-console-e2e-'));
+	cpSync(src, tempDir, { recursive: true });
+	_ownedTempDirs.get(handle)?.push(tempDir);
+
+	const response = await fetchWithConnectRetry(`${handle.baseURL}/api/v1/projects`, {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			'X-Factory-Write-Token': handle.writeToken
+		},
+		body: JSON.stringify({ path: tempDir })
+	});
+	if (!response.ok) {
+		throw new Error(
+			`registerProject(${fixtureName}): POST /api/v1/projects → ${response.status}: ` +
+				(await response.text())
+		);
+	}
+
+	const row = (await response.json()) as { id: string; name: string; path: string };
+	const project: RegisteredProject = { id: row.id, name: row.name, path: row.path };
+	handle.projects.push(project);
+	return project;
+}
+
+/**
+ * Boot a dedicated console on `fixtures[0]` (via `start`), then `registerProject`
+ * every remaining entry against it in order. Requires at least one fixture — the
+ * console has to boot on something.
+ *
+ * `start`'s own invariant — a setup failure never leaks a process or a temp dir —
+ * holds only up to the point `start` resolves. A `registerProject` failure after
+ * that (a 409 duplicate path, a 503, a connect-retry deadline) must not propagate
+ * past a live, undisposed `handle` that the caller never receives and so can
+ * never dispose of either.
+ */
+export async function startMulti(fixtures: string[]): Promise<DedicatedConsole> {
+	if (fixtures.length === 0) {
+		throw new Error('startMulti: at least one fixture is required to boot on');
+	}
+	const [first, ...rest] = fixtures;
+	const handle = await start(first);
+	try {
+		for (const fixtureName of rest) {
+			await registerProject(handle, fixtureName);
+		}
+	} catch (err) {
+		await handle.dispose().catch(() => {});
+		throw err;
+	}
+	return handle;
 }
