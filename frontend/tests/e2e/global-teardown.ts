@@ -1,5 +1,5 @@
-import { readFileSync, rmSync } from 'node:fs';
-import { PID_FILE } from './global-setup';
+import { readFileSync, rmSync, statSync } from 'node:fs';
+import { DB_STATE_FILE, HOME_FACTORY_CONSOLE_DIR, PID_FILE } from './global-setup';
 
 // Poll cadence and total grace given to a clean SIGTERM shutdown (uvicorn drains
 // and exits 0) before escalating to SIGKILL.
@@ -58,6 +58,50 @@ async function globalTeardown(): Promise<void> {
 	}
 
 	rmSync(PID_FILE, { force: true });
+
+	await assertRealStoreUntouchedAndCleanUp();
+}
+
+// The protection this whole harness exists to prove: with the child now dead,
+// confirm ~/.factory-console/ was not created (or, if it already existed, that
+// its mtime is unchanged) before removing this run's own temp DB dir. Throwing
+// here fails the teardown itself — a leak into the developer's real store is a
+// harness regression, not a thing to clean up quietly and move on from.
+async function assertRealStoreUntouchedAndCleanUp(): Promise<void> {
+	let state: { dbDir: string; homeDirMtimeMs: number | null };
+	try {
+		state = JSON.parse(readFileSync(DB_STATE_FILE, 'utf8'));
+	} catch {
+		// No state file — global-setup never got far enough to write one (it threw
+		// before doing so), so there is nothing recorded to check or clean up.
+		return;
+	}
+
+	let currentMtimeMs: number | null;
+	try {
+		currentMtimeMs = statSync(HOME_FACTORY_CONSOLE_DIR).mtimeMs;
+	} catch {
+		currentMtimeMs = null;
+	}
+
+	if (state.homeDirMtimeMs === null) {
+		if (currentMtimeMs !== null) {
+			throw new Error(
+				`factory-console e2e teardown: ${HOME_FACTORY_CONSOLE_DIR} was created during ` +
+					`this run (it did not exist beforehand) — the harness leaked a write into the ` +
+					`developer's real console store.`
+			);
+		}
+	} else if (currentMtimeMs !== state.homeDirMtimeMs) {
+		throw new Error(
+			`factory-console e2e teardown: ${HOME_FACTORY_CONSOLE_DIR}'s mtime changed during ` +
+				`this run (${state.homeDirMtimeMs} -> ${currentMtimeMs}) — the harness wrote into ` +
+				`the developer's real console store.`
+		);
+	}
+
+	rmSync(state.dbDir, { recursive: true, force: true });
+	rmSync(DB_STATE_FILE, { force: true });
 }
 
 export default globalTeardown;

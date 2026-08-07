@@ -39,14 +39,16 @@ from factory_console.store.sqlite_registry import SqliteProjectRegistry
 
 runner = CliRunner()
 
-# Every ``FACTORY_CONSOLE_*`` variable the CLI reads, through Typer's ``envvar=`` or
-# (``FACTORY_CONSOLE_DB_PATH``) through the store's own settings object.
+# Every ``FACTORY_CONSOLE_*`` Typer option this CLI reads via ``envvar=``.
+# ``FACTORY_CONSOLE_DB_PATH`` is NOT one of these: it is not a Typer option, and the
+# package-wide ``tests/integration/conftest.py`` fixture already points it at this
+# test's own ``tmp_path`` (T120) — stripping it here would undo that isolation for
+# every subprocess case, which is exactly the ambient path this ticket closes.
 _ENV_VARS = (
     "FACTORY_CONSOLE_HOST",
     "FACTORY_CONSOLE_PORT",
     "FACTORY_CONSOLE_LOG_LEVEL",
     "FACTORY_CONSOLE_WRITE_TOKEN",
-    "FACTORY_CONSOLE_DB_PATH",
 )
 
 
@@ -59,15 +61,6 @@ def _clear_ambient_console_env(monkeypatch: pytest.MonkeyPatch) -> None:
     turns any invocation that omits ``--host`` into an exit-2 run, and a bogus
     ``FACTORY_CONSOLE_LOG_LEVEL`` does the same. That reaches the subprocess cases too,
     since ``_child_env`` inherits ``os.environ``.
-
-    ``FACTORY_CONSOLE_DB_PATH`` is stripped for the same reason one step removed: it is
-    not a Typer option, but the CLI now opens a
-    :class:`~factory_console.store.sqlite_registry.SqliteProjectRegistry` through it, so
-    an ambient value would decide which store the cases below address. Clearing it points
-    the default construction at the operator's real path — which is harmless precisely
-    because construction is side-effect-free (T108): nothing here CALLS the registry
-    without first pointing ``FACTORY_CONSOLE_DB_PATH`` at a ``tmp_path`` file, so no test
-    can create ``~/.factory-console/``.
 
     Cases that WANT a variable set still pass it via ``runner.invoke(env=...)``, which
     applies on top of this — so precedence tests are unaffected.

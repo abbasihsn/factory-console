@@ -1,12 +1,23 @@
 import { spawn } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // Where global-teardown reads the console child's PID to shut it down. A stable
 // name in the OS temp dir so teardown finds it in a fresh process.
 export const PID_FILE = path.join(tmpdir(), 'factory-console-e2e.pid');
+
+// Where global-teardown reads this run's temp DB dir and pre-run snapshot of
+// ~/.factory-console/ (see DB_STATE_FILE's writer below) to verify the run never
+// touched the developer's real console store.
+export const DB_STATE_FILE = path.join(tmpdir(), 'factory-console-e2e.db-state.json');
+
+// The developer's (and CI runner's) real console store — the ONE thing no layer
+// of this harness may ever create or modify. Named here, not re-derived in
+// global-teardown, so there is one spelling of "the real store" for both ends of
+// the guard.
+export const HOME_FACTORY_CONSOLE_DIR = path.join(homedir(), '.factory-console');
 
 // The console prints exactly ONE line to stdout at boot:
 //   "Factory Console v{version} — serving {root} at http://127.0.0.1:{port}"
@@ -40,10 +51,26 @@ function resolveLaunch(): { bin: string; args: string[] } {
 }
 
 async function globalSetup(): Promise<void> {
+	// A per-run temp dir for the console's OWN SQLite store, passed to the spawned
+	// child via FACTORY_CONSOLE_DB_PATH so this boot — and every fixture/spec that
+	// registers a second project against it — never opens the developer's real
+	// ~/.factory-console/console.db.
+	const dbDir = mkdtempSync(path.join(tmpdir(), 'factory-console-e2e-db-'));
+	const dbPath = path.join(dbDir, 'console.db');
+
+	// Snapshot the real store's mtime BEFORE the child ever runs (null if it does
+	// not exist yet), so global-teardown can prove this run left it untouched.
+	let homeDirMtimeMs: number | null;
+	try {
+		homeDirMtimeMs = statSync(HOME_FACTORY_CONSOLE_DIR).mtimeMs;
+	} catch {
+		homeDirMtimeMs = null;
+	}
+
 	const { bin, args } = resolveLaunch();
 	const child = spawn(bin, args, {
 		cwd: REPO_ROOT,
-		env: process.env,
+		env: { ...process.env, FACTORY_CONSOLE_DB_PATH: dbPath },
 		stdio: ['ignore', 'pipe', 'pipe']
 	});
 
@@ -96,14 +123,16 @@ async function globalSetup(): Promise<void> {
 		});
 	} catch (err) {
 		// globalTeardown does NOT run when globalSetup throws, so don't leak a child
-		// that's still alive (the timeout path leaves it running).
+		// that's still alive (the timeout path leaves it running) OR the temp DB dir.
 		if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
 			child.kill('SIGKILL');
 		}
+		rmSync(dbDir, { recursive: true, force: true });
 		throw err;
 	}
 
 	writeFileSync(PID_FILE, String(child.pid), 'utf8');
+	writeFileSync(DB_STATE_FILE, JSON.stringify({ dbDir, homeDirMtimeMs }), 'utf8');
 	// Workers are spawned only after globalSetup resolves, so this env var is in
 	// place when each worker re-loads playwright.config.ts and reads use.baseURL.
 	process.env.FC_E2E_BASE_URL = baseURL;
