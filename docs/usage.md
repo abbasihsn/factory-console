@@ -164,6 +164,11 @@ API, never through the browser, still leaves no trace; a Playwright run or any o
 browser visit does not, which is why the e2e and integration suites both point
 `FACTORY_CONSOLE_DB_PATH` at an isolated temp file rather than sharing this one.
 
+Deleting it is safe and is the supported reset: stop the console and
+`rm -rf ~/.factory-console` (or the directory your override points at). All you lose is
+the list of registered projects — no ticket, run-state or roadmap data is in there — and
+the next registry call recreates the store empty.
+
 ## Multiple projects
 
 v3.0 lays the backend groundwork for multiple projects. The header's project dropdown is
