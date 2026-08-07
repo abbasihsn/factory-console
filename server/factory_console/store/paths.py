@@ -45,6 +45,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from factory_console.errors import FactoryConsoleError
+from factory_console.file_adapter.path_safety import resolve_or_none
 
 _BLANK_REASON = "Project path must not be blank"
 _RELATIVE_REASON = (
@@ -94,42 +95,52 @@ def canonical_project_path(raw: Path | str) -> Path:
         InvalidProjectPath: ``raw`` is blank or whitespace-only; is still
             relative after ``~`` expansion; or could not be resolved at all.
 
-    Blankness is tested on the STRING, before :class:`~pathlib.Path` sees it,
-    because ``Path("")`` is ``Path(".")`` — an empty path would otherwise slip
-    through as the server's working directory, which is precisely the
-    mis-addressing the relative-path rule exists to prevent.
+    Blankness is tested on the STRIPPED string, before :class:`~pathlib.Path`
+    sees it, because ``Path("")`` is ``Path(".")`` — an empty path would
+    otherwise slip through as the server's working directory, which is
+    precisely the mis-addressing the relative-path rule exists to prevent. The
+    stripped form is also what gets canonicalised: a path pasted or dragged in
+    routinely carries a leading/trailing space or newline, and registering it
+    verbatim would store a row for a directory that can never exist
+    (``path_missing`` forever) while the ``UNIQUE`` index sees it as a
+    different spelling from the same path typed cleanly — defeating the "one
+    spelling per project" invariant this module exists to hold.
+    :class:`InvalidProjectPath` still echoes ``raw`` exactly AS GIVEN, before
+    stripping, so the caller sees their own input back.
 
     Neither ``expanduser()`` nor ``resolve()`` is total, and non-strict does not
     mean non-raising: ``~someone-with-no-account`` raises :class:`RuntimeError`
     from the former, and through CPython 3.12 a symlink loop raises
     :class:`RuntimeError` from the latter while 3.13 answers the unresolved path
-    (the interpreter drift
-    :func:`~factory_console.file_adapter.path_safety.resolve_or_none` documents,
-    met here for a caller-supplied project path). ``pyproject.toml`` declares
-    ``requires-python = ">=3.11"`` with no upper bound, so both behaviours are in
-    the supported range. Unhandled, a path a user typed into the "add project"
-    field would escape as an unmapped 500 from a function documented to raise
-    only :class:`InvalidProjectPath`; it is reported as the 400 it is instead —
-    "I cannot turn this into an identity" is a statement about the input, not a
-    server fault. This is NOT the ``strict=False`` case: a path that merely does
-    not exist resolves fine and registers fine, by design.
+    — the interpreter drift
+    :func:`~factory_console.file_adapter.path_safety.resolve_or_none` documents
+    and centralises, reused here rather than re-caught, so the two callers
+    cannot come to disagree about which exceptions the drift can raise.
+    ``pyproject.toml`` declares ``requires-python = ">=3.11"`` with no upper
+    bound, so both behaviours are in the supported range. Unhandled, a path a
+    user typed into the "add project" field would escape as an unmapped 500
+    from a function documented to raise only :class:`InvalidProjectPath`; it is
+    reported as the 400 it is instead — "I cannot turn this into an identity"
+    is a statement about the input, not a server fault. This is NOT the
+    ``strict=False`` case: a path that merely does not exist resolves fine and
+    registers fine, by design.
     """
-    given = str(raw)
-    if not given.strip():
-        raise InvalidProjectPath(given, reason=_BLANK_REASON)
+    given = str(raw).strip()
+    if not given:
+        raise InvalidProjectPath(raw, reason=_BLANK_REASON)
 
     try:
         expanded = Path(given).expanduser()
     except RuntimeError as exc:
-        raise InvalidProjectPath(given, reason=_UNRESOLVABLE_REASON) from exc
+        raise InvalidProjectPath(raw, reason=_UNRESOLVABLE_REASON) from exc
 
     if not expanded.is_absolute():
-        raise InvalidProjectPath(given, reason=_RELATIVE_REASON)
+        raise InvalidProjectPath(raw, reason=_RELATIVE_REASON)
 
-    try:
-        return expanded.resolve(strict=False)
-    except (OSError, RuntimeError, ValueError) as exc:
-        raise InvalidProjectPath(given, reason=_UNRESOLVABLE_REASON) from exc
+    resolved = resolve_or_none(expanded)
+    if resolved is None:
+        raise InvalidProjectPath(raw, reason=_UNRESOLVABLE_REASON)
+    return resolved
 
 
 def default_project_name(path: Path) -> str:

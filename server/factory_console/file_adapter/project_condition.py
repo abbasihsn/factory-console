@@ -51,6 +51,7 @@ full path, so adding this port touches no aggregation file.
 
 from __future__ import annotations
 
+import logging
 import os
 import stat as stat_module
 from pathlib import Path
@@ -58,6 +59,9 @@ from typing import Protocol, runtime_checkable
 
 from factory_console.domain.registry import RegistryEntryCondition
 from factory_console.file_adapter.discovery import MANIFEST_RELPATH
+from factory_console.file_adapter.path_safety import ABSENT_ERRNOS, is_regular_file
+
+_LOGGER = logging.getLogger(__name__)
 
 FACTORY_RELATIVE_DIR = Path(".factory")
 """The factory's run-state directory, relative to a project root.
@@ -103,47 +107,56 @@ def classify_project_path(path: Path) -> RegistryEntryCondition:
        ``unreadable``; a clean ``False`` is ``not_a_project``.
     4. ``.factory/`` — probed in its OWN ``try``, after step 3 has answered, so a
        directory whose manifest is cleanly absent reports ``not_a_project`` rather
-       than borrowing an error raised by a later probe it never needed. Absent →
-       ``no_factory_dir`` (an :class:`OSError`, again, ``unreadable``): a real,
-       browsable project whose run-state, runs and spend are legitimately missing
-       rather than zero. This is the ORDINARY state of a fresh clone, since
-       ``.factory/`` is gitignored.
+       than borrowing an error raised by a later probe it never needed. Absent (an
+       :class:`OSError` whose errno is in
+       :data:`~factory_console.file_adapter.path_safety.ABSENT_ERRNOS`) →
+       ``no_factory_dir``: a real, browsable project whose run-state, runs and
+       spend are legitimately missing rather than zero. This is the ORDINARY state
+       of a fresh clone, since ``.factory/`` is gitignored. Any OTHER
+       :class:`OSError` → ``unreadable``.
     5. Otherwise ``ok``.
 
     **A permission error is NEVER answered as the more permissive** ``not_a_project``.
     "I could not look" is not "I looked and it is not a project": the first sends an
     operator to their file modes, the second sends them hunting for a project that was
-    there all along. That is why step 3 catches :class:`OSError` around the manifest
-    probe instead of leaning on :meth:`~pathlib.Path.is_file` returning ``False``.
-    ``is_file`` swallows exactly the errnos that MEAN absence (``ENOENT``, ``ENOTDIR``,
-    ``ELOOP``, ``EBADF``) and re-raises everything else, ``EACCES`` first among them —
-    so without that ``except`` a manifest inside an unsearchable directory would
-    propagate, breaking the totality this port promises; and "fixing" that by reading
-    its ``False`` as absence would assert a fact about the directory the console never
-    established.
+    there all along. That is why steps 3 and 4 classify by errno against
+    :data:`~factory_console.file_adapter.path_safety.ABSENT_ERRNOS` (via
+    :func:`~factory_console.file_adapter.path_safety.is_regular_file` for the manifest)
+    rather than leaning on :meth:`~pathlib.Path.is_file` / :meth:`~pathlib.Path.is_dir`
+    directly: through CPython 3.12 those re-raise ``ELOOP`` (a symlink loop — the entry
+    EXISTS and could not be resolved, "I could not look", not "there is nothing to
+    find"), while 3.13 (gh-113978) swallows every ``OSError``, including ``EACCES``, and
+    answers ``False``. ``ABSENT_ERRNOS`` is deliberately narrower than either — a symlink
+    loop is never treated as absence — so the classification is identical across both
+    interpreter behaviours instead of silently going permissive on 3.13.
     """
     try:
         stat_result = path.stat()
     except (FileNotFoundError, NotADirectoryError):
         return "path_missing"
-    except OSError:
+    except OSError as error:
+        _LOGGER.warning("project condition: %s could not be stat'd: %r", path, error)
         return "unreadable"
 
     if not stat_module.S_ISDIR(stat_result.st_mode):
         return "not_a_project"
 
     try:
-        has_manifest = (path / MANIFEST_RELPATH).is_file()
-    except OSError:
+        has_manifest = is_regular_file(path / MANIFEST_RELPATH)
+    except OSError as error:
+        _LOGGER.warning("project condition: %s manifest could not be examined: %r", path, error)
         return "unreadable"
     if not has_manifest:
         return "not_a_project"
 
     try:
-        has_factory_dir = (path / FACTORY_RELATIVE_DIR).is_dir()
-    except OSError:
+        factory_dir_stat = (path / FACTORY_RELATIVE_DIR).stat()
+    except OSError as error:
+        if error.errno in ABSENT_ERRNOS:
+            return "no_factory_dir"
+        _LOGGER.warning("project condition: %s .factory dir could not be examined: %r", path, error)
         return "unreadable"
-    return "ok" if has_factory_dir else "no_factory_dir"
+    return "ok" if stat_module.S_ISDIR(factory_dir_stat.st_mode) else "no_factory_dir"
 
 
 @runtime_checkable

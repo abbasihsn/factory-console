@@ -25,7 +25,6 @@ from __future__ import annotations
 import sqlite3
 import stat
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -111,6 +110,37 @@ def test_db_file_is_0600_inside_a_0700_directory(db_path: Path) -> None:
 
     assert _mode_of(db_path) == DB_FILE_MODE
     assert _mode_of(db_path.parent) == STORE_DIR_MODE
+
+
+def test_a_preexisting_loose_mode_db_file_is_tightened_on_open(db_path: Path) -> None:
+    # A db restored from a backup, copied between machines, or left mid-write by a
+    # prior process that died between connect and chmod must not stay at whatever
+    # mode it arrived with — chmod runs on every open, not only the one that
+    # creates the file, matching ensure_store_dir's own "tightened rather than
+    # left as found" rule for the directory.
+    db_path.parent.mkdir(parents=True)
+    db_path.touch(mode=0o644)
+
+    with connect(db_path) as conn:
+        migrate(conn)
+
+    assert _mode_of(db_path) == DB_FILE_MODE
+
+
+def test_wal_and_shm_sidecars_are_also_tightened(db_path: Path) -> None:
+    # WAL mode makes SQLite hold recently-written pages in `-wal`/`-shm` sidecar
+    # files; a 0600 db file next to a world-readable sidecar would leak the same
+    # data v3.1's password hash needs the db file itself protected from.
+    with connect(db_path) as conn:
+        migrate(conn)
+        conn.execute("UPDATE console_state SET selected_project_id = NULL WHERE id = 1")
+
+    wal_path = db_path.with_name(db_path.name + "-wal")
+    shm_path = db_path.with_name(db_path.name + "-shm")
+    assert wal_path.exists()
+    assert shm_path.exists()
+    assert _mode_of(wal_path) == DB_FILE_MODE
+    assert _mode_of(shm_path) == DB_FILE_MODE
 
 
 def test_foreign_keys_are_on_inside_the_context(db_path: Path) -> None:
@@ -220,22 +250,36 @@ def test_two_connections_migrating_at_once_do_not_both_run_migration_1(db_path: 
     blocker = sqlite3.connect(db_path, isolation_level=None)
     results: list[int] = []
     errors: list[BaseException] = []
+    # Set from each thread's own connection trace callback the instant it ISSUES
+    # `BEGIN IMMEDIATE` — which fires before that statement can block on blocker's
+    # lock, not after. A fixed `time.sleep` before releasing the lock cannot
+    # guarantee both threads have reached that statement (a loaded runner could let
+    # one thread finish its whole migration before the other even starts, which
+    # never exercises the two-connections-both-decide-work-is-needed race this test
+    # is named for, while every assertion below would still hold vacuously). Waiting
+    # on these events instead only releases the lock once contention is REAL.
+    reached_begin_immediate = [threading.Event(), threading.Event()]
 
-    def _migrate_once() -> None:
+    def _migrate_once(ready: threading.Event) -> None:
         try:
             with connect(db_path) as conn:
+                conn.set_trace_callback(
+                    lambda sql: ready.set() if sql.strip().upper() == "BEGIN IMMEDIATE" else None
+                )
                 results.append(migrate(conn))
         except BaseException as exc:  # noqa: BLE001 - the failure IS the assertion
             errors.append(exc)
 
     try:
         blocker.execute("BEGIN IMMEDIATE")
-        threads = [threading.Thread(target=_migrate_once) for _ in range(2)]
+        threads = [
+            threading.Thread(target=_migrate_once, args=(event,))
+            for event in reached_begin_immediate
+        ]
         for thread in threads:
             thread.start()
-        # Long enough for both threads to pass the fast-path read and be waiting on
-        # the write lock; well inside connect()'s 5s busy_timeout.
-        time.sleep(0.3)
+        for event in reached_begin_immediate:
+            assert event.wait(timeout=10), "a migrating thread never reached BEGIN IMMEDIATE"
         blocker.execute("ROLLBACK")
         for thread in threads:
             thread.join(timeout=30)

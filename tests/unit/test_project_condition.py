@@ -181,11 +181,14 @@ def test_a_factory_dir_that_cannot_be_examined_is_unreadable(
     simply could not look.
     """
     project = make_project(tmp_path / "opaque-factory-dir", with_factory_dir=True)
+    original_stat = Path.stat
 
-    def raise_on_factory_dir(self: Path) -> bool:
-        raise PermissionError(f"cannot examine {self}")
+    def raise_on_factory_dir(self: Path, *args: object, **kwargs: object) -> os.stat_result:
+        if self.name == FACTORY_RELATIVE_DIR.name:
+            raise PermissionError(f"cannot examine {self}")
+        return original_stat(self, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "is_dir", raise_on_factory_dir)
+    monkeypatch.setattr(Path, "stat", raise_on_factory_dir)
     assert classify_project_path(project) == "unreadable"
 
 

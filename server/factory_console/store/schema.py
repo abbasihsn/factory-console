@@ -43,6 +43,7 @@ creates nothing) and no boot hook has to run migrations ahead of time.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sqlite3
 from collections.abc import Callable, Iterator
@@ -166,7 +167,11 @@ def migrate(conn: sqlite3.Connection) -> int:
 
     The pending migrations and their ``PRAGMA user_version`` bumps share that one
     transaction, so a failure mid-migration rolls the version back with the DDL — a
-    db is never left claiming a version whose tables did not commit.
+    db is never left claiming a version whose tables did not commit. The rollback
+    itself only runs when ``conn.in_transaction`` is still true: SQLite auto-rolls-back
+    on some errors (``SQLITE_FULL``, ``SQLITE_IOERR``, ``SQLITE_BUSY``,
+    ``SQLITE_NOMEM``), and an unconditional ``ROLLBACK`` there would raise its own
+    "no transaction is active" and replace the real failure the caller needs to see.
     ``user_version`` cannot be parameterised (SQLite does not accept a placeholder in
     a PRAGMA), so the value is formatted into the statement; it is an ``int`` derived
     from this module's own tuple index and **never** from caller or client input.
@@ -204,7 +209,16 @@ def migrate(conn: sqlite3.Connection) -> int:
             # int from range() over our own tuple, so this is not an injection seam.
             conn.execute(f"PRAGMA user_version = {index + 1}")
     except BaseException:
-        conn.execute("ROLLBACK")
+        # SQLite auto-rolls-back the transaction itself on some errors
+        # (SQLITE_FULL, SQLITE_IOERR, SQLITE_BUSY, SQLITE_NOMEM), in which case an
+        # unconditional ROLLBACK here raises its own "cannot rollback - no
+        # transaction is active" — replacing the real failure the caller needs to
+        # see with a cleanup error, and surfacing an exception type outside this
+        # function's documented ``Raises:``. Only roll back a transaction that is
+        # still open, and never let the rollback attempt itself mask the original.
+        if conn.in_transaction:
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("ROLLBACK")
         raise
     conn.execute("COMMIT")
     return SCHEMA_VERSION
@@ -219,9 +233,16 @@ def connect(db_path: Path) -> Iterator[sqlite3.Connection]:
     exception raised by the body.
 
     Creates the store directory (via ``location.ensure_store_dir``, the only
-    directory-creating function in this package) and, if this call is what brings the
-    db file into existence, chmods it to 0600. Whether the file pre-existed is
-    recorded *before* ``sqlite3.connect``, since connecting is itself what creates it.
+    directory-creating function in this package) and chmods the db file to 0600 on
+    every call, not only the one that creates it — matching ``ensure_store_dir``'s
+    own rule for the directory, "tightened rather than left as found": a
+    ``console.db`` restored from a backup, copied between machines, or left mid-write
+    by a prior process that died between connect and chmod must not stay at
+    whatever mode it arrived with, ahead of v3.1 putting a password hash in this
+    file. The WAL journalling mode below makes SQLite maintain ``-wal``/``-shm``
+    sidecar files holding the same recently-written pages; both are chmod'd
+    alongside the db file whenever they exist, since a mode 0600 db file next to a
+    world-readable ``-wal`` would leak the same data through the sidecar.
 
     Per-connection state, none of which survives the close:
 
@@ -245,16 +266,17 @@ def connect(db_path: Path) -> Iterator[sqlite3.Connection]:
         The open connection. Call :func:`migrate` on it once before using it.
     """
     ensure_store_dir(db_path)
-    # Before the connect, which creates the file if it is missing.
-    was_created = not db_path.exists()
     conn = sqlite3.connect(db_path, timeout=LOCK_TIMEOUT_SECONDS, isolation_level=None)
     try:
-        if was_created:
-            os.chmod(db_path, DB_FILE_MODE)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute(f"PRAGMA busy_timeout = {int(LOCK_TIMEOUT_SECONDS * 1000)}")
+        os.chmod(db_path, DB_FILE_MODE)
+        for suffix in ("-wal", "-shm"):
+            sidecar = db_path.with_name(db_path.name + suffix)
+            if sidecar.exists():
+                os.chmod(sidecar, DB_FILE_MODE)
         yield conn
     finally:
         conn.close()
