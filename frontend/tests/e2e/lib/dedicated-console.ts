@@ -415,6 +415,12 @@ export async function registerProject(
  * Boot a dedicated console on `fixtures[0]` (via `start`), then `registerProject`
  * every remaining entry against it in order. Requires at least one fixture — the
  * console has to boot on something.
+ *
+ * `start`'s own invariant — a setup failure never leaks a process or a temp dir —
+ * holds only up to the point `start` resolves. A `registerProject` failure after
+ * that (a 409 duplicate path, a 503, a connect-retry deadline) must not propagate
+ * past a live, undisposed `handle` that the caller never receives and so can
+ * never dispose of either.
  */
 export async function startMulti(fixtures: string[]): Promise<DedicatedConsole> {
 	if (fixtures.length === 0) {
@@ -422,8 +428,13 @@ export async function startMulti(fixtures: string[]): Promise<DedicatedConsole> 
 	}
 	const [first, ...rest] = fixtures;
 	const handle = await start(first);
-	for (const fixtureName of rest) {
-		await registerProject(handle, fixtureName);
+	try {
+		for (const fixtureName of rest) {
+			await registerProject(handle, fixtureName);
+		}
+	} catch (err) {
+		await handle.dispose().catch(() => {});
+		throw err;
 	}
 	return handle;
 }

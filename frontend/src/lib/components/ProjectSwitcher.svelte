@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
 	import { get } from 'svelte/store';
@@ -40,6 +41,27 @@
 	// only on the parked id would go on demanding a token it already has.
 	const tokenNeeded = $derived(pendingId !== null && $writeToken === null);
 
+	// True only while this switch is genuinely waiting on a token — parked (never
+	// had one) or rejected (had one revoked) — never while it is in flight with one
+	// already held, or has failed for an unrelated reason. That distinction is what
+	// lets the effect below resume exactly the parked/rejected case without ALSO
+	// firing (or re-firing in a loop) whenever `busy` or `$writeToken` merely change
+	// for some other reason.
+	let parked = $state(false);
+
+	// Resumption is driven off the STORE, not off `WriteTokenPrompt`'s `onSaved`,
+	// for the same reason as the ticket routes' prompts (`+page.svelte`,
+	// `EditTicketModal.svelte`): this switcher renders in `TopBar` on every route,
+	// so a token pasted into a DIFFERENT prompt on the same page (e.g. the ticket
+	// detail route's own delete/edit prompt) must resume a switch parked here too.
+	$effect(() => {
+		if (!parked || busy || $writeToken === null) return;
+		const id = pendingId;
+		if (id === null) return;
+		parked = false;
+		untrack(() => switchTo(id));
+	});
+
 	// Why the prompt is up. A 401 that silently raises the bare prompt is
 	// indistinguishable from never having held a token, so the user re-pastes the
 	// SAME rejected value and watches it fail again.
@@ -59,6 +81,7 @@
 			pendingId = null;
 			switchError = null;
 			tokenRejected = false;
+			parked = false;
 			return;
 		}
 		void switchTo(id);
@@ -77,9 +100,12 @@
 		pendingId = id;
 		const token = get(writeToken);
 		if (token === null) {
-			// Parked: `tokenNeeded` raises the prompt, whose `onSaved` resumes here.
+			// Parked: `tokenNeeded` raises the prompt; the store-watching effect above
+			// resumes once a token lands, from this prompt or any other on the page.
+			parked = true;
 			return;
 		}
+		parked = false;
 		busy = true;
 		switchError = null;
 		// A token is held again, so whatever the last one was rejected for no longer
@@ -111,6 +137,7 @@
 				// user cannot act on.
 				clearToken();
 				tokenRejected = true;
+				parked = true;
 			} else {
 				switchError = apiError;
 			}
@@ -143,8 +170,18 @@
 			{#each projects as project (project.id)}
 				<!-- The path is the disambiguator: two registered checkouts of the same
 				     repository carry the same name, and only the directory says which
-				     one this row is. -->
-				<option value={project.id} title={project.path}>{project.name}</option>
+				     one this row is. A degraded row (`condition !== 'ok'`) stays LISTED
+				     — `listProjects`'s contract never drops one — but disabled: the
+				     server accepts a switch onto it, and `+layout.ts`'s project read then
+				     treats the resulting 409 as fatal, replacing the whole shell
+				     (switcher included) with no way back to a working project. -->
+				<option
+					value={project.id}
+					title={project.path}
+					disabled={project.condition !== 'ok'}
+				>
+					{project.name}{project.condition === 'ok' ? '' : ' (unavailable)'}
+				</option>
 			{/each}
 		</select>
 
@@ -162,7 +199,9 @@
 						one to finish switching project.
 					</p>
 				{/if}
-				<WriteTokenPrompt onSaved={retry} />
+				<!-- No `onSaved`: resumption is store-driven (the effect above), not tied
+				     to THIS prompt instance saving — see its comment. -->
+				<WriteTokenPrompt />
 			</div>
 		{:else if switchError}
 			<!-- `compact`: this renders inside the header, where the page-level `<h1>`

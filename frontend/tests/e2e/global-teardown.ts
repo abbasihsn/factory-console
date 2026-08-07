@@ -1,5 +1,46 @@
 import { readFileSync, rmSync, statSync } from 'node:fs';
-import { DB_STATE_FILE, HOME_FACTORY_CONSOLE_DIR, PID_FILE } from './global-setup';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { DB_STATE_FILE, HOME_CONSOLE_DB_PATH, PID_FILE } from './global-setup';
+
+// The prefix global-setup passes to `mkdtempSync` for its per-run temp DB dir —
+// duplicated here (not imported) because it must be checked against whatever
+// `dbDir` a possibly-stale or malformed state file claims, not trusted from the
+// same source that wrote it.
+const DB_DIR_PREFIX = 'factory-console-e2e-db-';
+
+/**
+ * Validate a `dbDir` claim from `DB_STATE_FILE` before it is ever handed to a
+ * recursive delete.
+ *
+ * `DB_STATE_FILE` lives at a fixed, guessable path and is read back in a
+ * SEPARATE process with no schema enforcement beyond `JSON.parse` — a stale
+ * file left by an aborted run, or one from a different checkout sharing the
+ * same OS temp dir, would otherwise feed `rmSync` a directory this run never
+ * created. Requiring it to resolve strictly under the OS temp dir AND carry
+ * this run's own `mkdtempSync` prefix rejects both a wrong-but-real directory
+ * and a malformed/missing value (which would otherwise reach `rmSync(undefined)`
+ * as a confusing `TypeError` instead of a stated reason).
+ */
+function validatedDbDir(value: unknown): string {
+	if (typeof value !== 'string' || value.length === 0) {
+		throw new Error(
+			`factory-console e2e teardown: ${DB_STATE_FILE} named a dbDir that is not a ` +
+				`non-empty string (${JSON.stringify(value)}) — refusing to delete it.`
+		);
+	}
+	const resolved = path.resolve(value);
+	const tmpRoot = path.resolve(tmpdir());
+	const withinTmp = resolved === tmpRoot || resolved.startsWith(tmpRoot + path.sep);
+	if (!withinTmp || !path.basename(resolved).startsWith(DB_DIR_PREFIX)) {
+		throw new Error(
+			`factory-console e2e teardown: ${DB_STATE_FILE} named dbDir "${resolved}", which is ` +
+				`not one of this harness's own temp DB dirs (expected it under ${tmpRoot} with the ` +
+				`"${DB_DIR_PREFIX}" prefix) — refusing to delete it.`
+		);
+	}
+	return resolved;
+}
 
 // Poll cadence and total grace given to a clean SIGTERM shutdown (uvicorn drains
 // and exits 0) before escalating to SIGKILL.
@@ -22,6 +63,20 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function globalTeardown(): Promise<void> {
+	// The leak guard and this run's own cleanup must run on EVERY exit path out of
+	// `killConsoleIfAlive` — including the early returns for "no PID file" and
+	// "already gone" (ESRCH, e.g. the console crashed) — not only the one where
+	// the kill sequence ran to completion. Skipping it on those paths left the
+	// temp DB dir and the state file behind in the OS temp dir, unbounded, on
+	// every run where the child died before teardown got to it.
+	try {
+		await killConsoleIfAlive();
+	} finally {
+		await assertRealStoreUntouchedAndCleanUp();
+	}
+}
+
+async function killConsoleIfAlive(): Promise<void> {
 	let pid: number;
 	try {
 		pid = Number.parseInt(readFileSync(PID_FILE, 'utf8').trim(), 10);
@@ -58,17 +113,17 @@ async function globalTeardown(): Promise<void> {
 	}
 
 	rmSync(PID_FILE, { force: true });
-
-	await assertRealStoreUntouchedAndCleanUp();
 }
 
 // The protection this whole harness exists to prove: with the child now dead,
-// confirm ~/.factory-console/ was not created (or, if it already existed, that
-// its mtime is unchanged) before removing this run's own temp DB dir. Throwing
-// here fails the teardown itself — a leak into the developer's real store is a
-// harness regression, not a thing to clean up quietly and move on from.
+// confirm ~/.factory-console/console.db was not created (or, if it already
+// existed, that it was not written to) before removing this run's own temp DB
+// dir. Throwing here fails the teardown itself — a leak into the developer's
+// real store is a harness regression, not a thing to clean up quietly and move
+// on from. Cleanup runs in a `finally` so a tripped guard still reaps this run's
+// OWN artifacts instead of leaking them on top of failing loudly.
 async function assertRealStoreUntouchedAndCleanUp(): Promise<void> {
-	let state: { dbDir: string; homeDirMtimeMs: number | null };
+	let state: { dbDir: unknown; homeDbStat: { mtimeMs: number; size: number } | null };
 	try {
 		state = JSON.parse(readFileSync(DB_STATE_FILE, 'utf8'));
 	} catch {
@@ -77,31 +132,53 @@ async function assertRealStoreUntouchedAndCleanUp(): Promise<void> {
 		return;
 	}
 
-	let currentMtimeMs: number | null;
+	let dbDir: string;
 	try {
-		currentMtimeMs = statSync(HOME_FACTORY_CONSOLE_DIR).mtimeMs;
-	} catch {
-		currentMtimeMs = null;
+		dbDir = validatedDbDir(state.dbDir);
+	} finally {
+		// This run's own bookkeeping, reclaimed regardless of whether `dbDir`
+		// validates — a rejected value must not also leave a stale state file
+		// behind for the NEXT run to trip over.
+		rmSync(DB_STATE_FILE, { force: true });
 	}
 
-	if (state.homeDirMtimeMs === null) {
-		if (currentMtimeMs !== null) {
+	try {
+		// The artifact itself, not the directory: a directory's mtime only moves
+		// when an entry is added or removed, so comparing it misses a write to an
+		// already-existing `console.db` (false negative) and trips on any
+		// unrelated tool that merely touches the directory, e.g. the developer's
+		// own console running concurrently (false positive). `size` alongside
+		// `mtimeMs` catches a same-tick write a coarse mtime clock could alias.
+		let currentDbStat: { mtimeMs: number; size: number } | null;
+		try {
+			const stat = statSync(HOME_CONSOLE_DB_PATH);
+			currentDbStat = { mtimeMs: stat.mtimeMs, size: stat.size };
+		} catch {
+			currentDbStat = null;
+		}
+
+		if (state.homeDbStat === null) {
+			if (currentDbStat !== null) {
+				throw new Error(
+					`factory-console e2e teardown: ${HOME_CONSOLE_DB_PATH} was created during ` +
+						`this run (it did not exist beforehand) — the harness leaked a write into the ` +
+						`developer's real console store.`
+				);
+			}
+		} else if (
+			currentDbStat === null ||
+			currentDbStat.mtimeMs !== state.homeDbStat.mtimeMs ||
+			currentDbStat.size !== state.homeDbStat.size
+		) {
 			throw new Error(
-				`factory-console e2e teardown: ${HOME_FACTORY_CONSOLE_DIR} was created during ` +
-					`this run (it did not exist beforehand) — the harness leaked a write into the ` +
-					`developer's real console store.`
+				`factory-console e2e teardown: ${HOME_CONSOLE_DB_PATH} changed during this run ` +
+					`(${JSON.stringify(state.homeDbStat)} -> ${JSON.stringify(currentDbStat)}) — the ` +
+					`harness wrote into the developer's real console store.`
 			);
 		}
-	} else if (currentMtimeMs !== state.homeDirMtimeMs) {
-		throw new Error(
-			`factory-console e2e teardown: ${HOME_FACTORY_CONSOLE_DIR}'s mtime changed during ` +
-				`this run (${state.homeDirMtimeMs} -> ${currentMtimeMs}) — the harness wrote into ` +
-				`the developer's real console store.`
-		);
+	} finally {
+		rmSync(dbDir, { recursive: true, force: true });
 	}
-
-	rmSync(state.dbDir, { recursive: true, force: true });
-	rmSync(DB_STATE_FILE, { force: true });
 }
 
 export default globalTeardown;

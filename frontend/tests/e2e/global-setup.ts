@@ -19,6 +19,14 @@ export const DB_STATE_FILE = path.join(tmpdir(), 'factory-console-e2e.db-state.j
 // the guard.
 export const HOME_FACTORY_CONSOLE_DIR = path.join(homedir(), '.factory-console');
 
+// The artifact the guard actually compares — NOT the directory. A directory's
+// mtime only changes when an entry is added or removed, not when a file already
+// inside it (this one) is written, so comparing `HOME_FACTORY_CONSOLE_DIR` itself
+// misses a write to an already-existing store (a false negative) and trips on
+// any unrelated tool that merely touches the directory (a false positive, e.g.
+// the developer's own console running concurrently).
+export const HOME_CONSOLE_DB_PATH = path.join(HOME_FACTORY_CONSOLE_DIR, 'console.db');
+
 // The console prints exactly ONE line to stdout at boot:
 //   "Factory Console v{version} — serving {root} at http://127.0.0.1:{port}"
 // With the default `--port 0` that port is an OS-assigned ephemeral one, so we
@@ -58,13 +66,15 @@ async function globalSetup(): Promise<void> {
 	const dbDir = mkdtempSync(path.join(tmpdir(), 'factory-console-e2e-db-'));
 	const dbPath = path.join(dbDir, 'console.db');
 
-	// Snapshot the real store's mtime BEFORE the child ever runs (null if it does
-	// not exist yet), so global-teardown can prove this run left it untouched.
-	let homeDirMtimeMs: number | null;
+	// Snapshot the real store's own db file — existence, mtime AND size — BEFORE
+	// the child ever runs (null if it does not exist yet), so global-teardown can
+	// prove this run left it untouched.
+	let homeDbStat: { mtimeMs: number; size: number } | null;
 	try {
-		homeDirMtimeMs = statSync(HOME_FACTORY_CONSOLE_DIR).mtimeMs;
+		const stat = statSync(HOME_CONSOLE_DB_PATH);
+		homeDbStat = { mtimeMs: stat.mtimeMs, size: stat.size };
 	} catch {
-		homeDirMtimeMs = null;
+		homeDbStat = null;
 	}
 
 	const { bin, args } = resolveLaunch();
@@ -132,7 +142,7 @@ async function globalSetup(): Promise<void> {
 	}
 
 	writeFileSync(PID_FILE, String(child.pid), 'utf8');
-	writeFileSync(DB_STATE_FILE, JSON.stringify({ dbDir, homeDirMtimeMs }), 'utf8');
+	writeFileSync(DB_STATE_FILE, JSON.stringify({ dbDir, homeDbStat }), 'utf8');
 	// Workers are spawned only after globalSetup resolves, so this env var is in
 	// place when each worker re-loads playwright.config.ts and reads use.baseURL.
 	process.env.FC_E2E_BASE_URL = baseURL;
