@@ -129,6 +129,14 @@ class TestSeeding:
         with pytest.raises(ValueError, match="already registered"):
             registry.add_project(_BETA)
 
+    def test_seeded_row_is_stored_canonically_even_when_seeded_non_canonically(self) -> None:
+        """A seeded row's ``path`` must match the SQLite store's own guarantee."""
+        registry = FakeProjectRegistry([_row("a" * 32, _BETA / ".." / "alpha")])
+
+        assert registry.list_projects() == [_row("a" * 32, _ALPHA)]
+        assert registry.get_project("a" * 32).path == _ALPHA
+        assert registry.find_by_path(_ALPHA) == _row("a" * 32, _ALPHA)
+
 
 class TestNoSharedMutableState:
     """Nothing the caller holds is the registry's state, in either direction."""

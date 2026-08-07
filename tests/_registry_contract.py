@@ -67,6 +67,7 @@ def assert_registry_conforms(make_registry: MakeRegistry) -> None:
     _assert_satisfies_protocol(make_registry)
     _assert_empty_registry_is_total(make_registry)
     _assert_add_round_trips(make_registry)
+    _assert_explicit_name_is_stored_as_given(make_registry)
     _assert_stored_path_is_canonical(make_registry)
     _assert_duplicate_path_is_refused(make_registry)
     _assert_nested_project_is_accepted(make_registry)
@@ -109,6 +110,15 @@ def _assert_add_round_trips(make_registry: MakeRegistry) -> None:
     assert registry.list_projects() == [added]
     # Registering does NOT select: that is the caller's separate decision.
     assert registry.get_selected_project() is None
+
+
+def _assert_explicit_name_is_stored_as_given(make_registry: MakeRegistry) -> None:
+    """A caller-supplied ``name`` is stored verbatim — never re-derived from the path."""
+    registry = make_registry()
+    added = registry.add_project(_ALPHA, "My Project")
+
+    assert added.name == "My Project"
+    assert registry.list_projects() == [added]
 
 
 def _assert_stored_path_is_canonical(make_registry: MakeRegistry) -> None:

@@ -62,10 +62,12 @@ class FakeProjectRegistry:
 
         ``projects`` are the rows to start with — copied, never referenced, so a
         caller's later ``append`` does not register a project behind this
-        object's back. Each seeded row is indexed under the CANONICAL form of its
-        ``path`` (the row itself is stored verbatim), so a lookup for any
-        spelling of a seeded path finds it exactly as it would for one added
-        through :meth:`add_project`. Seeding two rows that collide on a canonical
+        object's back. Each seeded row is re-stored with its ``path`` replaced by
+        the CANONICAL form and indexed under that same form, so a row seeded
+        through a non-canonical spelling cannot leave the fake in a shape its
+        SQLite counterpart could never write, and a lookup for any spelling of a
+        seeded path finds it exactly as it would for one added through
+        :meth:`add_project`. Seeding two rows that collide on a canonical
         path raises :class:`DuplicateProjectPath`, and seeding two rows with one
         id raises :class:`ValueError` — the fake refuses to start in a state its
         SQLite counterpart's ``UNIQUE`` index and primary key would have refused
@@ -92,10 +94,13 @@ class FakeProjectRegistry:
         self._id_by_path: dict[Path, str] = {}
         self._path_key_by_id: dict[str, Path] = {}
         self._selected_id: str | None = None
-        # Each seeded row is indexed under the CANONICAL form of its own path, so a
-        # seeded row and an added one are found by the same spellings.
+        # Each seeded row is stored and indexed under the CANONICAL form of its own
+        # path, so a seeded row can never carry a ``path`` the SQLite store would
+        # have refused to write, and it is found by the same spellings an added one
+        # would be.
         for project in projects or ():
-            self._insert(project, canonical_project_path(project.path))
+            canonical = canonical_project_path(project.path)
+            self._insert(project.model_copy(update={"path": canonical}), canonical)
         self.set_selected_project(selected_id)
 
     def add_project(self, path: Path | str, name: str | None = None) -> RegisteredProject:
