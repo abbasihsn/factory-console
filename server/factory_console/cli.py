@@ -50,6 +50,18 @@ flag (an argv secret is readable by every local process): ``create_app`` mints a
 fresh one per boot and prints it to stderr, and ``FACTORY_CONSOLE_WRITE_TOKEN`` —
 read here through :func:`~factory_console.config.read_write_token` — pins it instead.
 
+**v3.0 adds NO subcommand and no new positional form.** ``app`` is a Typer app with
+exactly ONE command, and adding a second would make Typer require a command NAME on
+the command line — which would break ``factory-console PATH``, the project's
+most-used invocation; the pathless long-running mode (``factory-console serve``) is
+v3.1, and is where a second command legitimately arrives. **The discovered root is
+pinned as an EPHEMERAL, UNREGISTERED session project** (T111's ``SESSION_PROJECT_ID``)
+rather than auto-registered into the
+:class:`~factory_console.store.sqlite_registry.SqliteProjectRegistry` wired below, so
+a read-only viewing invocation — a throwaway clone, a CI job, a Playwright boot —
+never silently writes a row into the developer's console db; registering is the
+explicit ``POST /api/v1/projects`` the SPA offers as a button.
+
 Exit codes: ``0`` ok · ``1`` project-not-found · ``2`` bad host / out-of-range port
 / bad log level / bad write-token pin / port-in-use · ``3`` malformed manifest.
 """
@@ -75,6 +87,7 @@ from factory_console.file_adapter.real_writer import RealFileWriter
 from factory_console.file_adapter.run_artifacts import RealRunArtifactReader
 from factory_console.file_adapter.watcher_real import RealFileWatcher
 from factory_console.logging import LOG_LEVELS, configure_logging, normalize_log_level
+from factory_console.store.sqlite_registry import open_project_registry_or_warn
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -162,7 +175,12 @@ def main(
     wired into :func:`~factory_console.app.create_app` (the app lifespan
     starts/stops the watcher; the writer and the artifact reader are stateless and
     drive no lifespan), and the manifest is force-parsed once so a
-    malformed ``tickets.json`` exits 3 before a port is bound. The port is then
+    malformed ``tickets.json`` exits 3 before a port is bound. The console's own
+    :class:`~factory_console.store.sqlite_registry.SqliteProjectRegistry` is opened
+    after those checks and handed over too, along with ``RealFileWatcher`` itself as
+    the ``watcher_factory`` a project switch rebuilds through; a registry that cannot
+    be addressed warns on stderr and leaves the app pinned rather than failing the
+    boot. The port is then
     resolved via a probe socket (an in-use explicit ``--port`` exits 2), the exact
     contract line is printed to stdout, and Uvicorn serves the app.
 
@@ -234,6 +252,15 @@ def main(
         typer.echo(str(exc), err=True)
         raise typer.Exit(3) from exc
 
+    # Opened AFTER the cheap-input checks and AFTER discovery, so a bad host/port/
+    # log-level/token still exits 2 and a missing project still exits 1 before the
+    # console's own store is ever consulted. Construction is side-effect-free (T108:
+    # it resolves a path and stores it, creating nothing), so the ordering costs
+    # nothing — it is about where a failure would surface. See
+    # ``open_project_registry_or_warn`` for the degrade-to-pinned policy itself,
+    # shared with ``create_dev_app``.
+    project_registry = open_project_registry_or_warn(lambda msg: typer.echo(msg, err=True))
+
     try:
         resolved_port = _resolve_port(host, port)
     except OSError as exc:
@@ -256,8 +283,15 @@ def main(
         version=factory_console.__version__,
         project_root=root,
         file_watcher=RealFileWatcher(root),
+        # Both, and they are not redundant: ``file_watcher`` is the INSTANCE rooted at
+        # the pinned project, live before the first request, while ``watcher_factory``
+        # is what lets the WatcherSupervisor build a successor when the selection moves
+        # to another project. With the factory missing, a switch would leave the console
+        # permanently watcher-less.
+        watcher_factory=RealFileWatcher,
         file_writer=RealFileWriter(),
         run_artifact_reader=RealRunArtifactReader(),
+        project_registry=project_registry,
         write_token=write_token,
     )
 

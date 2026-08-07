@@ -14,8 +14,9 @@ change without writing. Request and response bodies ARE the canonical
 these ordinary typed FastAPI routes auto-publish into ``/api/v1/openapi.json`` and the
 frontend regenerates its TS types with no extra backend work.
 
-The handlers mirror :mod:`factory_console.api.v1.tickets`: resolve the project root off
-``app.state``, load the :class:`~factory_console.domain.project.Project` through the
+The handlers mirror :mod:`factory_console.api.v1.tickets`: resolve the project root for
+THIS request through :func:`~factory_console.api.deps.get_current_project_root`, load
+the :class:`~factory_console.domain.project.Project` through the
 read adapter, construct a request-scoped
 :class:`~factory_console.services.write_service.WriteService` over the two injected
 ports, and delegate. All request *logic* lives below this layer, so the handlers are
@@ -26,7 +27,48 @@ mutability gates live one layer further down, inside the writer's
 (:func:`~factory_console.file_adapter.write_gate.ensure_mutable` and its
 delete-path sibling :func:`~factory_console.file_adapter.write_gate.ensure_deletable`,
 which also permits ``absent``) — so it guards an apply, and a dry-run previews a
-non-mutable ticket rather than refusing it.
+non-mutable ticket rather than refusing it. The project load and the write-service call
+are both BLOCKING filesystem work, so both are awaited through
+``anyio.to_thread.run_sync(partial(...))`` per ``ARCHITECTURE.md``'s Cross-cutting
+**Concurrency** rule — the writer does real disk I/O, which is the last thing that
+belongs on the event loop.
+
+*That offload is why every handler routes through* :func:`_load_and_write`, *which holds*
+:func:`~factory_console.api.deps.get_write_lock` *across its whole body.* The same
+**Concurrency** rule also promises a single writer ("the write path is serialized by the
+same single worker"), and while the load and the write ran inline the event loop delivered
+that for free — a second write could not begin until the first returned. Off-loaded onto
+anyio's thread pool they genuinely overlap, and a ticket write is a read-modify-write of
+``tickets.json`` with no lock anywhere below this layer: two concurrent creates would each
+render a manifest from the same pre-write bytes and last-write-wins would silently drop one
+entry (whose ``.md`` file was written all the same), or both would pass the duplicate-id
+guard and neither get its 409. So :func:`_load_and_write` wraps the load AND the service
+call together — the critical section is the whole read-modify-write, not either half — as
+the ONE place that pattern is implemented, so a future write route cannot add itself
+without the lock.
+
+**Two orderings decide what these routes are, and both are settled here.**
+
+*The write token is checked BEFORE the selection.* ``require_write_token`` is attached at
+the ROUTER, and FastAPI solves a route's router-level dependencies ahead of the ones
+declared in the handler's own signature — so an unauthenticated caller is answered ``401
+write_token_invalid`` without the selection ever being resolved. That is deliberate: the
+401 stays as opaque as T64 made it, and a caller who cannot prove they may write learns
+nothing about which project is selected, whether it is registered, or whether its path
+still exists. No explicit sequencing code implements this; keeping the guard on the
+router is what implements it, which is why it must not be moved into the handlers.
+
+*An unresolvable selection REFUSES, and never falls back.* MONOTONICITY binds resolution
+exactly as hard as it binds the run-state write gates: no selection, an unregistered id,
+a vanished or unreadable path, or an unreadable registry each raise out of
+:func:`~factory_console.api.deps.get_current_project_root` as the named 409
+(``no_project_selected`` / ``selected_project_unavailable``). The pinned root is NOT
+substituted. "I could not establish which project this is" must never be answered more
+permissively than "I know exactly which project this is" — and on THESE routes the
+permissive answer writes a ticket file, rewrites a manifest, or deletes a ticket in the
+wrong repository. A silent write into the wrong project is the worst failure available in
+this milestone and is unfalsifiable from the UI, whereas a named 409 is a thing the
+operator can see and fix.
 
 They also do no error handling of their own; every failure mode already has a
 registered handler that renders the REST v1 envelope:
@@ -37,21 +79,34 @@ parameter on edit/delete, the ``TicketDraft.id`` body field on create),
 :func:`reject_unknown_query_params`),
 :class:`~factory_console.services.ticket_service.TicketNotFound` (404),
 :class:`~factory_console.file_adapter.write_gate.TicketNotMutable` and
-:class:`~factory_console.services.write_service.WriteConflict` (409), and
-:class:`~factory_console.services.write_service.WriteValidationError` (422). A
-``try``/``except`` in a handler here would only duplicate them.
+:class:`~factory_console.services.write_service.WriteConflict` (409),
+:class:`~factory_console.services.write_service.WriteValidationError` (422), and the
+selection seam's own :class:`~factory_console.services.project_selection.SelectionFailure`
+members (409, plus 503 for ``RegistryUnreadable``). A ``try``/``except`` in a handler here
+would only duplicate them.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import Annotated, Any
 
+import anyio.to_thread
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 
-from factory_console.api.deps import TicketIdPath, get_file_adapter, get_file_writer
+from factory_console.api.deps import (
+    TicketIdPath,
+    get_current_project_root,
+    get_file_adapter,
+    get_file_writer,
+    get_write_lock,
+)
 from factory_console.api.write_token import WRITE_TOKEN_SECURITY, require_write_token
+from factory_console.domain import Project
 from factory_console.domain.write import TicketDraft, TicketEdit, WriteResult
 from factory_console.errors import FactoryConsoleError
 from factory_console.file_adapter.protocol import FileAdapter
@@ -89,6 +144,26 @@ def _log_write(verb: str, result: WriteResult) -> None:
     _LOGGER.info(
         write_log_line(verb, result.ticketId, result.applied, result.changedFiles),
     )
+
+
+async def _load_and_write(
+    write_lock: asyncio.Lock,
+    adapter: FileAdapter,
+    root: Path,
+    call: Callable[[Project], WriteResult],
+) -> WriteResult:
+    """Run one locked, off-loaded read-modify-write: load ``root``, then ``call`` it.
+
+    The ONE enforcement point for the single-writer invariant the module docstring
+    describes: acquires ``write_lock`` for the whole critical section, loads the
+    project through ``adapter``, then runs ``call`` against it — both blocking steps
+    off the event loop via ``anyio.to_thread.run_sync``. Every write handler below
+    calls this instead of re-deriving the lock-and-offload pattern, so a future
+    fourth write route gets the invariant by calling it rather than by remembering to.
+    """
+    async with write_lock:
+        project = await anyio.to_thread.run_sync(partial(adapter.load_project, root))
+        return await anyio.to_thread.run_sync(partial(call, project))
 
 
 def reject_unknown_query_params(request: Request) -> None:
@@ -174,11 +249,12 @@ _DRY_RUN_RESPONSE: dict[int | str, dict[str, Any]] = {
 )
 async def create_ticket(
     payload: TicketDraft,
-    request: Request,
     response: Response,
     dry_run: _DryRunFlag = False,
     adapter: FileAdapter = Depends(get_file_adapter),
     writer: FileWriter = Depends(get_file_writer),
+    root: Path = Depends(get_current_project_root),
+    write_lock: asyncio.Lock = Depends(get_write_lock),
 ) -> WriteResult:
     """Create the ticket described by ``payload``, or preview it when ``?dryRun=true``.
 
@@ -188,12 +264,20 @@ async def create_ticket(
     ``response.status_code`` overrides the route's declared default, which stays ``201``
     so that remains the documented success code.
 
-    Delegates to :meth:`~factory_console.services.write_service.WriteService.create`,
-    whose ``WriteConflict`` (409) propagates for an id that already exists.
+    Writes into the SELECTED project at the per-request ``root``; an unresolvable
+    selection refuses with the named 409 before any port is touched. Delegates to
+    :meth:`~factory_console.services.write_service.WriteService.create`, whose
+    ``WriteConflict`` (409) propagates for an id that already exists. Both blocking calls
+    are awaited off the event loop, under ``write_lock`` for their combined duration —
+    they are one read-modify-write of the manifest, and that guard is what makes the
+    duplicate-id ``WriteConflict`` above hold against a concurrent create of the same id.
     """
-    root: Path = request.app.state.project_root
-    project = adapter.load_project(root)
-    result = WriteService(writer, adapter).create(project, payload, dry_run=dry_run)
+    result = await _load_and_write(
+        write_lock,
+        adapter,
+        root,
+        lambda project: WriteService(writer, adapter).create(project, payload, dry_run=dry_run),
+    )
     _log_write("create", result)
     response.status_code = status.HTTP_201_CREATED if result.applied else status.HTTP_200_OK
     return result
@@ -203,21 +287,32 @@ async def create_ticket(
 async def edit_ticket(
     ticket_id: TicketIdPath,
     payload: TicketEdit,
-    request: Request,
     dry_run: _DryRunFlag = False,
     adapter: FileAdapter = Depends(get_file_adapter),
     writer: FileWriter = Depends(get_file_writer),
+    root: Path = Depends(get_current_project_root),
+    write_lock: asyncio.Lock = Depends(get_write_lock),
 ) -> WriteResult:
     """Apply ``payload`` to ``ticket_id``, or preview the edit when ``?dryRun=true``.
 
-    Always ``200``: an edit creates no resource on either path. Delegates to
+    Always ``200``: an edit creates no resource on either path. Edits the ticket in the
+    SELECTED project at the per-request ``root``; an unresolvable selection refuses with
+    the named 409 before any port is touched. Delegates to
     :meth:`~factory_console.services.write_service.WriteService.edit`, whose
     ``TicketNotFound`` (404) and ``TicketNotMutable`` (409, for a run-state outside the
-    EDIT allowlist ``todo``/``unknown``) propagate to the registered handlers.
+    EDIT allowlist ``todo``/``unknown``) propagate to the registered handlers. Both
+    blocking calls are awaited off the event loop, under ``write_lock`` for their combined
+    duration — an edit rewrites the manifest from what the load observed, so it is the same
+    read-modify-write the module docstring's create case describes.
     """
-    root: Path = request.app.state.project_root
-    project = adapter.load_project(root)
-    result = WriteService(writer, adapter).edit(project, ticket_id, payload, dry_run=dry_run)
+    result = await _load_and_write(
+        write_lock,
+        adapter,
+        root,
+        lambda project: WriteService(writer, adapter).edit(
+            project, ticket_id, payload, dry_run=dry_run
+        ),
+    )
     _log_write("edit", result)
     return result
 
@@ -225,22 +320,30 @@ async def edit_ticket(
 @router.delete("/tickets/{ticket_id}", openapi_extra=WRITE_TOKEN_SECURITY)
 async def delete_ticket(
     ticket_id: TicketIdPath,
-    request: Request,
     dry_run: _DryRunFlag = False,
     adapter: FileAdapter = Depends(get_file_adapter),
     writer: FileWriter = Depends(get_file_writer),
+    root: Path = Depends(get_current_project_root),
+    write_lock: asyncio.Lock = Depends(get_write_lock),
 ) -> WriteResult:
     """Delete ``ticket_id``, or preview the delete when ``?dryRun=true``.
 
     Always ``200`` with the uniform :class:`WriteResult` body rather than a bodiless
     ``204``, because the SPA renders the delete's diff in the same confirmation view as
-    a create or an edit. Delegates to
-    :meth:`~factory_console.services.write_service.WriteService.delete`, whose
+    a create or an edit. Deletes from the SELECTED project at the per-request ``root``;
+    an unresolvable selection refuses with the named 409 before any port is touched —
+    the request whose fail-open would destroy a file in the wrong repository. Delegates
+    to :meth:`~factory_console.services.write_service.WriteService.delete`, whose
     ``TicketNotFound`` (404) and ``TicketNotMutable`` (409) propagate to the registered
-    handlers.
+    handlers. Both blocking calls are awaited off the event loop, under ``write_lock`` for
+    their combined duration — a delete rewrites the manifest from what the load observed,
+    so it is the same read-modify-write the module docstring's create case describes.
     """
-    root: Path = request.app.state.project_root
-    project = adapter.load_project(root)
-    result = WriteService(writer, adapter).delete(project, ticket_id, dry_run=dry_run)
+    result = await _load_and_write(
+        write_lock,
+        adapter,
+        root,
+        lambda project: WriteService(writer, adapter).delete(project, ticket_id, dry_run=dry_run),
+    )
     _log_write("delete", result)
     return result

@@ -418,6 +418,22 @@ def create_app(
     # `asyncio.Lock` attribute would end that. One lock per app, like every other
     # `app.state` singleton.
     app.state.selection_lock = asyncio.Lock()
+    # Serialises the ticket write path. `ARCHITECTURE.md`'s Cross-cutting **Concurrency**
+    # rule promises a single writer ("the write path is serialized by the same single
+    # worker"), and while the handlers ran their blocking work inline the event loop
+    # delivered that for free. It no longer does: `api/v1/tickets_write.py` now hands both
+    # the project load and the write-service call to `anyio.to_thread.run_sync` (the same
+    # rule's other half — no blocking filesystem I/O on the loop), and anyio's default
+    # thread limiter admits many of them at once. A ticket write is a read-modify-write of
+    # `tickets.json` with no lock below this layer, so two overlapping writes could each
+    # render a manifest from the same pre-write bytes and last-write-wins would silently
+    # drop one entry — or let two creates of the same id both pass the duplicate guard.
+    # This lock is what restores the single-writer-at-a-time invariant across the offload.
+    #
+    # One lock per app, on `app.state` like every other singleton, and read back through
+    # `Depends(get_write_lock)`: a lock built anywhere per-call would satisfy the type and
+    # serialise nothing.
+    app.state.write_lock = asyncio.Lock()
     token = write_token or secrets.token_urlsafe(_WRITE_TOKEN_BYTES)
     app.state.write_token = token
     # ``generated`` mirrors the ``or`` above exactly rather than testing ``is None``:
@@ -451,7 +467,13 @@ def create_dev_app() -> FastAPI:
     artifact reader is imported the same way for symmetry rather than out of
     necessity: it shares :mod:`~factory_console.file_adapter.run_artifacts` with the
     port this module already imports for its signature, so nothing new arrives with
-    it.
+    it. The console's own
+    :class:`~factory_console.store.sqlite_registry.SqliteProjectRegistry` is imported
+    the same lazy way and wired alongside ``RealFileWatcher`` as the
+    ``watcher_factory``, so the dev loop is multi-project exactly as the shipped CLI
+    is; a store that cannot be addressed warns on stderr and leaves the app pinned.
+    Like the CLI, this factory does NOT register the discovered root — it is an
+    ephemeral session pin, so a dev boot never grows the developer's dropdown.
 
     The write token comes from ``FACTORY_CONSOLE_WRITE_TOKEN`` via
     :func:`~factory_console.config.read_write_token` so a dev loop can pin it across
@@ -470,6 +492,7 @@ def create_dev_app() -> FastAPI:
     from factory_console.file_adapter.real_writer import RealFileWriter
     from factory_console.file_adapter.run_artifacts import RealRunArtifactReader
     from factory_console.file_adapter.watcher_real import RealFileWatcher
+    from factory_console.store.sqlite_registry import open_project_registry_or_warn
 
     # Same exit-2-style handling the CLI gives this variable. A bare ValueError here
     # would surface as an unhandled traceback out of uvicorn's factory loader — and
@@ -481,13 +504,23 @@ def create_dev_app() -> FastAPI:
     except ValueError as exc:
         raise SystemExit(f"{exc}\nSet a valid FACTORY_CONSOLE_WRITE_TOKEN or unset it.") from exc
 
+    # The dev loop wires the SAME registry + watcher factory the CLI does, so
+    # ``scripts/dev.sh`` exercises multi-project rather than a pinned-only app the
+    # shipped binary does not match. Degrading to ``None`` on an unaddressable store
+    # matters MORE here than in the CLI: ``--reload`` re-runs this factory on every
+    # save, so a raise would crash-loop the dev server. See
+    # ``open_project_registry_or_warn`` for the shared degrade-to-pinned policy.
+    project_registry = open_project_registry_or_warn(lambda msg: print(msg, file=sys.stderr))
+
     root = discover_project(None, Path.cwd())
     return create_app(
         RealFileAdapter(),
         version=__version__,
         project_root=root,
         file_watcher=RealFileWatcher(root),
+        watcher_factory=RealFileWatcher,
         file_writer=RealFileWriter(),
         run_artifact_reader=RealRunArtifactReader(),
+        project_registry=project_registry,
         write_token=write_token,
     )

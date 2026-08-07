@@ -155,3 +155,40 @@ export type ArtifactRead = components['schemas']['ProjectedArtifactRead'];
  * component — so a member added there widens this automatically.
  */
 export type ArtifactSkipReason = NonNullable<ArtifactRead['reason']>;
+
+/**
+ * One row of the project switcher from `GET /api/v1/projects` — a row of the
+ * CONSOLE's own registry table (ARCHITECTURE.md, "Data-model additions (v3) →
+ * RegisteredProject").
+ *
+ * DISTINCT from {@link Project}, and the two must never be substituted for one
+ * another: `Project` is the read-through view of a project's contents on disk
+ * (its manifest, its tickets), while this is the console's durable bookkeeping
+ * about a project it TRACKS — a minted `id`, the `path` it was registered under,
+ * `addedAt`, and whether it is `selected`. A row can exist for a directory that
+ * no longer holds a project at all, which is exactly what `condition` reports.
+ *
+ * `condition` (never `availability`, and never a boolean) is T103's
+ * `RegistryEntryCondition`, probed fresh on every read: `unreadable` /
+ * `path_missing` / `not_a_project` / `no_factory_dir` / `ok`. `registered` is
+ * `false` for the single reserved `session` row a `factory-console PATH` boot
+ * prepends — a pin that was never added to anything, so it has no `addedAt`.
+ */
+export type RegisteredProjectOut = components['schemas']['RegisteredProjectOut'];
+
+/** `{ items, total }` envelope of `GET /api/v1/projects`, unwrapped by `listProjects`. */
+export type ProjectListResponse = components['schemas']['ProjectListResponse'];
+
+/**
+ * What the console is serving right now, from `GET /api/v1/projects/current` and
+ * from the `PUT` that switches it — exactly one of `selected` (the row) and
+ * `reason` (the named `SelectionFailure`) is set. Having nothing selected is a
+ * 200 with a `reason`, never an error.
+ */
+export type CurrentSelection = components['schemas']['CurrentSelectionResponse'];
+
+/** Request body for `POST /api/v1/projects` — the directory to track, and its label. */
+export type AddProjectRequest = components['schemas']['AddProjectRequest'];
+
+/** Request body for `PUT /api/v1/projects/current` — the id to switch to. */
+export type SelectProjectRequest = components['schemas']['SelectProjectRequest'];

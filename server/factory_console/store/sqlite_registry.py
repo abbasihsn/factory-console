@@ -334,3 +334,24 @@ class SqliteProjectRegistry:
         if existing is None:
             return ValueError(f"id {row.id} is already registered")
         return DuplicateProjectPath(row.path, existing["id"])
+
+
+def open_project_registry_or_warn(echo: Callable[[str], None]) -> SqliteProjectRegistry | None:
+    """Construct a :class:`SqliteProjectRegistry`, degrading to ``None`` on failure.
+
+    The one policy behind both composition roots (T25's CLI and
+    :func:`~factory_console.app.create_dev_app`): a store the console cannot even
+    ADDRESS must not take the local viewer down, so ``ValueError``/``RuntimeError`` —
+    the whole failure surface of this side-effect-free constructor (a blank or
+    unresolvable ``FACTORY_CONSOLE_DB_PATH``, or a home directory that cannot be
+    determined) — is caught and reported through ``echo`` rather than raised, leaving
+    the caller to fall back to ``project_registry=None``: PINNED MODE, exactly the
+    pre-v3 behaviour, not a degraded app. ``echo`` is the caller's own stderr writer
+    (``typer.echo``'s ``err=True`` form, or a bare ``print(file=sys.stderr)``) so this
+    helper stays free of both Typer and any particular I/O choice.
+    """
+    try:
+        return SqliteProjectRegistry()
+    except (ValueError, RuntimeError) as exc:
+        echo(f"warning: could not open the project registry: {exc}")
+        return None

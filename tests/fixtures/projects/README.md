@@ -2,7 +2,7 @@
 
 Realistic factory-shaped fixture projects — the executable contract every downstream track tests against. **Read-only** — downstream tests may read but must never mutate.
 
-All three use **camelCase** manifest fields (`dependsOn`), matching the
+All of them use **camelCase** manifest fields (`dependsOn`), matching the
 `ARCHITECTURE.md` data model — not the console repo's own snake_case manifest.
 Each manifest carries a top-level `schemaVersion`.
 
@@ -20,6 +20,7 @@ Each manifest carries a top-level `schemaVersion`.
   refused — so a fixture ticket relying on that default would now be read-only).
 
   Markers live at `.factory/run-state/{todo,in-flight,ready,merged}/<id>`, mixing files and directories. `CAD-131` has a `dependsOn` entry (`CAD-207-nonexistent`) pointing to an id absent from the manifest (exercises `unresolvedDeps`); `CAD-140`'s body embeds a literal `<script>alert(1)</script>` snippet to exercise sanitization end-to-end.
+- `second/` — project **harborlight**; 2 tickets (`HL-001` MVP, `HL-007` v1) with plain front-matter and short bodies; no `ROADMAP.md`, no `.factory/`. Deliberately spare: it exists so a **project-switch** test (v3.0's registry + selection surface) has a second, unmistakably different project to switch TO — a different project name and a disjoint ticket-id space from `minimal/`, so an assertion cannot pass against the wrong one.
 - `malformed/` — `docs/planning/tickets.json` with invalid JSON (**trailing comma**, so `json.loads` raises `json.JSONDecodeError`); an otherwise-valid ticket `.md` at `docs/planning/tickets/foo.md`.
 
 > The `with_run_state/.factory/` markers are test data and are force-tracked via
