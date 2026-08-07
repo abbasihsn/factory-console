@@ -20,6 +20,16 @@ wirings, each chosen for what it can actually prove:
 
 Every failure assertion pins the envelope's ``error.code``, not just the status number,
 since that code is what the SPA branches on.
+
+Since v3.0 all three handlers resolve their root through the selection seam, so the
+filesystem pair also carries the cases that decide the two orderings this module exists
+to get right: an unresolvable selection REFUSES with the named 409 while the pinned tree
+comes out byte-identical (never a fall-back write into the wrong repo); an unauthenticated
+caller with no selection gets the 401, not the 409, so the token check demonstrably runs
+first and leaks nothing about project state; and — the fail-open regression test — a write
+against a SECOND, selected on-disk project lands in that tree while the first, pinned one
+is untouched. That last case needs two real fixture copies under ONE app, which is why it
+builds the app with ``app_over(first, registry=...)`` rather than ``real_app``.
 """
 
 from __future__ import annotations
@@ -36,7 +46,13 @@ from _write_support import (
     WRONG_TOKEN,
 )
 from _write_support import (
+    app_over as _app_over,
+)
+from _write_support import (
     client as _client,
+)
+from _write_support import (
+    fixture_copy as _fixture_copy,
 )
 from _write_support import (
     real_app as _real_app,
@@ -56,6 +72,8 @@ from factory_console.domain import Project
 from factory_console.file_adapter import FakeFileAdapter
 from factory_console.file_adapter.fake_writer import FakeFileWriter
 from factory_console.logging import _LOG_FORMAT
+from factory_console.services.project_selection import SelectionState
+from factory_console.store.fake_registry import FakeProjectRegistry
 
 # The fixture's run-states: only ``todo`` ids are editable (write_gate.MUTABLE_STATES).
 TODO_ID = "CAD-131"
@@ -69,6 +87,10 @@ NEW_ID = "CAD-210"
 
 # Outside TICKET_ID_PATTERN, so the ``Path`` validator rejects it before any handler.
 INVALID_ID = "bad$id"
+
+# The three verbs this module gates, guards and resolves. Named once so a case that must
+# hold for ALL of them cannot silently cover only two.
+WRITE_VERBS = ["POST", "PUT", "DELETE"]
 
 
 def _draft_body(ticket_id: str = NEW_ID, **overrides: Any) -> dict[str, Any]:
@@ -670,7 +692,7 @@ async def _call_write_verb(client: AsyncClient, verb: str, headers: dict[str, st
     return await client.delete(f"/api/v1/tickets/{TODO_ID}", headers=headers)
 
 
-@pytest.mark.parametrize("verb", ["POST", "PUT", "DELETE"])
+@pytest.mark.parametrize("verb", WRITE_VERBS)
 @pytest.mark.parametrize(
     ("case", "headers"),
     [("missing", {}), ("wrong", {WRITE_TOKEN_HEADER: WRONG_TOKEN})],
@@ -690,7 +712,7 @@ async def test_every_write_verb_rejects_a_bad_token_as_401(
     assert WRONG_TOKEN not in resp.text
 
 
-@pytest.mark.parametrize("verb", ["POST", "PUT", "DELETE"])
+@pytest.mark.parametrize("verb", WRITE_VERBS)
 async def test_invalid_ticket_id_is_rejected_as_400(verb: str) -> None:
     # A valid token, so the 400 is the pattern rejection and not a 401 — the id never
     # reaches the adapter or the writer. POST is here because a create carries its id in
@@ -722,6 +744,138 @@ async def test_read_ticket_routes_stay_token_free(headers: dict[str, str], tmp_p
         for read_path in ("/api/v1/tickets", f"/api/v1/tickets/{TODO_ID}"):
             resp = await client.get(read_path, headers=headers)
             assert resp.status_code == 200, read_path
+
+
+# --------------------------------------------------------------------------- #
+# The selection seam: the write goes to the SELECTED project, or nowhere at all
+# --------------------------------------------------------------------------- #
+
+# The ticket each APPLYING write below targets, per verb: create mints a fresh id, edit
+# rewrites a ``todo`` ticket, delete removes the ``todo`` ticket nothing depends on.
+_WRITE_TARGET_ID = {"POST": NEW_ID, "PUT": TODO_ID, "DELETE": DELETABLE_TODO_ID}
+
+
+async def _apply_write_verb(client: AsyncClient, verb: str) -> Any:
+    """Issue an authorized, APPLYING request for ``verb`` against ``_WRITE_TARGET_ID``.
+
+    The token is valid and the body well-formed, so only the RESOLVED project can decide
+    which tree the write lands in — which is the whole claim of the cases below.
+    """
+    ticket_id = _WRITE_TARGET_ID[verb]
+    if verb == "POST":
+        return await client.post("/api/v1/tickets", json=_draft_body(ticket_id), headers=AUTH)
+    if verb == "PUT":
+        return await client.put(f"/api/v1/tickets/{ticket_id}", json=_edit_body(), headers=AUTH)
+    return await client.delete(f"/api/v1/tickets/{ticket_id}", headers=AUTH)
+
+
+def _ticket_file(ticket_id: str) -> str:
+    """The root-relative ``_snapshot`` key of ``ticket_id``'s markdown file."""
+    return f"docs/planning/tickets/{ticket_id}.md"
+
+
+@pytest.mark.parametrize("verb", WRITE_VERBS)
+async def test_every_write_verb_refuses_with_409_when_nothing_is_selected(
+    verb: str, tmp_path: Path
+) -> None:
+    # MONOTONICITY: a resolution that cannot establish WHICH project this is must refuse,
+    # never fall back to the pinned root. The pinned tree is right there and perfectly
+    # writable, so a fail-open here would answer 200/201 and mutate it — the tree the
+    # snapshot proves is byte-identical afterwards.
+    app, root = _real_app(tmp_path)
+    app.state.selection = SelectionState(pinned_root=None, registry=None)
+    before = _snapshot(root)
+    async with _client(app) as client:
+        resp = await _apply_write_verb(client, verb)
+    assert resp.status_code == 409, verb
+    assert resp.json()["error"]["code"] == "no_project_selected", verb
+    assert _snapshot(root) == before
+
+
+@pytest.mark.parametrize("verb", WRITE_VERBS)
+async def test_every_write_verb_refuses_with_409_when_the_selected_path_is_gone(
+    verb: str, tmp_path: Path
+) -> None:
+    # The selected row's working copy is not on this machine any more. Refusing is the
+    # only safe answer: the alternative is writing a ticket into — or deleting one from —
+    # whichever project happens to still be resolvable, under the vanished project's name.
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    registry = FakeProjectRegistry()
+    row = registry.add_project(gone)
+    pinned = _fixture_copy(tmp_path / "pinned")
+    app = _app_over(pinned, registry=registry)
+    app.state.selection.select(row.id)
+    gone.rmdir()
+    before = _snapshot(pinned)
+
+    async with _client(app) as client:
+        resp = await _apply_write_verb(client, verb)
+
+    assert resp.status_code == 409, verb
+    assert resp.json()["error"]["code"] == "selected_project_unavailable", verb
+    # The pinned tree is exactly where a fall-back would have written. It did not.
+    assert _snapshot(pinned) == before
+
+
+@pytest.mark.parametrize("verb", WRITE_VERBS)
+async def test_an_unauthed_write_with_no_selection_is_401_and_never_the_selection_409(
+    verb: str, tmp_path: Path
+) -> None:
+    # Both guards would fire, and the ORDER is the contract: the write token is a
+    # router-level dependency, which FastAPI solves before the handler's own
+    # `get_current_project_root`. So a caller who cannot prove they may write is told
+    # only that, and learns nothing about whether a project is selected or reachable.
+    app, _root = _real_app(tmp_path)
+    app.state.selection = SelectionState(pinned_root=None, registry=None)
+    async with _client(app) as client:
+        resp = await _call_write_verb(client, verb, {})
+    assert resp.status_code == 401, verb
+    assert resp.json()["error"]["code"] == "write_token_invalid", verb
+    # Nothing about the selection may leak into the 401 envelope.
+    assert "no_project_selected" not in resp.text, verb
+    assert "project" not in resp.json()["error"]["message"].lower(), verb
+
+
+@pytest.mark.parametrize("verb", WRITE_VERBS)
+async def test_a_write_lands_in_the_selected_project_and_leaves_the_other_untouched(
+    verb: str, tmp_path: Path
+) -> None:
+    # The fail-open regression test, and the reason this ticket is its own PR: two real
+    # on-disk copies of the fixture, the FIRST one pinned at boot and the SECOND one
+    # selected. Every write must land in the second tree and the first must come out
+    # byte-for-byte identical. A handler that still read `app.state.project_root` would
+    # pass every other case in this file and fail exactly here — by writing a ticket
+    # into, or deleting one from, the wrong repository.
+    first = _fixture_copy(tmp_path / "first")
+    second = _fixture_copy(tmp_path / "second")
+    registry = FakeProjectRegistry()
+    registry.add_project(first)
+    second_row = registry.add_project(second)
+    app = _app_over(first, registry=registry)
+    app.state.selection.select(second_row.id)
+    first_before = _snapshot(first)
+    second_before = _snapshot(second)
+
+    async with _client(app) as client:
+        resp = await _apply_write_verb(client, verb)
+        assert resp.status_code == (201 if verb == "POST" else 200), verb
+        _assert_applied_with_diff(resp.json(), _WRITE_TARGET_ID[verb])
+
+    # The pinned project is untouched — the whole claim, over the entire tree so a stray
+    # temp file or a rewritten manifest counts too.
+    assert _snapshot(first) == first_before, verb
+
+    # ...and the selected one actually changed, at the ticket file the verb names.
+    second_after = _snapshot(second)
+    assert second_after != second_before, verb
+    target = _ticket_file(_WRITE_TARGET_ID[verb])
+    if verb == "DELETE":
+        assert target not in second_after
+        # Still present in the pinned tree, which is what "wrong repository" would cost.
+        assert target in first_before
+    else:
+        assert second_after[target] != second_before.get(target), verb
 
 
 # --------------------------------------------------------------------------- #
