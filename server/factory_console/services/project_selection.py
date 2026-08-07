@@ -314,9 +314,11 @@ class SelectionState:
         """Register ``callback`` to receive the newly selected root on every switch.
 
         Called with the resolved root, or ``None`` when the new selection resolves to
-        no path at all (cleared, or an id whose row has gone). Subscribers are invoked
-        in registration order, synchronously, inside :meth:`select`, on the event-loop
-        thread — so a subscriber that raises WOULD fail the switch that provoked it.
+        no path at all (cleared, or an id whose row has gone). Subscribers are invoked in
+        registration order, synchronously, inside :meth:`select`, on whatever thread
+        called it — the event-loop thread for a request handler, a plain thread with no
+        loop at all for a test or a future CLI-side switch — so a subscriber that raises
+        WOULD fail the switch that provoked it, and one that blocks would block it.
 
         The one real subscriber is careful not to rely on that. ``select()`` is called
         from a request handler, and re-rooting the watcher both blocks (an observer join)

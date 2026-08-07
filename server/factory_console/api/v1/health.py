@@ -112,10 +112,10 @@ async def _read_selected_id(selection: SelectionState) -> str | None:
     selection a second time: a read that failed here but succeeded there produced
     ``projectRoot`` set with both ``selectedProjectId`` and ``selectionReason`` ``None``
     — a combination :class:`HealthResponse` documents as impossible, and the very shape
-    that is supposed to mean "the console cannot say what is selected". The two answers
-    have to come from one read, so the policy decision belongs to
-    :func:`_resolve_selection`, which owns the whole never-raise contract; this helper
-    just reports what the store did.
+    that is supposed to mean "the console cannot say what is selected". Both reads have
+    to reach the SAME conclusion about an unreadable store, so the policy decision
+    belongs to :func:`_resolve_selection`, which owns the whole never-raise contract;
+    this helper just reports what the store did.
 
     Raises:
         OSError: the console's own state directory could not be read.
@@ -149,14 +149,20 @@ async def _resolve_selection(request: Request) -> _ResolvedSelection:
     is what ``GET /api/v1/projects`` answers ``503`` about, and the probe's job is to
     report the condition, not to become a second outage signal for it.
 
-    That all-``None`` answer is reached from BOTH store-read failures, and it has to be:
+    That all-``None`` answer is reached from BOTH store reads, and it has to be:
     :func:`_read_selected_id` and the dependency each read the selection, so either can
-    be the one that finds the store unreadable. Catching the raw ``OSError`` /
-    ``sqlite3.Error`` beside :class:`RegistryUnreadable` — the same condition, only
-    named differently depending on which read hit it — is what keeps every unreadable
-    store landing on the one documented shape instead of on a mix of fields that
-    contradicts the response model. One log line is emitted per probe, here, rather than
-    one per read at two different levels.
+    be the one that finds the store unreadable, and the two must not disagree about what
+    that means. They report it differently — the dependency has already wrapped it as
+    :class:`RegistryUnreadable`, the bare helper has not — so both spellings are caught,
+    landing every unreadable store on the one documented shape instead of on a mix of
+    fields that contradicts the response model.
+
+    Exactly ONE log line comes out of a failed probe, which is why the two spellings are
+    caught separately rather than as one tuple: a :class:`RegistryUnreadable` was already
+    logged WITH its cause by :func:`~factory_console.api.deps._read_registry`, so logging
+    it again here would say the same thing twice at two levels, while the bare
+    ``OSError`` / ``sqlite3.Error`` from the helper has been logged by nobody and would
+    otherwise vanish — this endpoint reports it as "unknown" rather than raising it.
     """
     selection = get_selection_state(request)
     try:
@@ -168,8 +174,11 @@ async def _resolve_selection(request: Request) -> _ResolvedSelection:
         return _ResolvedSelection(None, failure.project_id, failure.reason)
     except SelectedProjectUnavailable as failure:
         return _ResolvedSelection(failure.path, selected_id, failure.reason)
-    except (RegistryUnreadable, OSError, sqlite3.Error) as error:
-        _LOGGER.warning("health probe could not read the selected project", exc_info=error)
+    except RegistryUnreadable:
+        # Already logged with its cause by ``deps._read_registry``.
+        return _ResolvedSelection(None, None, None)
+    except (OSError, sqlite3.Error) as error:
+        _LOGGER.warning("health probe could not read the selected project id", exc_info=error)
         return _ResolvedSelection(None, None, None)
     return _ResolvedSelection(root, selected_id, None)
 

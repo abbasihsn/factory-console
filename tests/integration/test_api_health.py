@@ -23,6 +23,7 @@ deleted.
 """
 
 import os
+import sqlite3
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -216,6 +217,51 @@ def test_health_stays_ok_when_the_registry_itself_cannot_be_read(tmp_path: Path)
     assert body["projectRoot"] is None
     assert body["selectedProjectId"] is None
     assert body["selectionReason"] is None
+
+
+def test_health_reports_unknown_when_only_the_first_selection_read_fails(
+    tmp_path: Path,
+) -> None:
+    # The probe reads the selection TWICE — once for the id it reports, once inside the
+    # resolution seam — and a TRANSIENT store failure can hit one and not the other.
+    # Both must reach the same conclusion. When only the first read fails, answering
+    # with a resolved ``projectRoot`` beside a null id and a null reason would emit the
+    # one combination ``HealthResponse`` documents as impossible, and would spend the
+    # all-null shape that is reserved for "cannot currently say" on a probe that could
+    # in fact say. So the failure is reported, not swallowed into "nothing selected".
+    project = tmp_path / "project"
+    project.mkdir()
+
+    class _FailsFirstReadRegistry(FakeProjectRegistry):
+        """Raises on the first read-through only, then behaves — a locked db, briefly."""
+
+        reads = 0
+
+        def get_selected_project(self) -> RegisteredProject | None:
+            self.reads += 1
+            if self.reads == 1:
+                raise sqlite3.OperationalError("database is locked")
+            return super().get_selected_project()
+
+    registry = _FailsFirstReadRegistry()
+    row = registry.add_project(project)
+    registry.set_selected_project(row.id)
+    # ``pinned_root=None`` is what leaves the session selection unset, so ``current_id``
+    # READS THROUGH to the persisted selection and the failure is reachable at all.
+    app = _make_app(tmp_path / "pinned", registry)
+    app.state.selection = SelectionState(pinned_root=None, registry=registry)
+
+    body = _health(app)
+
+    assert body["ok"] is True
+    assert body["projectRoot"] is None
+    assert body["selectedProjectId"] is None
+    assert body["selectionReason"] is None
+    # The store recovered after that one raise, so the resolution the probe skipped
+    # WOULD have produced a root. That is what makes the all-null answer a decision
+    # rather than a consequence — and it is the assertion that fails if the first
+    # read's failure is ever swallowed back into "nothing selected".
+    assert registry.get_selected_project() == row
 
 
 # --------------------------------------------------------------------------- #

@@ -69,11 +69,22 @@ class WatcherSupervisor:
     reach the live watcher through
     :func:`~factory_console.api.deps.get_file_watcher`, which reads :meth:`current`.
 
-    **NOT thread-safe, and deliberately unlocked** — the same trade as
-    :class:`~factory_console.services.project_selection.SelectionState`. The console
-    runs a single uvicorn worker, so the only concurrency here is the one worker thread
-    a swap is offloaded to; a lock would serialise nothing the single loop does not
-    already serialise, while suggesting concurrent swaps are supported.
+    **NOT thread-safe, and holds no lock of its own** — the same trade as
+    :class:`~factory_console.services.project_selection.SelectionState`: the console runs
+    a single uvicorn worker, so the only concurrency here is the one worker thread a swap
+    is offloaded to.
+
+    That trade does NOT extend to concurrent swaps, and the difference is worth stating
+    because the obvious version of this reasoning is wrong. A swap is not one loop
+    callback: it SPANS an ``await`` (the release goes to a worker thread), so the single
+    loop does not serialise it the way it serialises an ordinary mutation, and two
+    overlapping swaps used to leave the first one's watcher running with nothing holding
+    a reference to stop it. Serialisation is therefore mandatory and lives at the
+    CALLER — :func:`factory_console.app._watcher_retarget_hook` holds an
+    :class:`asyncio.Lock` across each whole swap — with :meth:`retarget_release`'s
+    target claim as the inner guard. Keeping the lock there rather than here is what lets
+    this class stay synchronous and loop-free (see the module docstring); do not conclude
+    from "no lock in this file" that swaps may overlap.
     """
 
     def __init__(

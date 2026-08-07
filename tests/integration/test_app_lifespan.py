@@ -36,6 +36,7 @@ from factory_console.domain.watch import ChangeEvent
 from factory_console.file_adapter import FakeFileAdapter
 from factory_console.file_adapter.watcher import FileWatcher
 from factory_console.services.project_selection import SESSION_PROJECT_ID
+from factory_console.store.fake_registry import FakeProjectRegistry
 
 
 class _SpyFileWatcher:
@@ -51,18 +52,31 @@ class _SpyFileWatcher:
     observer thread, so it must stay OFF the event loop, while the real ``start()``
     captures ``asyncio.get_running_loop()``, so it must run ON it. Thread identity is
     the deterministic way to prove a swap honoured both.
+
+    ``stop_delay`` stands in for the observer join a real ``stop()`` performs. It is what
+    makes an overlapping-swap test meaningful: with the release taking no time at all, two
+    swaps would serialise by luck rather than by the lock that is supposed to serialise
+    them, and the test would pass against the bug.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, stop_delay: float = 0.0) -> None:
         self.calls: list[str] = []
         self.stop_threads: list[int] = []
         self.start_threads: list[int] = []
+        self._stop_delay = stop_delay
+
+    @property
+    def running(self) -> bool:
+        """Whether this watcher has been started more times than it has been stopped."""
+        return self.calls.count("start") > self.calls.count("stop")
 
     def start(self) -> None:
         self.calls.append("start")
         self.start_threads.append(threading.get_ident())
 
     def stop(self) -> None:
+        if self._stop_delay:
+            time.sleep(self._stop_delay)
         self.calls.append("stop")
         self.stop_threads.append(threading.get_ident())
 
@@ -74,8 +88,16 @@ def _make_app(
     file_watcher: FileWatcher | None,
     *,
     watcher_factory: Callable[[Path], FileWatcher] | None = None,
+    project_registry: FakeProjectRegistry | None = None,
 ) -> FastAPI:
-    """Build the real app over an empty FakeFileAdapter with the given watcher."""
+    """Build the real app over an empty FakeFileAdapter with the given watcher.
+
+    ``project_registry`` stays ``None`` for most cases (pinned mode, where the only
+    resolvable id is the session sentinel). A registry is needed only to make ``select()``
+    resolve TWO distinct non-``None`` roots, which is what an overlapping-swap test
+    requires — with one root, one of the two swaps builds nothing and there is no second
+    watcher to orphan.
+    """
     project = Project(
         rootPath=Path("/proj"),
         ticketsManifestPath=Path("/proj/docs/planning/tickets.json"),
@@ -88,6 +110,7 @@ def _make_app(
         project_root=Path("/proj"),
         file_watcher=file_watcher,
         watcher_factory=watcher_factory,
+        project_registry=project_registry,
     )
 
 
@@ -131,6 +154,13 @@ def test_stop_runs_even_when_serving_would_raise() -> None:
         assert client.get("/boom").status_code == 500
 
     assert watcher.calls == ["start", "stop"]
+
+
+# How long a spy's ``stop()`` blocks when it is standing in for a real observer join.
+# Long enough that two unserialised swaps WOULD overlap (the second release would start
+# while the first is still joining), short enough not to slow the suite. Only the
+# overlapping-swap test needs it; every other spy stops instantly.
+_SLOW_STOP = 0.05
 
 
 def _wait_for(predicate: Callable[[], bool], *, timeout: float = 2.0) -> None:
@@ -227,6 +257,51 @@ def test_a_selection_change_starts_the_incoming_watcher_on_the_loop_thread() -> 
         assert incoming.start_threads == [loop_threads[-1]]
         # ...while the outgoing watcher's blocking join stayed off it.
         assert outgoing.stop_threads[0] not in loop_threads
+
+
+def test_overlapping_selection_changes_orphan_no_watcher(tmp_path: Path) -> None:
+    # The switch hook is fire-and-forget, so two selects close together (a double-clicked
+    # switcher, two tabs) put two swaps in flight — and a swap is NOT atomic: it releases
+    # on a worker thread and rebuilds back on the loop. Unserialised, both releases run
+    # first, the second stops nothing because ``current`` is already ``None``, and then
+    # both rebuilds run with the second overwriting the first's watcher WITHOUT stopping
+    # it. That watcher is then unreachable: shutdown's ``stop()`` only ever sees the
+    # current one, so its observer thread is never joined. The invariant that catches it
+    # is simply that at most one watcher is ever running.
+    registry = FakeProjectRegistry()
+    row_a = registry.add_project(tmp_path / "a")
+    row_b = registry.add_project(tmp_path / "b")
+    outgoing = _SpyFileWatcher(stop_delay=_SLOW_STOP)
+    built: list[_SpyFileWatcher] = []
+
+    def _factory(root: Path) -> FileWatcher:
+        incoming = _SpyFileWatcher(stop_delay=_SLOW_STOP)
+        built.append(incoming)
+        return incoming
+
+    app = _make_app(outgoing, watcher_factory=_factory, project_registry=registry)
+
+    @app.post("/switch-twice")
+    async def _switch_twice() -> None:
+        # Both selects in ONE handler with no await between them, so the second swap task
+        # is created before the first has run any of its own body. Two distinct roots, so
+        # both swaps really build.
+        app.state.selection.select(row_a.id)
+        app.state.selection.select(row_b.id)
+
+    supervisor = app.state.watcher_supervisor
+    with TestClient(app) as client:
+        assert client.post("/switch-twice").status_code == 200
+        _wait_for(lambda: supervisor.generation() == 2 and len(built) == 2)
+
+        # Exactly one watcher is running, and it is the one the DI seam hands out. Before
+        # the swap was serialised this list had two entries: the live one, and the
+        # orphan nothing could reach.
+        assert [w for w in (outgoing, *built) if w.running] == [supervisor.current()]
+        assert outgoing.calls.count("stop") == 1
+
+    # Shutdown joins the one live watcher, leaving nothing running at all.
+    assert not [w for w in (outgoing, *built) if w.running]
 
 
 def test_a_selection_change_with_no_running_loop_swaps_inline() -> None:

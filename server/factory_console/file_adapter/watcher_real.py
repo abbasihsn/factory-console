@@ -411,9 +411,10 @@ class RealFileWatcher:
         """Halt observing and join the observer thread (idempotent, never raises).
 
         Safe if never started or already stopped. Latches the ``_stopped`` guard
-        first so any dispatch already queued on the loop no-ops, cancels any
-        pending debounce timers so no coalesced event fires after shutdown, then
-        joins so no watchdog thread lingers.
+        FIRST — that latch, checked by both :meth:`_coalesce` and :meth:`_flush`, is what
+        actually stops an event firing after this returns, since the debounce cleanup may
+        be deferred (see below) — then joins so no watchdog thread lingers, then discards
+        the coalesced state.
 
         **Callable from OFF the loop thread**, which v3.0's project switch requires: the
         observer join blocks, so
@@ -569,7 +570,20 @@ class RealFileWatcher:
         self._timers[rel_path] = self._loop.call_later(_DEBOUNCE_SECONDS, self._flush, rel_path)
 
     def _flush(self, rel_path: str) -> None:
-        """Emit the coalesced event for ``rel_path`` to all subscribers (loop thread)."""
+        """Emit the coalesced event for ``rel_path`` to all subscribers (loop thread).
+
+        Guards on ``_stopped`` for the same reason :meth:`_coalesce` does, and it is this
+        guard — not the timer cancellation — that makes "no event fires after the watcher
+        stopped" true. A ``stop()`` from OFF the loop hands its cleanup back through
+        ``call_soon_threadsafe``, so between that call returning and the loop running the
+        cleanup there is a window in which an already-armed timer can still come due. On
+        a project switch that would fan an event for the project just LEFT out to the
+        outgoing watcher's subscribers. The latch is set synchronously by ``stop()``
+        before any of that, so checking it here closes the window whatever thread stopped
+        us.
+        """
+        if self._stopped:
+            return
         self._timers.pop(rel_path, None)
         pending = self._pending.pop(rel_path, None)
         if pending is None:
