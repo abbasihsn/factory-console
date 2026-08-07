@@ -1,5 +1,6 @@
 <script lang="ts">
-	import type { RegisteredProjectOut } from '$lib/api';
+	import type { RegisteredProjectOut, RegistryEntryCondition } from '$lib/api';
+	import { CONDITION_TITLE } from '$lib/projects/conditionTitle';
 
 	// Presentational only: no `$app/*` imports and no fetching, so it renders
 	// deterministically under vitest/jsdom from supplied props.
@@ -19,15 +20,6 @@
 	// artefacts (read-only)": an absent source is a named condition, never zero).
 	let { project }: { project: RegisteredProjectOut | null } = $props();
 
-	// Derived from the row rather than aliased from a schema: the server inlines
-	// T103's `RegistryEntryCondition` into this field instead of publishing it as
-	// its own OpenAPI component, so there is no standalone generated alias to
-	// import — and deriving it here means a member added server-side widens the
-	// union automatically (the same technique `ArtifactSkipReason` uses in
-	// `$lib/api/models.ts`). Spelling the union out by hand would put back exactly
-	// the guesswork the generated types exist to remove.
-	type RegistryEntryCondition = RegisteredProjectOut['condition'];
-
 	type ConditionCopy = {
 		title: string;
 		body: string;
@@ -37,31 +29,33 @@
 		tone: 'problem' | 'notice';
 	};
 
+	// The BODY and TONE stay local to the banner — no other view needs the full
+	// explanation or the border colour. The TITLE is shared with the `/projects`
+	// table's tooltip (`$lib/projects/conditionTitle`) so the two surfaces cannot
+	// independently drift on what a condition means, as they had already begun
+	// to before this module existed.
+	//
 	// EXHAUSTIVE by construction: keyed on the generated union, so a condition
 	// added server-side fails the type-check here until it has been given a
-	// sentence and a remedy of its own, rather than quietly rendering as nothing.
-	// `ok` is the one member with no block to render, and is spelled out as `null`
-	// rather than omitted so the record still covers the whole union.
-	const CONDITION_COPY: Record<RegistryEntryCondition, ConditionCopy | null> = {
+	// remedy of its own, rather than quietly rendering as nothing. `ok` is the
+	// one member with no block to render, and is spelled out as `null` rather
+	// than omitted so the record still covers the whole union.
+	const CONDITION_COPY: Record<RegistryEntryCondition, Omit<ConditionCopy, 'title'> | null> = {
 		ok: null,
 		path_missing: {
 			tone: 'problem',
-			title: 'This project’s registered path no longer exists.',
 			body: 'The directory it was registered under has been moved, renamed or deleted, so every view of this project — tickets, runs, spend, graph — is reading a path that is not there, and is about to be wrong. Re-point the registry entry at the project’s new location, or remove the entry.'
 		},
 		not_a_project: {
 			tone: 'problem',
-			title: 'This path is no longer a factory project.',
 			body: 'The registered directory exists, but the console does not recognise a factory project in it — its manifest is missing, or is not something the console can read. Nothing here describes the project that was registered. Check that the path still points at the project root, then re-point or remove the registry entry.'
 		},
 		no_factory_dir: {
 			tone: 'notice',
-			title: 'This project has no .factory/ directory on this machine.',
 			body: 'That is not an error: .factory/ is machine-local and gitignored, so a project whose working copy has never been run here legitimately has none. Run state, run artifacts and spend are therefore unknown on this machine rather than empty; the planning documents and tickets on disk read normally.'
 		},
 		unreadable: {
 			tone: 'problem',
-			title: 'This project’s path could not be read.',
 			body: 'The console reached the registered path but could not read it at all — a permissions problem or an I/O error, not an empty project. Nothing shown for this project has actually been read from it. Check the directory’s permissions and that its filesystem is mounted, then reload.'
 		}
 	};
@@ -75,8 +69,13 @@
 		// Indexed through a widened view because the value that ARRIVES may be
 		// outside the union a build-time type says it is in — a newer server can
 		// report a condition this console has never heard of.
-		const known = (CONDITION_COPY as Partial<Record<string, ConditionCopy | null>>)[condition];
-		if (known !== undefined) return known;
+		const known = (CONDITION_COPY as Partial<Record<string, Omit<ConditionCopy, 'title'> | null>>)[
+			condition
+		];
+		if (known !== undefined) {
+			if (known === null) return null;
+			return { ...known, title: CONDITION_TITLE[condition as Exclude<RegistryEntryCondition, 'ok'>] };
+		}
 		// Per the resolution invariant, what could not be understood is RECORDED,
 		// never dropped: the fallback names the raw value rather than rendering
 		// nothing, which would read as a healthy project.

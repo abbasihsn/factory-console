@@ -145,6 +145,29 @@ describe('projects page', () => {
 		);
 	});
 
+	it('never offers Select onto a degraded row, and states why', () => {
+		// The server accepts a switch onto a degraded row, but `+layout.ts` then
+		// treats the resulting 409 as fatal on the root layout — the same trap
+		// `ProjectSwitcher` already guards against for the header dropdown.
+		const degraded = row('p3', 'gone', false, 'path_missing');
+		render(Page, { props: { data: data([...PROJECTS, degraded]) } });
+
+		const select = screen.getAllByRole('button', { name: 'Select' }).at(-1) as HTMLButtonElement;
+		expect(select.disabled).toBe(true);
+		expect(select.getAttribute('title')).toContain('no longer exists');
+	});
+
+	it('never offers Remove on the selected row, and states why', () => {
+		// Removing the row the console is currently serving would null the
+		// selection server-side, leaving every route's root layout load with
+		// nothing to read.
+		render(Page, { props: { data: data(PROJECTS) } });
+
+		const remove = screen.getAllByRole('button', { name: 'Remove' })[0] as HTMLButtonElement;
+		expect(remove.disabled).toBe(true);
+		expect(remove.getAttribute('title')).toContain('currently selected');
+	});
+
 	it('names every condition the generated union carries', () => {
 		const conditions: [RegistryEntryCondition, string][] = [
 			['ok', 'OK'],
@@ -184,9 +207,11 @@ describe('projects page', () => {
 		expect(remove.disabled).toBe(true);
 		expect(remove.getAttribute('title')).toContain('never added to the registry');
 
-		// The registered rows keep theirs.
+		// A registered row that is not the current selection keeps its Remove —
+		// index [1] is `p1` (registered, selected — inert for a different reason,
+		// see "never offers Remove on the selected row"), so this checks `p2`.
 		expect(
-			(screen.getAllByRole('button', { name: 'Remove' })[1] as HTMLButtonElement).disabled
+			(screen.getAllByRole('button', { name: 'Remove' })[2] as HTMLButtonElement).disabled
 		).toBe(false);
 	});
 

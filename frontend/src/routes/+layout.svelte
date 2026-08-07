@@ -27,11 +27,13 @@
 	});
 
 	// The registry row the shell is serving, for the condition banner below the
-	// top bar. `null` covers single-project mode (no registry rows at all) and a
-	// selection the registry cannot name — in both cases the banner renders
-	// nothing.
+	// top bar. `null` covers single-project mode (no registry rows at all), a
+	// selection the registry cannot name, and the reserved unregistered `session`
+	// row: a `factory-console PATH` boot with no `.factory/` dir is the ORDINARY
+	// state of a fresh clone, not a fault, and the banner must not fire for it —
+	// only for a row someone actually registered.
 	const selectedProject = $derived(
-		data.projects.find((project) => project.id === data.selectedId) ?? null
+		data.projects.find((project) => project.id === data.selectedId && project.registered) ?? null
 	);
 </script>
 

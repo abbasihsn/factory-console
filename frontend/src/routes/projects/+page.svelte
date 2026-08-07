@@ -9,6 +9,7 @@
 		type RegistryEntryCondition
 	} from '$lib/api';
 	import { normalizeError, type ApiError } from '$lib/api/contracts';
+	import { CONDITION_TITLE } from '$lib/projects/conditionTitle';
 	import ApiErrorView from '$lib/components/ApiErrorView.svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import WriteTokenPrompt from '$lib/components/WriteTokenPrompt.svelte';
@@ -82,6 +83,13 @@
 	const UNREGISTERED_REMOVE_TITLE =
 		'This is the project passed on the command line — it was never added to the registry, so there is nothing to remove';
 
+	// The selected row is the one `+layout.ts` reads on every route. Removing it
+	// nulls the selection server-side, which the root layout load then treats as
+	// fatal — so, like a degraded row (see the Select button's own guard below),
+	// it stays listed but not removable.
+	const SELECTED_REMOVE_TITLE =
+		'This is the project currently selected — select a different one before removing it';
+
 	// Full literal Tailwind class strings, never built dynamically, so the JIT
 	// scanner keeps them — the rule `RunStateBadge` sets for its own pills.
 	const PILL_CLASS = 'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium';
@@ -108,12 +116,13 @@
 		not_a_project: 'Not a project',
 		no_factory_dir: 'No .factory'
 	};
+	// Shared with `ProjectStatusBanner` (`$lib/projects/conditionTitle`) — the two
+	// surfaces had already begun to word the same condition differently before
+	// this module existed, so both now read the one sentence rather than keeping
+	// their own copy of it.
 	const CONDITION_TITLES: Record<RegistryEntryCondition, string> = {
 		ok: 'The path is a factory project this console can read',
-		unreadable: 'The path exists but could not be read — check its permissions',
-		path_missing: 'Nothing is at this path any more — it was moved or deleted',
-		not_a_project: 'The path is readable but holds no factory project',
-		no_factory_dir: 'A project is there, but it has no .factory/ directory'
+		...CONDITION_TITLE
 	};
 
 	// The runtime half of the same guarantee. The `Record`s above are what make a NEW
@@ -166,65 +175,69 @@
 	}
 
 	/**
-	 * Point the console at `project`, then re-read the page.
+	 * Run one write for `kind` against `project`, then re-read the page.
+	 *
+	 * Owns the mechanics shared by both writes — the token check, the busy window,
+	 * awaiting the write before invalidating, and routing a failure through `fail`
+	 * — so `runSelect`/`runRemove` only supply which call to make. `apply` closes
+	 * over the token itself only via its parameter, never reads the store, so this
+	 * stays the single place that decides whether one is held.
 	 *
 	 * The write is AWAITED before anything is invalidated: a load issued against an
-	 * uncommitted selection would read the OLD selection and paint it as the new one.
-	 * Unlike the header switcher this stays put — `/projects` is about the registry
-	 * itself, and it shows the same rows whichever one is selected, so there is
-	 * nothing to navigate away from.
+	 * uncommitted write would read the OLD state and paint it as the new one.
 	 */
-	async function runSelect(project: RegisteredProjectOut): Promise<void> {
+	async function runWrite(
+		kind: ActionKind,
+		project: RegisteredProjectOut,
+		apply: (token: string) => Promise<unknown>
+	): Promise<void> {
+		if (kind === 'remove') {
+			// One confirmation is one DELETE. The dialog stays mounted for the whole
+			// round-trip, so this guard — not the buttons behind the backdrop — is
+			// what stops a double-click sending two.
+			if (busyId !== null) return;
+		}
 		const token = get(writeToken);
 		if (token === null) {
-			// Dropped between the click and here (another prompt's 401 can clear it).
-			tokenRequest = { kind: 'select', project };
+			// Dropped between the click (or confirmation) and here — another
+			// prompt's 401 can clear it.
+			if (kind === 'remove') confirmProject = null;
+			tokenRequest = { kind, project };
 			return;
 		}
 		busyId = project.id;
 		actionError = null;
 		try {
-			await selectProject(project.id, token);
-			// Inside the busy window, not after it: the switch is not done when the write
-			// lands, it is done when the table has re-read which row is selected.
+			await apply(token);
+			if (kind === 'remove') confirmProject = null;
+			// Inside the busy window, not after it: the write is not done when it
+			// lands, it is done when the table has re-read the result.
 			await invalidateAll();
 		} catch (err) {
-			fail(err, { kind: 'select', project });
+			if (kind === 'remove') confirmProject = null;
+			fail(err, { kind, project });
 		} finally {
 			busyId = null;
 		}
 	}
 
 	/**
-	 * Forget `project` in the console's registry, then re-read the page.
+	 * Point the console at `project`. Unlike the header switcher this stays put —
+	 * `/projects` is about the registry itself, and it shows the same rows
+	 * whichever one is selected, so there is nothing to navigate away from.
+	 */
+	async function runSelect(project: RegisteredProjectOut): Promise<void> {
+		await runWrite('select', project, (token) => selectProject(project.id, token));
+	}
+
+	/**
+	 * Forget `project` in the console's registry.
 	 *
 	 * Nothing on the project's own disk changes — that is what the confirmation says,
 	 * and it is the whole difference between this and deleting a ticket.
 	 */
 	async function runRemove(project: RegisteredProjectOut): Promise<void> {
-		// One confirmation is one DELETE. The dialog stays mounted for the whole
-		// round-trip, so this guard — not the buttons behind the backdrop — is what
-		// stops a double-click sending two.
-		if (busyId !== null) return;
-		const token = get(writeToken);
-		if (token === null) {
-			// The token was dropped between the prompt and the confirmation.
-			confirmProject = null;
-			tokenRequest = { kind: 'remove', project };
-			return;
-		}
-		busyId = project.id;
-		actionError = null;
-		try {
-			await removeProject(project.id, token);
-			confirmProject = null;
-			await invalidateAll();
-		} catch (err) {
-			confirmProject = null;
-			fail(err, { kind: 'remove', project });
-		} finally {
-			busyId = null;
-		}
+		await runWrite('remove', project, (token) => removeProject(project.id, token));
 	}
 
 	/**
@@ -330,7 +343,8 @@
 								<button
 									type="button"
 									class={ACTION_CLASS}
-									disabled={project.selected || busy}
+									disabled={project.selected || busy || project.condition !== 'ok'}
+									title={project.condition === 'ok' ? undefined : condition.title}
 									onclick={() => start('select', project)}
 								>
 									{project.selected ? 'Selected' : 'Select'}
@@ -338,8 +352,12 @@
 								<button
 									type="button"
 									class={DANGER_CLASS}
-									disabled={!project.registered || busy}
-									title={project.registered ? undefined : UNREGISTERED_REMOVE_TITLE}
+									disabled={!project.registered || project.selected || busy}
+									title={!project.registered
+										? UNREGISTERED_REMOVE_TITLE
+										: project.selected
+											? SELECTED_REMOVE_TITLE
+											: undefined}
 									onclick={() => start('remove', project)}
 								>
 									Remove

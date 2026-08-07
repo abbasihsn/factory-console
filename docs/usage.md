@@ -188,6 +188,26 @@ own registry read creates the store the first time it runs (see
 ["The console store"](#the-console-store) above) — only driving the API directly,
 without ever loading the browser UI, stays trace-free.
 
+### Managing the registry
+
+The dropdown's trailing **Manage projects…** entry, and a **Projects** link in the header
+nav, both open `/projects` — every row the console tracks, with its probed `condition`,
+whether it is `Select`ed, and whether it can be `Remove`d. Both writes need the same write
+token as every other write in the console: acting on a row before one is held raises the
+same token prompt as elsewhere, and a rejected token is dropped and re-asked for exactly
+as it is on the ticket routes. `Remove` only forgets the row in this console's own
+registry — nothing on the project's own disk is touched, and it can be added again later.
+A row cannot be removed while it is the one selected, or while it is the reserved
+session project (the one passed on the command line, which was never added to the
+registry in the first place); either case disables the button and states why. A row
+whose condition is not `ok` cannot be selected onto, for the same reason: the server would
+accept the switch, but every other page would then be reading a project it cannot serve.
+
+A degraded row's condition also surfaces as a banner under the top bar, on whichever
+route the console is currently showing — naming what went wrong (its path moved, stopped
+being a factory project, or became unreadable) or, for the merely informational
+`no_factory_dir` case, that nothing is actually wrong.
+
 Starting the console **without** a project directory is not available yet: without a
 `PATH` (and with no App Factory project above the current directory) the CLI still exits
 `1`, even when the store holds registered projects. The pathless long-running mode,
