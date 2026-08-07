@@ -199,12 +199,8 @@ def test_free_form_object_detection_recurses_into_arrays_and_nested_dicts() -> N
 
     assert _is_free_form_object({"type": "array", "items": free_form_object})
     assert not _is_free_form_object({"type": "array", "items": typed_object})
-    assert _is_free_form_object(
-        {"type": "object", "additionalProperties": free_form_object}
-    )
-    assert not _is_free_form_object(
-        {"type": "object", "additionalProperties": {"type": "string"}}
-    )
+    assert _is_free_form_object({"type": "object", "additionalProperties": free_form_object})
+    assert not _is_free_form_object({"type": "object", "additionalProperties": {"type": "string"}})
     # A shapeless object with neither key is NOT flagged (see the function's
     # docstring: this is also how FastAPI's built-in ValidationError.ctx renders).
     assert not _is_free_form_object({"type": "object"})

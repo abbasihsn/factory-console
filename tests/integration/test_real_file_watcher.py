@@ -36,6 +36,14 @@ _EVENT_TIMEOUT = 5.0
 # A short window in which we assert NO event arrives (outside-root / no-second-
 # event cases). Comfortably longer than the debounce window.
 _QUIET_WINDOW = 0.6
+# A pause between ``start()`` and the first ``subscribe()``, for tests whose SETUP
+# writes files before the watcher exists. macOS FSEvents replays changes made just
+# before a watch was scheduled, so those writes arrive as events AFTER start() and
+# would otherwise be the first thing a subscriber sees. Events only reach
+# currently-registered subscribers, so draining the replay while nobody is
+# subscribed discards it. Longer than the 0.15s debounce so a coalesced replay
+# cannot flush into a queue registered afterwards.
+_REPLAY_SETTLE = 0.4
 
 
 def _make_project(root: Path) -> None:
@@ -601,6 +609,11 @@ async def test_run_state_json_ledger_and_results_are_scoped_independently(tmp_pa
     ledger.write_text('{"ticket_id": "T94"}\n')
     watcher = RealFileWatcher(tmp_path)
     watcher.start()
+    # This test's setup writes BOTH artefacts before the watcher exists, and its
+    # assertions are about ORDER — so on macOS the replayed setup events would be
+    # the first thing the subscriber below sees. Drain the replay while nobody is
+    # subscribed; see ``_REPLAY_SETTLE``.
+    await asyncio.sleep(_REPLAY_SETTLE)
     stream, first = await _primed_stream(watcher)
     try:
         (tmp_path / ".factory" / "run-state.json").write_text(
