@@ -206,36 +206,51 @@ def _watcher_retarget_hook(supervisor: WatcherSupervisor) -> Callable[[Path | No
 
     :meth:`~factory_console.services.project_selection.SelectionState.subscribe`
     invokes its callbacks SYNCHRONOUSLY, on the event-loop thread, from inside
-    ``select()`` — which a request handler calls. But
-    :meth:`~factory_console.services.watcher_supervisor.WatcherSupervisor.retarget`
-    stops the outgoing watcher, and ``FileWatcher.stop()`` joins a thread. Calling it
-    inline would park the single event loop on that join, stalling every other request
-    and open SSE stream — exactly the failure ``ARCHITECTURE.md``'s Cross-cutting
-    **Concurrency** rule exists to prevent. So the callback returns IMMEDIATELY and the
-    swap runs in a worker thread via ``anyio.to_thread.run_sync``.
+    ``select()`` — which a request handler calls. But a swap releases the outgoing
+    watcher, and ``FileWatcher.stop()`` joins a thread. Calling that inline would park
+    the single event loop on the join, stalling every other request and open SSE stream
+    — exactly the failure ``ARCHITECTURE.md``'s Cross-cutting **Concurrency** rule
+    exists to prevent. So the callback returns IMMEDIATELY and the swap runs as a task.
+
+    The task splits the swap by thread requirement, because the two halves have opposite
+    ones. Only
+    :meth:`~factory_console.services.watcher_supervisor.WatcherSupervisor.retarget_release`
+    — the blocking ``stop()`` — is sent through ``anyio.to_thread.run_sync``;
+    :meth:`~factory_console.services.watcher_supervisor.WatcherSupervisor.retarget_rebuild`
+    runs back ON the loop thread once that await returns, because it calls
+    ``FileWatcher.start()`` and a ``RealFileWatcher`` captures the running loop there. Run
+    on the worker thread it would find no running loop, raise, and be swallowed into a
+    permanently watcher-less console — a real project switch that silently loses live
+    updates. ``retarget_release`` returning ``False`` (a same-root re-selection, or a
+    supervisor already outside its serving window) skips the rebuild entirely.
 
     Fire-and-forget, and that is the deliberate trade: the switch is confirmed to the
     operator as soon as the selection is persisted, and the live-update stream catches
     up a moment later (the SSE contract in T115 is what makes the gap safe — a
     connection ends its stream when the generation moves, so a client re-subscribes to
-    whichever watcher is current by then). ``retarget`` never raises, so there is no
-    result to await and nothing for the task to report; the tasks are kept in a set
-    only so the loop holds a strong reference and cannot garbage-collect one mid-swap.
+    whichever watcher is current by then). Neither half raises, so there is no result to
+    await and nothing for the task to report; the tasks are kept in a set only so the
+    loop holds a strong reference and cannot garbage-collect one mid-swap.
     """
     pending: set[asyncio.Task[None]] = set()
 
+    async def _swap(root: Path | None) -> None:
+        """Release the outgoing watcher off the loop, then rebuild back on it."""
+        if await anyio.to_thread.run_sync(supervisor.retarget_release, root):
+            supervisor.retarget_rebuild(root)
+
     def _retarget_off_loop(root: Path | None) -> None:
-        """Schedule the swap off the loop; do it inline when there is no loop."""
+        """Schedule the swap as a loop task; do it inline when there is no loop."""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             # A synchronous caller with no loop at all (a test driving ``select()``
             # directly, a future CLI-side switch): there is no event loop for the join
-            # to stall, so the offload would buy nothing and only defer the swap onto a
-            # loop that does not exist.
+            # to stall and none for a ``RealFileWatcher`` to capture, so the whole swap
+            # runs here rather than being deferred onto a loop that does not exist.
             supervisor.retarget(root)
             return
-        task = loop.create_task(anyio.to_thread.run_sync(supervisor.retarget, root))
+        task = loop.create_task(_swap(root))
         pending.add(task)
         task.add_done_callback(pending.discard)
 

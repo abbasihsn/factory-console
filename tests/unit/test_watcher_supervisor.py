@@ -268,6 +268,54 @@ def test_retarget_after_stop_builds_nothing() -> None:
     assert len(factory.built) == 1
 
 
+def test_retarget_release_reports_whether_the_swap_is_really_happening() -> None:
+    # The two halves exist because their thread requirements are opposite: the app hook
+    # runs the release in a worker thread (it joins) and the rebuild back on the loop (a
+    # real watcher captures the running loop in ``start()``). The boolean is what tells
+    # the caller a rebuild is owed at all.
+    factory = _RecordingFactory()
+    supervisor = _started_supervisor(factory)
+
+    assert supervisor.retarget_release(_ROOT_A) is False
+    assert factory.built[0].stops == 0
+
+    assert supervisor.retarget_release(_ROOT_B) is True
+    assert factory.built[0].stops == 1
+    # The release decides and stops; only the rebuild moves the counter and builds.
+    assert supervisor.generation() == 0
+    assert len(factory.built) == 1
+
+    supervisor.retarget_rebuild(_ROOT_B)
+
+    assert supervisor.current() is factory.built[1]
+    assert factory.built[1].starts == 1
+    assert supervisor.generation() == 1
+
+
+def test_retarget_release_reports_no_swap_outside_the_serving_window() -> None:
+    factory = _RecordingFactory()
+    supervisor = _started_supervisor(factory)
+    supervisor.stop()
+
+    assert supervisor.retarget_release(_ROOT_B) is False
+
+
+def test_retarget_rebuild_builds_nothing_when_stop_lands_between_the_halves() -> None:
+    # Shutdown racing an in-flight swap: the release ran in a worker thread, the
+    # lifespan's stop() then ran on the loop, and the rebuild resumes afterwards.
+    # Building then would leak an observer thread nothing will ever join.
+    factory = _RecordingFactory()
+    supervisor = _started_supervisor(factory)
+    assert supervisor.retarget_release(_ROOT_B) is True
+    supervisor.stop()
+
+    supervisor.retarget_rebuild(_ROOT_B)
+
+    assert supervisor.current() is None
+    assert len(factory.built) == 1
+    assert supervisor.generation() == 0
+
+
 def test_stop_is_idempotent() -> None:
     factory = _RecordingFactory()
     supervisor = _started_supervisor(factory)

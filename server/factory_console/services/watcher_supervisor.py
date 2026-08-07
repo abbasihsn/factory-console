@@ -21,14 +21,21 @@ Watchers are built through an INJECTED ``watcher_factory``, so this service — 
 whole backend layer — still never imports ``watcher_real.py``; only the composition
 roots (the CLI, ``create_dev_app``) name the concrete.
 
-**Where the blocking happens, and whose job it is to offload it.** A swap calls
-``FileWatcher.stop()``, which for the real watcher joins the observer thread. That
+**Where the blocking happens, and whose job it is to offload it.** A swap has two
+halves with OPPOSITE thread requirements. Releasing the outgoing watcher calls
+``FileWatcher.stop()``, which for the real watcher joins the observer thread, and that
 join must never run on the event loop (``ARCHITECTURE.md`` → Cross-cutting,
-Concurrency), and the offload deliberately lives at the CALLER — the selection-hook
-adapter in :mod:`factory_console.app` wraps :meth:`WatcherSupervisor.retarget` in
-``anyio.to_thread.run_sync``. Nothing here awaits or touches a thread pool: keeping
-this class synchronous is what lets the lifespan drive it directly and the unit tests
-exercise the swap semantics without a loop at all.
+Concurrency). Starting the incoming one calls ``FileWatcher.start()``, which for the
+real watcher captures ``asyncio.get_running_loop()`` — the loop it later hands watchdog
+callbacks to — so it must run ON the loop thread or it raises outright. The swap is
+therefore exposed as two methods, :meth:`WatcherSupervisor.retarget_release` (blocking,
+off-loop) and :meth:`WatcherSupervisor.retarget_rebuild` (loop thread), and the
+offload deliberately lives at the CALLER — the selection-hook adapter in
+:mod:`factory_console.app` sends only the first through ``anyio.to_thread.run_sync``
+and runs the second back on the loop. :meth:`WatcherSupervisor.retarget` runs both in
+order for callers with no loop to protect. Nothing here awaits or touches a thread
+pool: keeping this class synchronous is what lets the lifespan drive it directly and
+the unit tests exercise the swap semantics without a loop at all.
 
 **Live updates are opt-in, so a broken swap degrades instead of failing.** A watcher
 that cannot be built or started leaves the supervisor watcher-less rather than
@@ -57,7 +64,9 @@ class WatcherSupervisor:
     Built by ``create_app`` and driven from two places: the lifespan
     (:meth:`start` / :meth:`stop`, which bound the serving window) and the
     :class:`~factory_console.services.project_selection.SelectionState` on-change hook
-    (:meth:`retarget`). Consumers reach the live watcher through
+    (:meth:`retarget`, or its two halves :meth:`retarget_release` /
+    :meth:`retarget_rebuild` when the caller has a loop to keep unblocked). Consumers
+    reach the live watcher through
     :func:`~factory_console.api.deps.get_file_watcher`, which reads :meth:`current`.
 
     **NOT thread-safe, and deliberately unlocked** — the same trade as
@@ -143,40 +152,81 @@ class WatcherSupervisor:
     def retarget(self, root: Path | None) -> None:
         """Replace the live watcher with one rooted at ``root``. Never raises.
 
-        The on-change hook of
-        :meth:`~factory_console.services.project_selection.SelectionState.select`. A
-        ``root`` equal to the one already targeted is a no-op — no stop, no generation
-        bump, no new watcher — so a re-selection of the current project does not tear
-        down a working stream and disconnect every SSE client for nothing.
+        The whole swap in one synchronous call: :meth:`retarget_release` and, when it
+        reports the swap is really happening, :meth:`retarget_rebuild`. For callers with
+        no event loop to protect and no loop for a ``RealFileWatcher`` to capture — a
+        test driving ``select()`` directly, a future CLI-side switch — where running
+        both halves on the calling thread is both safe and correct.
 
-        Otherwise the old watcher is stopped, the generation is bumped, and a new
+        **A caller that HAS a running loop must not use this method**: it contains both
+        a blocking ``stop()`` and a loop-capturing ``start()``, so neither the loop
+        thread nor a worker thread can run it correctly. Such callers drive the two
+        halves separately, as the selection-hook adapter in :mod:`factory_console.app`
+        does.
+        """
+        if self.retarget_release(root):
+            self.retarget_rebuild(root)
+
+    def retarget_release(self, root: Path | None) -> bool:
+        """Stop the outgoing watcher, and report whether a swap to ``root`` is on.
+
+        First half of the on-change hook of
+        :meth:`~factory_console.services.project_selection.SelectionState.select`, and
+        the only half that decides anything. A ``root`` equal to the one already
+        targeted is a no-op — no stop, no generation bump, no new watcher — so a
+        re-selection of the current project does not tear down a working stream and
+        disconnect every SSE client for nothing. A supervisor outside its serving window
+        is a no-op too: the lifespan owns the watcher's existence there, and this is
+        reachable because the release is dispatched to a worker thread, so one can land
+        after shutdown's :meth:`stop` and building a watcher then would leak an observer
+        thread no ``finally`` will ever join. Both cases return ``False`` and leave the
+        supervisor untouched; anything else stops and drops the current watcher and
+        returns ``True``, obliging the caller to follow with :meth:`retarget_rebuild`.
+
+        **BLOCKING — must not be called on the event loop.** ``FileWatcher.stop()``
+        joins the watcher's observer thread, so the adapter registered in
+        :mod:`factory_console.app` hands THIS method — and only this one — to
+        ``anyio.to_thread.run_sync``; see that adapter for the other half of the
+        contract.
+
+        Never raises: an exception from the outgoing watcher's ``stop()`` is logged and
+        the swap still reports itself on, or one misbehaving watcher would pin the
+        supervisor to a root the operator has already left.
+        """
+        if root == self._root or not self._started:
+            return False
+        self._release("stopping the outgoing watcher for %s failed", self._root)
+        return True
+
+    def retarget_rebuild(self, root: Path | None) -> None:
+        """Bump the generation and build the new watcher on ``root``. Never raises.
+
+        Second half of a swap :meth:`retarget_release` has already reported on, and the
+        only half that can produce a watcher. The generation moves first, then a new
         watcher is built and started. ``root is None`` (the selection resolved to no
         path) and a supervisor with no factory both land on the same outcome as a build
         that fails: watcher-less, generation moved. The bump happens even then, because
         what it announces is "the watcher you were reading is gone", which is equally
         true whether a replacement arrived.
 
-        **BLOCKING — must not be called on the event loop.** ``FileWatcher.stop()``
-        joins the watcher's observer thread. The selection hook is invoked
-        synchronously on the loop thread, so the adapter registered in
-        :mod:`factory_console.app` hands this method to ``anyio.to_thread.run_sync``
-        rather than calling it inline; see that adapter for the other half of the
-        contract.
+        **Must run ON the event-loop thread when there is one.** :meth:`_build` calls
+        ``FileWatcher.start()``, and a ``RealFileWatcher`` captures the running loop
+        there — the loop it later hands watchdog callbacks to. On a worker thread there
+        is no running loop, so every real swap would fail to start its watcher and
+        degrade to watcher-less. Nothing here blocks, so the loop thread is also free to
+        run it.
 
-        Exceptions from the old watcher's ``stop()`` or the new one's construction /
-        ``start()`` are logged and swallowed, leaving ``current()`` ``None`` rather
-        than a half-swapped pair. A switch that lost its live updates is a degraded
-        console; a switch that raised would be a failed request.
+        A :meth:`stop` that landed between the two halves (shutdown racing an in-flight
+        swap) is honoured by doing nothing at all: outside the serving window a fresh
+        watcher would be an observer thread nothing will ever join.
+
+        Exceptions from the new watcher's construction / ``start()`` are logged and
+        swallowed, leaving ``current()`` ``None`` rather than a half-swapped pair. A
+        switch that lost its live updates is a degraded console; a switch that raised
+        would be a failed request.
         """
-        if root == self._root:
-            return
         if not self._started:
-            # Outside the serving window the lifespan owns the watcher's existence.
-            # This is reachable: the swap is dispatched to a worker thread, so one can
-            # land after shutdown's ``stop()``, and building a watcher then would leak
-            # an observer thread no ``finally`` will ever join.
             return
-        self._release("stopping the outgoing watcher for %s failed", self._root)
         self._root = root
         self._generation += 1
         factory = self._factory
