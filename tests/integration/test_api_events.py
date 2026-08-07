@@ -42,7 +42,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from factory_console.api.deps import get_file_watcher, get_watcher_supervisor
+from factory_console.api.deps import get_watcher_supervisor
 from factory_console.api.v1 import events as events_module
 from factory_console.api.v1.events import events
 from factory_console.app import create_app
@@ -84,8 +84,8 @@ class _FakeRequest:
     def __init__(self, disconnect_after: int, app: FastAPI | None = None) -> None:
         self._checks = 0
         self._disconnect_after = disconnect_after
-        # Only the tests that resolve dependencies by hand (``get_file_watcher`` /
-        # ``get_watcher_supervisor``) need an app to read ``.state`` off.
+        # Only the tests that resolve the ``get_watcher_supervisor`` dependency by hand
+        # need an app to read ``.state`` off.
         self.app = app
 
     async def is_disconnected(self) -> bool:
@@ -188,9 +188,10 @@ async def test_handler_streams_ready_then_change_and_releases_on_close() -> None
     request = _FakeRequest(disconnect_after=10)
 
     # Call the real route handler; it wraps sse_event_stream in a StreamingResponse.
-    # The supervisor is the second DI argument (T115); one that never retargets keeps
-    # this case's behaviour exactly as it was before the generation check existed.
-    resp = await events(request, watcher, WatcherSupervisor(None, initial=watcher))  # type: ignore[arg-type]
+    # The supervisor is the sole DI argument (T115); the route reads both the
+    # generation and the watcher off it, so one that never retargets keeps this
+    # case's behaviour exactly as it was before the generation check existed.
+    resp = await events(request, WatcherSupervisor(None, initial=watcher))  # type: ignore[arg-type]
     assert resp.media_type == "text/event-stream"
     assert resp.headers["cache-control"] == "no-cache"
     assert resp.headers["x-accel-buffering"] == "no"
@@ -374,7 +375,7 @@ async def test_handler_captures_the_generation_at_connect_time(
     supervisor.start(_ROOT_A)
     request = _FakeRequest(disconnect_after=10, app=app)
 
-    await events(request, supervisor.current(), supervisor)  # type: ignore[arg-type]
+    await events(request, supervisor)  # type: ignore[arg-type]
 
     is_stale = captured["is_stale"]
     assert callable(is_stale)
@@ -398,11 +399,13 @@ async def test_fresh_connection_after_the_switch_streams_the_new_watchers_change
     assert factory.roots == [_ROOT_A, _ROOT_B]
     assert new is not None and new is not old
 
-    # Resolve the dependencies exactly as FastAPI would, off the real app state.
+    # Resolve the dependency exactly as FastAPI would, off the real app state; the
+    # route reads ``.current()`` off it itself rather than taking the watcher as a
+    # separate argument (see the module docstring for why).
     request = _FakeRequest(disconnect_after=10, app=app)
-    watcher = get_file_watcher(request)  # type: ignore[arg-type]
-    assert watcher is new
-    resp = await events(request, watcher, get_watcher_supervisor(request))  # type: ignore[arg-type]
+    supervisor_dep = get_watcher_supervisor(request)  # type: ignore[arg-type]
+    assert supervisor_dep.current() is new
+    resp = await events(request, supervisor_dep)  # type: ignore[arg-type]
 
     body = resp.body_iterator
     assert await anext(body) == _READY_FRAME
