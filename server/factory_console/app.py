@@ -6,11 +6,14 @@ extends. :func:`create_app` takes an injected
 the discovered ``project_root`` and the package ``version`` — on ``app.state`` so
 handlers reach the adapter through the ``Depends(get_file_adapter)`` seam without
 importing a concrete adapter. It also accepts an optional long-lived
-:class:`~factory_console.file_adapter.watcher.FileWatcher` (T39's port), stashed on
-``app.state.file_watcher`` for the ``Depends(get_file_watcher)`` seam and driven by
-a FastAPI ``lifespan`` that ``start()``s it at boot and ``stop()``s it on shutdown
-— the first (deliberate) deviation from the MVP's no-watcher rule, plumbing the
-watcher backbone the SSE endpoint (T45) builds on. It also accepts an optional
+:class:`~factory_console.file_adapter.watcher.FileWatcher` (T39's port) — the first
+(deliberate) deviation from the MVP's no-watcher rule, plumbing the watcher backbone
+the SSE endpoint (T45) builds on — which it hands to the
+:class:`~factory_console.services.watcher_supervisor.WatcherSupervisor` it ALWAYS
+builds on ``app.state.watcher_supervisor``. The supervisor is what the
+``Depends(get_file_watcher)`` seam now reads through, what the FastAPI ``lifespan``
+``start()``s at boot and ``stop()``s on shutdown, and what re-points the watcher at
+the newly selected project when the selection changes. It also accepts an optional
 write-core :class:`~factory_console.file_adapter.writer_protocol.FileWriter` (T60/T61's
 port), stashed on ``app.state.file_writer`` for the ``Depends(get_file_writer)`` seam
 the v2 write endpoints consume; the writer is stateless, so it drives no lifespan.
@@ -52,15 +55,17 @@ above — deferring it keeps nothing new out of the import graph.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import secrets
 import sys
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from importlib import resources
 from pathlib import Path
 
+import anyio.to_thread
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException
@@ -80,6 +85,7 @@ from factory_console.file_adapter.watcher import FileWatcher
 from factory_console.file_adapter.writer_protocol import FileWriter
 from factory_console.logging import request_log_line
 from factory_console.services.project_selection import SelectionState
+from factory_console.services.watcher_supervisor import WatcherSupervisor
 from factory_console.store.registry_protocol import ProjectRegistry
 
 # ``API_V1_PREFIX`` (imported above) is owned by the ``api.v1`` package so the
@@ -173,25 +179,67 @@ def _mount_static(app: FastAPI) -> None:
 
 @contextlib.asynccontextmanager
 async def _watcher_lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Start/stop the bound :class:`FileWatcher` around the app's serving window.
+    """Open/close the :class:`WatcherSupervisor`'s window around the app's serving.
 
-    Reads the watcher off ``app.state.file_watcher`` (set by :func:`create_app`)
-    rather than closing over the argument, so there is no construct-vs-startup
-    ordering hazard. When a watcher is bound, its SYNCHRONOUS ``start()`` runs on
-    entry — from inside this async context so ``RealFileWatcher`` captures the
-    running loop it later hands watchdog callbacks to — and its ``stop()`` runs in
-    a ``finally`` on exit, so uvicorn's SIGINT/SIGTERM drain always joins the
-    observer thread even if serving raised, leaving no thread/observer leak. A
-    ``None`` watcher (the common test/adapter-only path) makes both a no-op.
+    Reads the supervisor off ``app.state.watcher_supervisor`` (always set by
+    :func:`create_app`) rather than closing over an argument, so there is no
+    construct-vs-startup ordering hazard. Its SYNCHRONOUS ``start()`` runs on entry —
+    from inside this async context so ``RealFileWatcher`` captures the running loop it
+    later hands watchdog callbacks to — rooted at ``app.state.project_root``, the
+    boot-time root an injected ``file_watcher`` was already built for. ``stop()`` runs
+    in a ``finally`` on exit, so uvicorn's SIGINT/SIGTERM drain always joins the
+    observer thread even if serving raised, leaving no thread/observer leak; it is
+    idempotent and safe with no watcher current, which is what makes it unconditional
+    here. A supervisor with neither an injected watcher nor a factory (the common
+    test/adapter-only path) makes both ends a no-op.
     """
-    file_watcher: FileWatcher | None = getattr(app.state, "file_watcher", None)
-    if file_watcher is not None:
-        file_watcher.start()
+    supervisor: WatcherSupervisor = app.state.watcher_supervisor
+    supervisor.start(app.state.project_root)
     try:
         yield
     finally:
-        if file_watcher is not None:
-            file_watcher.stop()
+        supervisor.stop()
+
+
+def _watcher_retarget_hook(supervisor: WatcherSupervisor) -> Callable[[Path | None], None]:
+    """Adapt ``supervisor.retarget`` to the selection hook without blocking the loop.
+
+    :meth:`~factory_console.services.project_selection.SelectionState.subscribe`
+    invokes its callbacks SYNCHRONOUSLY, on the event-loop thread, from inside
+    ``select()`` — which a request handler calls. But
+    :meth:`~factory_console.services.watcher_supervisor.WatcherSupervisor.retarget`
+    stops the outgoing watcher, and ``FileWatcher.stop()`` joins a thread. Calling it
+    inline would park the single event loop on that join, stalling every other request
+    and open SSE stream — exactly the failure ``ARCHITECTURE.md``'s Cross-cutting
+    **Concurrency** rule exists to prevent. So the callback returns IMMEDIATELY and the
+    swap runs in a worker thread via ``anyio.to_thread.run_sync``.
+
+    Fire-and-forget, and that is the deliberate trade: the switch is confirmed to the
+    operator as soon as the selection is persisted, and the live-update stream catches
+    up a moment later (the SSE contract in T115 is what makes the gap safe — a
+    connection ends its stream when the generation moves, so a client re-subscribes to
+    whichever watcher is current by then). ``retarget`` never raises, so there is no
+    result to await and nothing for the task to report; the tasks are kept in a set
+    only so the loop holds a strong reference and cannot garbage-collect one mid-swap.
+    """
+    pending: set[asyncio.Task[None]] = set()
+
+    def _retarget_off_loop(root: Path | None) -> None:
+        """Schedule the swap off the loop; do it inline when there is no loop."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # A synchronous caller with no loop at all (a test driving ``select()``
+            # directly, a future CLI-side switch): there is no event loop for the join
+            # to stall, so the offload would buy nothing and only defer the swap onto a
+            # loop that does not exist.
+            supervisor.retarget(root)
+            return
+        task = loop.create_task(anyio.to_thread.run_sync(supervisor.retarget, root))
+        pending.add(task)
+        task.add_done_callback(pending.discard)
+
+    return _retarget_off_loop
 
 
 # Entropy (in bytes) of a generated write token. 32 bytes is the ``secrets`` module's
@@ -238,6 +286,7 @@ def create_app(
     version: str,
     project_root: Path,
     file_watcher: FileWatcher | None = None,
+    watcher_factory: Callable[[Path], FileWatcher] | None = None,
     file_writer: FileWriter | None = None,
     run_artifact_reader: RunArtifactReader | None = None,
     project_registry: ProjectRegistry | None = None,
@@ -248,10 +297,19 @@ def create_app(
     ``file_adapter`` is stashed on ``app.state`` for the
     ``Depends(get_file_adapter)`` seam, alongside ``project_root`` (the discovered
     target project) and ``version``. The optional ``file_watcher`` (T39's
-    :class:`FileWatcher` port) is stashed on ``app.state.file_watcher`` for the
-    ``Depends(get_file_watcher)`` seam and driven by :func:`_watcher_lifespan`,
-    which ``start()``s it at boot and ``stop()``s it on shutdown; leaving it
-    ``None`` keeps the app watcher-free (the adapter-only default). The optional
+    :class:`FileWatcher` port) and ``watcher_factory`` (which builds one for a given
+    root) are handed to a :class:`WatcherSupervisor` — ALWAYS constructed, on
+    ``app.state.watcher_supervisor`` — which owns at most one live watcher, is driven
+    by :func:`_watcher_lifespan` (``start()`` at boot, ``stop()`` on shutdown), is read
+    through by the ``Depends(get_file_watcher)`` seam, and is re-pointed at the new
+    root on every selection change via :func:`_watcher_retarget_hook`. Passing
+    ``file_watcher`` alone is exactly the pre-v3 wiring: that instance is the one
+    started and served, and with no factory to build a successor the app simply becomes
+    watcher-less if the selection ever moves. Passing neither keeps the app
+    watcher-free (the adapter-only default). ``app.state.file_watcher`` is
+    deliberately NOT bound: the supervisor swaps its watcher mid-session, so a second
+    copy of the reference could only go stale and disagree with
+    :func:`~factory_console.api.deps.get_file_watcher`. The optional
     write-core ``file_writer`` (T60/T61's :class:`FileWriter` port) is stashed on
     ``app.state.file_writer`` for the ``Depends(get_file_writer)`` seam; it is
     stateless, so it drives no lifespan, and leaving it ``None`` keeps the app
@@ -303,11 +361,14 @@ def create_app(
     app.state.file_adapter = file_adapter
     app.state.project_root = project_root
     app.state.version = version
-    app.state.file_watcher = file_watcher
     app.state.file_writer = file_writer
     app.state.run_artifact_reader = run_artifact_reader
     app.state.project_registry = project_registry
-    app.state.selection = SelectionState(pinned_root=project_root, registry=project_registry)
+    supervisor = WatcherSupervisor(watcher_factory, initial=file_watcher)
+    app.state.watcher_supervisor = supervisor
+    selection = SelectionState(pinned_root=project_root, registry=project_registry)
+    selection.subscribe(_watcher_retarget_hook(supervisor))
+    app.state.selection = selection
     token = write_token or secrets.token_urlsafe(_WRITE_TOKEN_BYTES)
     app.state.write_token = token
     # ``generated`` mirrors the ``or`` above exactly rather than testing ``is None``:
