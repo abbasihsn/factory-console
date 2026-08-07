@@ -20,6 +20,8 @@ from factory_console.domain import Project, Roadmap
 from factory_console.domain.deps import RoadmapItem, RoadmapMilestone
 from factory_console.file_adapter import FakeFileAdapter
 from factory_console.file_adapter.real import RealFileAdapter
+from factory_console.services.project_selection import SelectionState
+from factory_console.store.fake_registry import FakeProjectRegistry
 
 _FAKE_PROJECT = Project(
     rootPath=Path("/factory/demo-project"),
@@ -48,14 +50,23 @@ def _present_app() -> FastAPI:
     return create_app(adapter, version="0.0.0", project_root=_FAKE_PROJECT.rootPath)
 
 
-def _absent_app() -> FastAPI:
+def _absent_app(
+    *,
+    project_root: Path = _FAKE_PROJECT.rootPath,
+    registry: FakeProjectRegistry | None = None,
+) -> FastAPI:
     """Build the app over a FakeFileAdapter whose project has no roadmap.
 
     ``get_roadmap`` returns the seeded ``roadmap`` verbatim, which defaults to
     ``None`` here, so this pins the ``{present: false}`` branch.
     """
     adapter = FakeFileAdapter(project=_FAKE_PROJECT, tickets=[])
-    return create_app(adapter, version="0.0.0", project_root=_FAKE_PROJECT.rootPath)
+    return create_app(
+        adapter,
+        version="0.0.0",
+        project_root=project_root,
+        project_registry=registry,
+    )
 
 
 def test_roadmap_present_returns_full_body_and_milestones() -> None:
@@ -95,6 +106,34 @@ def test_roadmap_unreadable_returns_500_envelope(tmp_path: Path) -> None:
     resp = client.get("/api/v1/roadmap")
     assert resp.status_code == 500
     assert resp.json()["error"]["code"] == "roadmap_unreadable"
+
+
+def test_roadmap_refuses_with_409_when_nothing_is_selected() -> None:
+    # ``{present: false}`` is a statement ABOUT a project — "this one ships no
+    # roadmap" — so it must not be the answer when there is no project to make it
+    # about. The absence of a selection is a different, named condition.
+    app = _absent_app()
+    app.state.selection = SelectionState(pinned_root=None, registry=None)
+
+    resp = TestClient(app).get("/api/v1/roadmap")
+
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "no_project_selected"
+
+
+def test_roadmap_refuses_with_409_when_the_selected_path_is_gone(tmp_path: Path) -> None:
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    registry = FakeProjectRegistry()
+    row = registry.add_project(gone)
+    app = _absent_app(project_root=tmp_path / "pinned", registry=registry)
+    app.state.selection.select(row.id)
+    gone.rmdir()
+
+    resp = TestClient(app).get("/api/v1/roadmap")
+
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "selected_project_unavailable"
 
 
 def test_openapi_publishes_widened_roadmap_schema() -> None:
