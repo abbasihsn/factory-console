@@ -42,6 +42,10 @@ AND in ARCHITECTURE.md's DevOps section, rather than leaving the container's beh
 4. Confirm `scripts/package.sh` and the release workflow need no change (the db is runtime state, not
    packaged data) and say so in the ticket rather than leaving it unexamined.
 
+   **Confirmed:** neither references `console.db`, `FACTORY_CONSOLE_DB_PATH`, nor `~/.factory-console`
+   — the registry is runtime state created lazily on first use, never packaged into the wheel/sdist
+   and never touched at release time. No change needed to either file.
+
 ## Critical files
 
 - `Dockerfile` (modify)
