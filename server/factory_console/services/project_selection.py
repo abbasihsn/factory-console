@@ -283,18 +283,17 @@ class SelectionState:
     def select(self, project_id: str | None) -> None:
         """Point the session at ``project_id``, persist it, and fire the hooks.
 
-        Persistence is attempted FIRST — delegated to the registry, except for
-        :data:`SESSION_PROJECT_ID`, which is never written. Only once that succeeds
-        (or there is nothing to persist to) does the in-memory session selection
-        move, so a rejected switch leaves this object exactly as it was: a raise
-        below must never leave ``current_id()`` naming an id no row answers to.
-
-        The :data:`SESSION_PROJECT_ID` exception to persistence is the point of the
-        sentinel: the pinned root is an ephemeral property of one invocation and
-        names no row, so persisting it would both violate the registry's foreign key
-        and let a throwaway "just look at this directory" run overwrite the
-        selection the operator made in the UI. With no registry bound there is
-        nothing to persist to, and the selection is simply process-local.
+        Composes :meth:`_resolve_and_persist` (the blocking registry half) with
+        :meth:`_apply_selected` (the in-memory half, and the one that fires the
+        hooks). A caller with no loop to protect — a test driving the switch
+        directly, a future CLI-side one — has no reason to split them and simply
+        calls this. The HTTP write routes in :mod:`factory_console.api.v1.projects`
+        call the two halves separately instead, offloading
+        :meth:`_resolve_and_persist` to a worker thread and running only
+        :meth:`_apply_selected` on the event loop, since the on-change hook is the
+        only half that needs the loop and the registry round trip is the only half
+        that blocks (see that module for why both halves used to run there
+        together).
 
         Raises:
             ProjectNotRegistered: ``project_id`` names no registry row. Raised BY the
@@ -303,10 +302,52 @@ class SelectionState:
                 loudly rather than succeed at pointing the console at nothing. Nothing
                 on this object is mutated when this is raised.
         """
-        if self._registry is not None and project_id != SESSION_PROJECT_ID:
-            self._registry.set_selected_project(project_id)
+        root = self._resolve_and_persist(project_id)
+        self._apply_selected(project_id, root)
+
+    def _resolve_and_persist(self, project_id: str | None) -> Path | None:
+        """Persist ``project_id`` and return the root it resolves to. No hooks fired.
+
+        The BLOCKING half of :meth:`select` — ``sqlite3`` like every other registry
+        call — split out so an HTTP caller can offload it with
+        ``anyio.to_thread.run_sync`` and run only :meth:`_apply_selected` back on the
+        event loop. Persistence is delegated to the registry, except for
+        :data:`SESSION_PROJECT_ID`, which is never written: the pinned root is an
+        ephemeral property of one invocation and names no row, so persisting it would
+        both violate the registry's foreign key and let a throwaway "just look at
+        this directory" run overwrite the selection the operator made in the UI.
+
+        For a registered id this is ONE registry round trip, not two.
+        :meth:`~factory_console.store.registry_protocol.ProjectRegistry.set_selected_project`
+        already returns the newly selected row, which carries the path this method
+        needs, so this no longer follows it with a separate
+        :meth:`~factory_console.store.registry_protocol.ProjectRegistry.get_project`
+        for the same row — the second round trip a contended store would otherwise
+        make this block on twice over.
+
+        Raises:
+            ProjectNotRegistered: ``project_id`` names no registry row. Nothing on
+                this object is mutated when this is raised — see :meth:`select`.
+        """
+        if project_id is None or project_id == SESSION_PROJECT_ID:
+            if project_id is None and self._registry is not None:
+                self._registry.set_selected_project(None)
+            return self._resolve_root(project_id)
+        if self._registry is None:
+            return None
+        row = self._registry.set_selected_project(project_id)
+        return None if row is None else row.path
+
+    def _apply_selected(self, project_id: str | None, root: Path | None) -> None:
+        """Move the in-memory selection to ``project_id`` and fire the on-change hooks.
+
+        The LOOP-SIDE half of :meth:`select` — no I/O, so it is safe to call directly
+        on the event-loop thread right after :meth:`_resolve_and_persist` has been
+        offloaded to a worker thread. ``root`` is trusted as whatever
+        :meth:`_resolve_and_persist` returned for the same ``project_id`` rather than
+        re-derived, which is what keeps this half free of registry calls.
+        """
         self._session_selection = project_id
-        root = self._resolve_root(project_id)
         for callback in self._on_change:
             callback(root)
 

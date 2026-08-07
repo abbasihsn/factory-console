@@ -71,23 +71,32 @@ per request (``ARCHITECTURE.md``, Cross-cutting → **Concurrency**). A per-row 
 pay the thread hand-off N times for work that is a few syscalls each. Nothing is cached:
 the SPA calls these on every switch and ``condition`` must be current, which is the same
 reason :class:`~factory_console.file_adapter.project_condition.RealProjectConditionProbe`
-memoises nothing. Every hop — read or write — goes through
+memoises nothing. Every hop that reads or writes the REGISTRY goes through
 :func:`~factory_console.api.deps._read_registry`, so a store the console cannot reach at
-all is the SAME named 503 on a mutation as on a listing rather than a bare 500.
+all is the SAME named 503 on a mutation as on a listing rather than a bare 500. The one
+exception is ``POST /projects``'s own hop — see :func:`_register_project` for why it
+uses a plain offload instead: two of its four steps touch the CALLER's project
+filesystem, not the console's registry, and folding them under ``_read_registry`` would
+mislabel a fault on the caller's path as the console's database being unreadable.
 
-**The one thing that is deliberately NOT offloaded is**
-:meth:`~factory_console.services.project_selection.SelectionState.select`. It must run
-on the EVENT-LOOP thread, and that is a correctness constraint rather than a
-convenience: ``select()`` invokes its on-change hooks synchronously on the calling
-thread, and the only real subscriber —
-:func:`factory_console.app._watcher_retarget_hook` — branches on whether a loop is
-running. On the loop it defers the watcher swap to a task and returns immediately
-(nothing blocks the request); on a worker thread it finds no loop, runs the swap inline,
-and the rebuild half cannot start a ``RealFileWatcher`` because that captures the
-running loop there is none of — so every project switch would silently degrade the
-console to watcher-less. What stays on the loop is therefore one small ``UPDATE`` of a
-single ``console_state`` row, which is the trade named explicitly on
-:func:`select_current` and :func:`remove_project`.
+**Only the on-change hook is pinned to the EVENT-LOOP thread**, not the whole switch.
+:meth:`~factory_console.services.project_selection.SelectionState.select` used to run
+there whole, because it invokes its on-change hooks synchronously on the calling thread,
+and the only real subscriber — :func:`factory_console.app._watcher_retarget_hook` —
+branches on whether a loop is running: on the loop it defers the watcher swap to a task
+and returns immediately (nothing blocks the request); on a worker thread it finds no
+loop, runs the swap inline, and the rebuild half cannot start a ``RealFileWatcher``
+because that captures the running loop there is none of — so every project switch would
+silently degrade the console to watcher-less. But ``select()``'s OTHER half — persisting
+the selection and resolving its root, both ``sqlite3`` — has no such requirement, and
+running it inline blocked the ENTIRE event loop, every open SSE stream included, for as
+long as a contended store took to answer. :func:`select_current` and
+:func:`remove_project` therefore split the two:
+:meth:`~factory_console.services.project_selection.SelectionState._resolve_and_persist`
+(the registry round trip) is offloaded through ``_read_registry`` like any other write,
+and only :meth:`~factory_console.services.project_selection.SelectionState._apply_selected`
+(no I/O — it fires the hook) runs on the loop, which is where that hook's own
+correctness constraint still holds.
 
 The absolute host paths on the wire are the existing precedent, not a new disclosure:
 ``/health`` already publishes ``projectRoot`` under the same loopback trust boundary.
@@ -98,11 +107,12 @@ from __future__ import annotations
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated
 
+import anyio.to_thread
 from fastapi import APIRouter, Depends, Response, status
 from fastapi import Path as PathParam
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, StringConstraints
 
 from factory_console.api.deps import (
     _guard_registry_io,
@@ -112,7 +122,7 @@ from factory_console.api.deps import (
     get_project_registry,
     get_selection_state,
 )
-from factory_console.api.write_token import WRITE_TOKEN_SCHEME_NAME, require_write_token
+from factory_console.api.write_token import WRITE_TOKEN_SECURITY, require_write_token
 from factory_console.domain.registry import (
     REGISTERED_PROJECT_ID_PATTERN,
     RegistryEntry,
@@ -137,10 +147,21 @@ from factory_console.store.registry_protocol import ProjectNotRegistered, Projec
 # routes and their OpenAPI tag (mirrors ``api/v1/tickets.py``).
 router = APIRouter(tags=["projects"])
 
-ProjectIdPath = Annotated[
-    str,
-    PathParam(pattern=f"(?:{REGISTERED_PROJECT_ID_PATTERN})|(?:^{SESSION_PROJECT_ID}$)"),
-]
+PROJECT_OR_SESSION_ID_PATTERN = f"(?:{REGISTERED_PROJECT_ID_PATTERN})|(?:^{SESSION_PROJECT_ID}$)"
+"""The one pattern admitting both id spaces this module publishes.
+
+Composed from :data:`REGISTERED_PROJECT_ID_PATTERN` and the sentinel VERBATIM, so
+neither form is re-spelled and the registered half cannot drift from the one T103
+declares. Hoisted into its own constant — rather than inlined twice — so
+``DELETE /projects/{project_id}``'s :data:`ProjectIdPath` (a path parameter) and
+``PUT /projects/current``'s :attr:`SelectProjectRequest.projectId` (a body field) are
+bounded at the edge by the SAME pattern: a malformed id is a 422 at the boundary on
+BOTH mutations, rather than a looser body check that hands an arbitrary string down to
+:meth:`~factory_console.services.project_selection.SelectionState.select`, where it
+would reach the store and come back as a 404 echoing the caller's raw string.
+"""
+
+ProjectIdPath = Annotated[str, PathParam(pattern=PROJECT_OR_SESSION_ID_PATTERN)]
 """A ``{project_id}`` path parameter validated at the FastAPI boundary.
 
 The registry-id twin of :data:`~factory_console.api.deps.TicketIdPath`: it bounds what
@@ -150,9 +171,8 @@ a lookup for a string no row could ever answer to. Its consumer is
 URL at all.
 
 **It admits BOTH id spaces this module publishes** — a registered id and the reserved
-:data:`SESSION_PROJECT_ID` — composed from
-:data:`REGISTERED_PROJECT_ID_PATTERN` and the sentinel VERBATIM, so neither form is
-re-spelled here and the registered half cannot drift from the one T103 declares.
+:data:`SESSION_PROJECT_ID` — via :data:`PROJECT_OR_SESSION_ID_PATTERN`, the same pattern
+:attr:`SelectProjectRequest.projectId` is bounded by.
 
 Admitting the sentinel is deliberate, not laxity. ``session`` is an id a client
 legitimately HOLDS: every listing publishes it as a row, and ``DELETE`` has a named,
@@ -167,14 +187,6 @@ Nothing else is admitted: an id that is neither 32 lowercase hex digits nor the 
 is rejected at the boundary, and because neither alternative can contain a path
 separator or a ``.``, an id can never name a parent directory.
 """
-
-# ``require_write_token`` is a plain dependency rather than a ``SecurityBase``, so
-# FastAPI cannot derive a ``security`` requirement from it. Each gated operation
-# therefore names the scheme ``publish_write_token_scheme`` publishes — the same
-# constant ``tickets_write.py`` declares for the same reason — or the OpenAPI document
-# would describe a header that no operation actually requires.
-_WRITE_TOKEN_SECURITY: dict[str, Any] = {"security": [{WRITE_TOKEN_SCHEME_NAME: []}]}
-
 
 class SessionProjectNotRemovable(FactoryConsoleError):
     """The reserved ``session`` row cannot be removed: it was never registered.
@@ -348,8 +360,10 @@ class CurrentSelectionResponse(BaseModel):
     Exactly one of ``selected`` and ``reason`` is set, the same one-of discipline
     :class:`~factory_console.api.v1.runs.ProjectedArtifactRead` keeps between its
     ``data`` and ``reason``. The invariant is not restated as a validator because
-    :func:`get_current` is this model's only constructor and builds it in one place from
-    a two-branch union; a second copy of the rule would have one owner and two homes.
+    :func:`_current_response` is this model's ONLY constructor — called by both
+    :func:`get_current` and :func:`select_current`, which is why it belongs there and
+    not in either route — from a two-branch union; a second copy of the rule would have
+    one owner and two homes.
 
     ``reason`` is T111's :data:`SelectionFailure`, imported verbatim so ``/health``'s
     ``selectionReason``, the read endpoints' 409 codes and this field cannot come to
@@ -383,14 +397,23 @@ class AddProjectRequest(BaseModel):
     path would arrive at the store as the server's working directory. The one rule runs
     on the one unmodified input."""
 
-    name: str | None = None
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)] | None = None
     """The user's label, or ``None`` to take the directory name.
 
     The default is applied by
     :meth:`~factory_console.store.registry_protocol.ProjectRegistry.add_project` (via
     :func:`~factory_console.store.paths.default_project_name`), not here: the store owns
     what an unnamed row is called, and defaulting at the edge as well would give one
-    rule two homes that could disagree for a path with no final component."""
+    rule two homes that could disagree for a path with no final component.
+
+    A *supplied* name, though, IS constrained here to ``min_length=1`` (after
+    stripping whitespace): :class:`~factory_console.domain.registry.RegisteredProject`'s
+    own ``name`` is likewise ``Field(min_length=1)``, and without this constraint an
+    empty-string ``name`` (not ``None``) would sail past this boundary, reach
+    ``add_project`` in a worker thread, and blow up as a bare pydantic
+    ``ValidationError`` — not the ``OSError``/``sqlite3.Error`` the registry-io guard
+    catches — surfacing as an unmapped 500 instead of the ``422`` a malformed request
+    body should be."""
 
 
 class SelectProjectRequest(BaseModel):
@@ -403,16 +426,19 @@ class SelectProjectRequest(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    projectId: str
+    projectId: Annotated[str, StringConstraints(pattern=PROJECT_OR_SESSION_ID_PATTERN)]
     """A registry id, or :data:`SESSION_PROJECT_ID` for the pinned session row.
 
-    A bare ``str`` and NOT
-    :data:`~factory_console.domain.registry.RegisteredProjectId`, for the same reason
-    :attr:`RegisteredProjectOut.id` is one: the sentinel is a legal target here (a
-    ``factory-console PATH`` boot must be able to switch BACK to the pinned root) and it
-    cannot match the 32-hex-digit pattern a registered id must. The two id spaces are
-    separated by :func:`select_current`, which is where the sentinel's one precondition
-    — a pin actually exists — is checked."""
+    Bounded by :data:`PROJECT_OR_SESSION_ID_PATTERN` — the SAME pattern
+    ``DELETE /projects/{project_id}``'s :data:`ProjectIdPath` enforces at the edge —
+    rather than a bare, unconstrained ``str``: without it a malformed id skipped past
+    this model straight to
+    :meth:`~factory_console.services.project_selection.SelectionState.select`, which
+    only special-cases the sentinel and hands anything else to the store, so an
+    unregistered garbage string came back as a 404 echoing the caller's own input in
+    ``details.projectId`` instead of the ``422`` the same shape of mistake gets on the
+    DELETE route. The two id spaces are separated by :func:`select_current`, which is
+    where the sentinel's one precondition — a pin actually exists — is checked."""
 
 
 def _list_rows(
@@ -639,14 +665,35 @@ def _register_project(
     Factory project is refused before a row exists for it. The insert comes last and is
     the only step that changes anything, so both refusals leave the registry untouched.
 
-    Nothing is caught here. :class:`~factory_console.store.paths.InvalidProjectPath`
-    (400), :class:`~factory_console.file_adapter.discovery.ProjectNotFound` (404),
-    :class:`~factory_console.file_adapter.manifest.MalformedManifest` (500) and
-    :class:`~factory_console.store.registry_protocol.DuplicateProjectPath` (409) each
-    already carry the status and code the registered handler renders, and re-mapping any
-    of them here would give one condition two spellings.
+    **The row records the DISCOVERED root, not the path the caller typed.**
+    ``adapter.load_project`` walks UP from ``path`` to the directory that actually holds
+    the manifest — the same discovery every other entry point uses — and its
+    ``project.rootPath`` is what gets registered, not the (possibly deeper) ``root`` that
+    was merely where discovery started. Registering ``root`` verbatim would let two
+    different spellings of one project — the project's own directory, and any
+    subdirectory of it — each insert their own row, defeating the ``UNIQUE`` index on
+    ``projects.path`` that exists to guarantee one spelling per project; using the
+    discovered root is what makes a second add of the same project through a different
+    subdirectory the ordinary ``DuplicateProjectPath`` conflict below, not a second row.
 
-    The DUPLICATE check is the store's, not a pre-flight
+    Nothing is caught here except around the store write (see below).
+    :class:`~factory_console.store.paths.InvalidProjectPath` (400),
+    :class:`~factory_console.file_adapter.discovery.ProjectNotFound` (404) and
+    :class:`~factory_console.file_adapter.manifest.MalformedManifest` (500) already carry
+    the status and code the registered handler renders, and re-mapping any of them here
+    would give one condition two spellings. They are also NOT the console's own store
+    failing — ``canonical_project_path`` and the discovery walk both read the CALLER's
+    project filesystem, not the registry — so they must not be caught by the guard below
+    either, or a permission fault on the caller's own path would be mislabelled as the
+    console's database being unreadable.
+
+    :meth:`~factory_console.store.registry_protocol.ProjectRegistry.add_project` is the
+    one step that IS the registry, so it alone runs through
+    :func:`~factory_console.api.deps._guard_registry_io`: an ``OSError`` or
+    ``sqlite3.Error`` there really is the console failing to reach its own database, and
+    :class:`~factory_console.store.registry_protocol.DuplicateProjectPath` (409) still
+    carries the status and code the registered handler renders, unmapped. The DUPLICATE
+    check is the store's, not a pre-flight
     :meth:`~factory_console.store.registry_protocol.ProjectRegistry.find_by_path`: the
     ``UNIQUE`` index on ``projects.path`` is the authority the port names, and a
     ``SELECT``-then-``INSERT`` here would be a race with any concurrent writer while
@@ -663,8 +710,8 @@ def _register_project(
     auto-selects, and the id it mints is fresh, so no selection can already name it.
     """
     root = canonical_project_path(path)
-    adapter.load_project(root)
-    row = registry.add_project(root, name)
+    project = adapter.load_project(root)
+    row = _guard_registry_io(partial(registry.add_project, project.rootPath, name))
     return RegisteredProjectOut.from_entry(
         RegistryEntry(project=row, condition=probe.probe(row.path)), selected=False
     )
@@ -706,7 +753,7 @@ def _remove_registered_project(
     "/projects",
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(require_write_token)],
-    openapi_extra=_WRITE_TOKEN_SECURITY,
+    openapi_extra=WRITE_TOKEN_SECURITY,
 )
 async def add_project(
     payload: AddProjectRequest,
@@ -730,18 +777,19 @@ async def add_project(
     reading the first; the returned row therefore always reports ``selected: false``.
 
     The whole body — canonicalise, discover, insert, probe — runs in ONE
-    ``anyio.to_thread.run_sync`` hop through
+    ``anyio.to_thread.run_sync`` hop, plain rather than through
     :func:`~factory_console.api.deps._read_registry` (see :func:`_register_project` for
-    the order and the errors it lets through), so a store the console cannot reach
-    answers the same ``registry_unreadable`` 503 the listing does.
+    the order, the errors it lets through, and why only its ``registry.add_project`` step
+    is wrapped in that 503 mapping rather than the whole hop).
 
     Note that discovery WALKS UP from the given path, so registering a subdirectory of
-    an App Factory project passes validation. That is deliberate and matches the CLI:
-    the row records the path the user asked for, and the reads resolve the project from
-    it the same way every other entry point does.
+    an App Factory project passes validation — and the row records the DISCOVERED root,
+    not the subdirectory the caller typed, so two different spellings of one project
+    resolve to the one row the ``UNIQUE`` index is meant to guarantee, instead of each
+    inserting its own.
     """
     store = _require_registry(registry)
-    return await _read_registry(
+    return await anyio.to_thread.run_sync(
         partial(
             _register_project,
             payload.path,
@@ -757,7 +805,7 @@ async def add_project(
     "/projects/{project_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(require_write_token)],
-    openapi_extra=_WRITE_TOKEN_SECURITY,
+    openapi_extra=WRITE_TOKEN_SECURITY,
 )
 async def remove_project(
     project_id: ProjectIdPath,
@@ -782,23 +830,32 @@ async def remove_project(
 
     **Removing the selected project clears the selection twice over, and both are
     needed.** The schema's ``ON DELETE SET NULL`` clears the PERSISTED selection as part
-    of the delete; this handler additionally calls ``selection.select(None)`` to clear
-    the PROCESS-LOCAL one, which is what fires the on-change hook so the watcher
-    supervisor releases the watcher rooted at the directory that is no longer tracked.
-    Without it the in-memory selection would outlive its row and every project-scoped
-    read would answer ``selected_project_not_registered`` instead of the
-    ``no_project_selected`` that is actually true.
+    of the delete; this handler additionally clears the PROCESS-LOCAL one, which is what
+    fires the on-change hook so the watcher supervisor releases the watcher rooted at the
+    directory that is no longer tracked. Without it the in-memory selection would outlive
+    its row and every project-scoped read would answer
+    ``selected_project_not_registered`` instead of the ``no_project_selected`` that is
+    actually true.
 
-    That clear is conditional — only when the removed row WAS the selection — because
-    ``select(None)`` is not free: it bumps the watcher generation and tears down live
-    updates for every SSE client, which removing some unrelated row must not do.
+    That clear is conditional — only when the removed row WAS the selection — because it
+    is not free: it bumps the watcher generation and tears down live updates for every
+    SSE client, which removing some unrelated row must not do.
 
-    It also runs on the EVENT-LOOP thread, outside the offloaded hop, unlike every other
-    blocking step here. The hook it fires branches on whether a loop is running; on the
-    loop it defers the watcher swap to a task and returns at once, while on a worker
-    thread it would run the swap inline and lose the loop the new watcher needs. What
-    stays on the loop is one ``UPDATE`` of a single row — and one already made redundant
-    by the cascade, so it is the hook that is being bought, not the write.
+    **Only the hook stays on the loop; the registry round trip it needs is offloaded.**
+    ``selection.select(None)`` used to run here whole, on the event-loop thread, because
+    its on-change hook rebuilds the file watcher and a ``RealFileWatcher`` captures the
+    running loop when it starts — off the loop every switch would silently degrade to
+    watcher-less. But the ``sqlite3`` write that clear performs is a blocking call like
+    any other registry access, and running it inline could stall the whole event loop —
+    every other open SSE stream included — for as long as the store is contended. So the
+    two halves are now split:
+    :meth:`~factory_console.services.project_selection.SelectionState._resolve_and_persist`
+    (the blocking clear) runs through :func:`~factory_console.api.deps._read_registry`
+    like the removal above it, and only
+    :meth:`~factory_console.services.project_selection.SelectionState._apply_selected`
+    (which does no I/O — it fires the hook, on this thread, which is still the loop) runs
+    inline. The hook itself still returns immediately (the watcher swap is deferred to a
+    task), so nothing here blocks past the one small ``UPDATE``.
     """
     if project_id == SESSION_PROJECT_ID:
         raise SessionProjectNotRemovable()
@@ -807,14 +864,15 @@ async def remove_project(
         partial(_remove_registered_project, project_id, store, selection)
     )
     if was_selected:
-        _guard_registry_io(partial(selection.select, None))
+        root = await _read_registry(partial(selection._resolve_and_persist, None))
+        selection._apply_selected(None, root)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.put(
     "/projects/current",
     dependencies=[Depends(require_write_token)],
-    openapi_extra=_WRITE_TOKEN_SECURITY,
+    openapi_extra=WRITE_TOKEN_SECURITY,
 )
 async def select_current(
     payload: SelectProjectRequest,
@@ -840,11 +898,11 @@ async def select_current(
     Two refusals, both ``404 project_not_registered``:
 
     * an id no registry row answers to, raised by the registry underneath
-      :meth:`~factory_console.services.project_selection.SelectionState.select` — the
-      one write the port makes fail loudly rather than succeed at pointing the console
-      at nothing.
-    * the reserved ``session`` id when NO root is pinned. ``select()`` never persists
-      that id, so it would otherwise be accepted and move the session to a sentinel that
+      :meth:`~factory_console.services.project_selection.SelectionState._resolve_and_persist`
+      — the one write the port makes fail loudly rather than succeed at pointing the
+      console at nothing.
+    * the reserved ``session`` id when NO root is pinned. Persistence never writes that
+      id, so it would otherwise be accepted and move the session to a sentinel that
       names no directory — the same "succeeded at selecting nothing" outcome, reached by
       the one path the registry cannot see. From the caller's side the two are the same
       statement (this id names nothing this console can serve), so they get the same
@@ -852,13 +910,20 @@ async def select_current(
       sentinel is a perfectly ordinary target, and is the ONLY selectable target in
       pinned mode — which is why it does not require a registry at all.
 
-    ``select()`` runs on the EVENT-LOOP thread rather than in a worker: its on-change
-    hook rebuilds the file watcher for the new root, and a ``RealFileWatcher`` captures
-    the running loop when it starts, so off the loop every switch would silently degrade
-    to watcher-less. The hook returns immediately (the swap is deferred to a task), so
-    what actually runs on the loop is one small ``UPDATE``;
-    :func:`~factory_console.api.deps._guard_registry_io` still names a store failure as
-    the ``registry_unreadable`` 503. The resolution that follows is the ordinary single
+    **The switch is split across the offload, not run whole on the loop.** Only the
+    on-change hook needs the event-loop thread — it rebuilds the file watcher for the new
+    root, and a ``RealFileWatcher`` captures the running loop when it starts, so off the
+    loop every switch would silently degrade to watcher-less. The registry round trip the
+    switch also makes (persisting the selection and resolving its root) is a blocking
+    ``sqlite3`` call like any other and has no such requirement, so it is offloaded
+    through :func:`~factory_console.api.deps._read_registry` — which still names a store
+    failure the ``registry_unreadable`` 503 — via
+    :meth:`~factory_console.services.project_selection.SelectionState._resolve_and_persist`.
+    Only :meth:`~factory_console.services.project_selection.SelectionState._apply_selected`
+    (no I/O: it moves the in-memory selection and fires the hook) then runs on this
+    thread, which is still the loop. The hook itself still returns immediately (the swap
+    is deferred to a task), so nothing here blocks past the registry round trip already
+    being awaited off the loop. The resolution that follows is the ordinary single
     offloaded hop.
     """
     if payload.projectId == SESSION_PROJECT_ID:
@@ -866,7 +931,8 @@ async def select_current(
             raise ProjectNotRegistered(payload.projectId)
     else:
         _require_registry(registry)
-    _guard_registry_io(partial(selection.select, payload.projectId))
+    root = await _read_registry(partial(selection._resolve_and_persist, payload.projectId))
+    selection._apply_selected(payload.projectId, root)
     resolved = await _read_registry(
         partial(_resolve_current, selection, registry, RealProjectConditionProbe())
     )

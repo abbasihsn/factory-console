@@ -481,6 +481,76 @@ def test_a_store_io_failure_is_a_503_not_a_500_on_both_routes(tmp_path: Path) ->
     assert current_body["error"]["code"] == "registry_unreadable"
 
 
+def test_a_store_io_failure_is_a_503_not_a_500_on_the_write_routes(tmp_path: Path) -> None:
+    # The write-side twin of ``test_a_store_io_failure_is_a_503_not_a_500_on_both_routes``:
+    # ``deps.py``'s guard-widening covers the three MUTATIONS too, not just the reads, so
+    # a store the console cannot reach must answer the same named 503 on a POST, a
+    # DELETE and a PUT rather than a bare 500.
+    class _GoesUnreadableRegistry(FakeProjectRegistry):
+        """A registry that starts healthy, then fails the write each route depends on.
+
+        ``remove_project`` is deliberately able to succeed once even after ``readable``
+        goes false — see ``removed_ok`` — so the DELETE case below can exercise the
+        on-loop selection-clearing call that follows a successful removal, rather than
+        only the removal itself.
+        """
+
+        readable = True
+        removed_ok = False
+
+        def add_project(self, path: Path | str, name: str | None = None) -> RegisteredProject:
+            if not self.readable:
+                raise OSError("state directory is not readable")
+            return super().add_project(path, name)
+
+        def remove_project(self, project_id: str) -> bool:
+            if not self.readable and not self.removed_ok:
+                raise OSError("state directory is not readable")
+            return super().remove_project(project_id)
+
+        def set_selected_project(self, project_id: str | None) -> RegisteredProject | None:
+            if not self.readable:
+                raise sqlite3.OperationalError("database is locked")
+            return super().set_selected_project(project_id)
+
+    # POST /projects — fails inside ``_register_project``'s ``registry.add_project``.
+    add_registry = _GoesUnreadableRegistry()
+    add_app = _make_app(_project_dir(tmp_path / "add-pinned"), add_registry)
+    add_registry.readable = False
+    add_response = TestClient(add_app).post(
+        _LIST_ROUTE, json={"path": str(tmp_path / "add-candidate")}, headers=AUTH
+    )
+    assert add_response.status_code == 503
+    assert add_response.json()["error"]["code"] == "registry_unreadable"
+
+    # PUT /projects/current — fails inside ``_resolve_and_persist``'s
+    # ``registry.set_selected_project``.
+    select_registry = _GoesUnreadableRegistry()
+    chosen = select_registry.add_project(_project_dir(tmp_path / "chosen"))
+    select_app = _make_app(_project_dir(tmp_path / "select-pinned"), select_registry)
+    select_registry.readable = False
+    select_response = TestClient(select_app).put(
+        _CURRENT_ROUTE, json={"projectId": chosen.id}, headers=AUTH
+    )
+    assert select_response.status_code == 503
+    assert select_response.json()["error"]["code"] == "registry_unreadable"
+
+    # DELETE /projects/{project_id}, with the row PRE-SELECTED — the removal itself
+    # succeeds (``removed_ok``), so it is the on-loop selection-clearing call after it
+    # (``was_selected`` -> ``_resolve_and_persist(None)``) that hits the failing store.
+    delete_registry = _GoesUnreadableRegistry()
+    tracked = delete_registry.add_project(_project_dir(tmp_path / "tracked"))
+    delete_app = _make_app(_project_dir(tmp_path / "delete-pinned"), delete_registry)
+    client = TestClient(delete_app)
+    select = client.put(_CURRENT_ROUTE, json={"projectId": tracked.id}, headers=AUTH)
+    assert select.status_code == 200
+    delete_registry.readable = False
+    delete_registry.removed_ok = True
+    delete_response = client.delete(f"{_LIST_ROUTE}/{tracked.id}", headers=AUTH)
+    assert delete_response.status_code == 503
+    assert delete_response.json()["error"]["code"] == "registry_unreadable"
+
+
 def test_a_row_round_trips_through_the_forbidding_wire_model(tmp_path: Path) -> None:
     # The published shape is exactly what the model declares: nothing the SPA's
     # generated types would not know about, and nothing missing. ``extra="forbid"``
