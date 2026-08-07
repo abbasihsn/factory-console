@@ -29,6 +29,7 @@ from factory_console.app import create_app
 from factory_console.config import WRITE_TOKEN_HEADER
 from factory_console.domain import Project
 from factory_console.file_adapter import FakeFileAdapter
+from factory_console.store.fake_registry import FakeProjectRegistry
 
 # The token pinned into every app whose assertions depend on its value, and a
 # same-length near-miss used to prove the compare rejects anything but an exact hit.
@@ -206,6 +207,84 @@ def test_require_write_token_raises_when_no_token_is_bound() -> None:
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()), headers={})
     with pytest.raises(RuntimeError, match="write_token"):
         require_write_token(request)  # type: ignore[arg-type]
+
+
+# --------------------------------------------------------------------------- #
+# Which REAL routes are gated
+# --------------------------------------------------------------------------- #
+
+# The v3.0 registry mutations (T113), as ``(verb, path, body)``. Named here, next to the
+# mechanism, so "which routes demand the token" is one readable list rather than a fact
+# spread over each endpoint's own suite — a fourth mutation that forgets the dependency
+# is caught by adding its row, not by remembering to write a bespoke 401 test.
+#
+# The ids and paths are deliberately ones no row answers to: a rejected request must
+# fail before the handler runs, so what they name cannot matter. The companion test
+# below is what proves these rows name real, reachable routes rather than 404s.
+UNKNOWN_PROJECT_ID = "0" * 32
+GATED_REGISTRY_OPERATIONS = [
+    ("POST", "/api/v1/projects", {"path": "/nowhere-at-all"}),
+    ("DELETE", f"/api/v1/projects/{UNKNOWN_PROJECT_ID}", None),
+    ("PUT", "/api/v1/projects/current", {"projectId": UNKNOWN_PROJECT_ID}),
+]
+
+
+def _make_registry_app(project_root: Path) -> FastAPI:
+    """Build a real app with a registry bound, so the registry mutations are wired.
+
+    The gate is asserted against the REAL handlers rather than the probe route above:
+    the probe proves the dependency works, and only a real request through a real route
+    can prove a particular endpoint actually attached it.
+    """
+    return create_app(
+        _make_fake(),
+        version="0.0.0",
+        project_root=project_root,
+        project_registry=FakeProjectRegistry(),
+        write_token=PINNED_TOKEN,
+    )
+
+
+@pytest.mark.parametrize(("verb", "path", "body"), GATED_REGISTRY_OPERATIONS)
+@pytest.mark.parametrize(
+    "headers",
+    [{}, {WRITE_TOKEN_HEADER: WRONG_TOKEN}],
+    ids=["no-header", "wrong-header"],
+)
+def test_every_registry_mutation_rejects_a_bad_token_as_401(
+    headers: dict[str, str],
+    verb: str,
+    path: str,
+    body: dict[str, object] | None,
+    tmp_path: Path,
+) -> None:
+    # Registry writes are gated for a reason bigger than the ticket writes': POST
+    # /projects makes the console open an ARBITRARY absolute path on this machine and
+    # then serve that project's contents to anyone who can reach the port, and the
+    # console runs no CORS policy and no CSRF token — so unguarded, any page in the
+    # user's browser could register $HOME and make it readable over HTTP.
+    client = TestClient(_make_registry_app(tmp_path))
+    resp = client.request(verb, path, json=body, headers=headers)
+    assert resp.status_code == 401, f"{verb} {path}"
+    error = resp.json()["error"]
+    assert error["code"] == "write_token_invalid", f"{verb} {path}"
+    assert set(error) == {"code", "message"}, f"{verb} {path}"
+
+
+@pytest.mark.parametrize(("verb", "path", "body"), GATED_REGISTRY_OPERATIONS)
+def test_every_gated_registry_operation_names_a_real_route(
+    verb: str, path: str, body: dict[str, object] | None, tmp_path: Path
+) -> None:
+    # Without this, the table above would keep passing after a route was renamed or
+    # removed: an unrouted path carries no write-token check, so every row would be
+    # asserting 401 against nothing at all. With the correct token each row must get
+    # PAST the gate — to whatever its own handler makes of a path and an id that name
+    # nothing — so it may not answer 401, and it must be the JSON API answering rather
+    # than the SPA catch-all that serves anything the API did not claim.
+    client = TestClient(_make_registry_app(tmp_path))
+    resp = client.request(verb, path, json=body, headers={WRITE_TOKEN_HEADER: PINNED_TOKEN})
+    assert resp.status_code != 401, f"{verb} {path}"
+    assert resp.headers["content-type"].startswith("application/json"), f"{verb} {path}"
 
 
 # --------------------------------------------------------------------------- #
