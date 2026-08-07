@@ -64,6 +64,14 @@ function row(
 
 const PROJECTS: RegisteredProjectOut[] = [row('p1', 'console', true), row('p2', 'factory', false)];
 
+// The reserved row the server prepends whenever a project was pinned on the
+// command line: never registered, no `addedAt`, and not removable.
+const SESSION_ROW: RegisteredProjectOut = {
+	...row('session', 'pinned', false),
+	addedAt: null,
+	registered: false
+};
+
 function data(projects: RegisteredProjectOut[]): PageData {
 	return { project, projects, selectedId: projects.find((p) => p.selected)?.id ?? null };
 }
@@ -164,6 +172,22 @@ describe('projects page', () => {
 
 		const cell = screen.getByText('quarantined');
 		expect(cell.getAttribute('title')).toContain('does not recognise');
+	});
+
+	it('leaves the unregistered session row unremovable, and says why', () => {
+		render(Page, { props: { data: data([SESSION_ROW, ...PROJECTS]) } });
+
+		// Nothing was ever added for this row, so the DELETE behind the button is a
+		// guaranteed 409 `session_project_not_removable` — the button is inert and
+		// carries the reason rather than opening a doomed confirmation.
+		const remove = screen.getAllByRole('button', { name: 'Remove' })[0] as HTMLButtonElement;
+		expect(remove.disabled).toBe(true);
+		expect(remove.getAttribute('title')).toContain('never added to the registry');
+
+		// The registered rows keep theirs.
+		expect(
+			(screen.getAllByRole('button', { name: 'Remove' })[1] as HTMLButtonElement).disabled
+		).toBe(false);
 	});
 
 	it('names the empty registry instead of rendering a blank table', () => {

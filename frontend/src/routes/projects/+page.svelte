@@ -75,6 +75,13 @@
 	const DANGER_CLASS =
 		'rounded border border-red-300 px-3 py-1 text-sm text-danger hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60';
 
+	// The reserved `session` row — the project passed on the command line — is
+	// prepended to the list unregistered, and DELETE always answers it with a 409
+	// `session_project_not_removable`. Its Remove button is therefore inert rather
+	// than a confirmation dialog whose only outcome is that error.
+	const UNREGISTERED_REMOVE_TITLE =
+		'This is the project passed on the command line — it was never added to the registry, so there is nothing to remove';
+
 	// Full literal Tailwind class strings, never built dynamically, so the JIT
 	// scanner keeps them — the rule `RunStateBadge` sets for its own pills.
 	const PILL_CLASS = 'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium';
@@ -331,7 +338,8 @@
 								<button
 									type="button"
 									class={DANGER_CLASS}
-									disabled={busy}
+									disabled={!project.registered || busy}
+									title={project.registered ? undefined : UNREGISTERED_REMOVE_TITLE}
 									onclick={() => start('remove', project)}
 								>
 									Remove
