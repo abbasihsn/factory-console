@@ -36,16 +36,16 @@ a caller should not need a ``try`` to ask an ordinary question. The two errors
 here are raised only by the two methods that are told to CHANGE something that
 cannot be changed as asked.
 
-Wiring, for the backend: provide this like
-:func:`~factory_console.api.deps.get_file_adapter` — bound on ``app.state`` at
-boot, with the provider RAISING when it is unbound — and NOT like the opt-in
-:func:`~factory_console.api.deps.get_file_watcher`, which returns ``None`` so the
-SSE endpoint can degrade. An unbound registry is a wiring bug, and because this
-port is total there is nothing a ``None`` registry could honestly mean: every
-question it answers already HAS an answer for an empty registry, so a ``None``
-would make handlers invent a second, quieter kind of emptiness. Binding it always
-costs a viewer session that never calls it nothing, since the real implementation
-opens its database lazily (T108).
+Wiring, for the backend: provide this like the opt-in
+:func:`~factory_console.api.deps.get_file_watcher` — bound on ``app.state`` at
+boot when one is configured, with the provider returning ``None`` (never raising)
+when it is not — and NOT like :func:`~factory_console.api.deps.get_file_adapter`,
+where a missing binding is a wiring bug. An unbound registry is instead PINNED
+MODE: the console serves exactly the one root ``factory-console PATH`` discovered,
+which is every pre-v3 app, every existing test, and the behaviour v3.0 promises
+not to change. See :func:`~factory_console.api.deps.get_project_registry` for the
+provider and the rationale in full; a caller must treat ``None`` as "session row
+only", not as a wiring bug to raise on.
 """
 
 from __future__ import annotations

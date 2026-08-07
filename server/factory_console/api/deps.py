@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sqlite3
 import stat as stat_module
 from collections.abc import Callable
 from functools import partial
@@ -316,15 +317,18 @@ async def _read_registry(read: Callable[[], _ReadResult]) -> _ReadResult:
     """Run a blocking registry read off the loop, naming an I/O failure as a 503.
 
     The offload is the house rule; the ``except`` is why this is a helper rather than
-    two inline ``run_sync`` calls. An :class:`OSError` out of the store means the
-    console could not reach its OWN database — a missing or unreadable state
-    directory, a full or unmounted volume — which is a statement about the console's
-    health, not about the user's selection. Left to propagate it would surface as a
-    500 with no code; as :class:`RegistryUnreadable` it is a 503 that names the
-    condition and tells the operator to look at the console's state directory rather
-    than at their projects.
+    two inline ``run_sync`` calls. An :class:`OSError` or :class:`sqlite3.Error` out
+    of the store means the console could not reach its OWN database — a missing or
+    unreadable state directory, a full or unmounted volume, a locked or malformed
+    db file — which is a statement about the console's health, not about the user's
+    selection. Left to propagate it would surface as a 500 with no code; as
+    :class:`RegistryUnreadable` it is a 503 that names the condition. The cause is
+    logged here, server-side, with ``exc_info`` — :class:`RegistryUnreadable`'s
+    client-visible message deliberately carries none of it, so the console's state
+    directory and OS-level detail never reach the browser.
     """
     try:
         return await anyio.to_thread.run_sync(read)
-    except OSError as error:
-        raise RegistryUnreadable(str(error)) from error
+    except (OSError, sqlite3.Error) as error:
+        _LOGGER.error("project registry could not be read", exc_info=error)
+        raise RegistryUnreadable() from error

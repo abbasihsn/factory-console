@@ -20,6 +20,7 @@ line keeps naming the path the operator typed.
 """
 
 import os
+import sqlite3
 import sys
 from collections.abc import Callable
 from datetime import datetime
@@ -45,6 +46,7 @@ from factory_console.domain.registry import RegisteredProject
 from factory_console.file_adapter import FakeFileAdapter
 from factory_console.services.project_selection import SESSION_PROJECT_ID, SelectionState
 from factory_console.store.fake_registry import FakeProjectRegistry
+from factory_console.store.registry_protocol import ProjectNotRegistered
 
 _PROBE_ROUTE = "/probe-selected-root"
 
@@ -284,6 +286,61 @@ def test_registry_io_failure_is_a_503_not_a_500(tmp_path: Path) -> None:
     assert body["error"]["code"] == "registry_unreadable"
 
 
+def test_sqlite_error_out_of_the_store_is_also_a_503_not_a_500(tmp_path: Path) -> None:
+    # The production registry is SqliteProjectRegistry, whose failures surface as
+    # sqlite3.Error (OperationalError, DatabaseError), not OSError. A handler that
+    # catches only OSError lets exactly the condition this seam names through as a
+    # bare, undiagnosed 500.
+    project = tmp_path / "project"
+    project.mkdir()
+
+    class _GoesUnreadableRegistry(FakeProjectRegistry):
+        readable = True
+
+        def get_project(self, project_id: str) -> RegisteredProject | None:
+            if not self.readable:
+                raise sqlite3.OperationalError("database is locked")
+            return super().get_project(project_id)
+
+    registry = _GoesUnreadableRegistry()
+    row = registry.add_project(project)
+    app = _make_app(tmp_path / "pinned", registry)
+    app.state.selection.select(row.id)
+    registry.readable = False
+
+    status, body = _resolve(app)
+
+    assert status == 503
+    assert body["error"]["code"] == "registry_unreadable"
+
+
+def test_registry_failure_message_carries_no_filesystem_detail(tmp_path: Path) -> None:
+    # RegistryUnreadable's client-visible message must stay static: no path, no OS
+    # username, no errno text — that detail belongs server-side in the log, not in
+    # the browser.
+    project = tmp_path / "project"
+    project.mkdir()
+
+    class _GoesUnreadableRegistry(FakeProjectRegistry):
+        readable = True
+
+        def get_project(self, project_id: str) -> RegisteredProject | None:
+            if not self.readable:
+                raise OSError(13, "Permission denied", str(tmp_path / "console.db"))
+            return super().get_project(project_id)
+
+    registry = _GoesUnreadableRegistry()
+    row = registry.add_project(project)
+    app = _make_app(tmp_path / "pinned", registry)
+    app.state.selection.select(row.id)
+    registry.readable = False
+
+    status, body = _resolve(app)
+
+    assert status == 503
+    assert str(tmp_path) not in body["error"]["message"]
+
+
 # --------------------------------------------------------------------------- #
 # Precedence: PATH vs the persisted selection
 # --------------------------------------------------------------------------- #
@@ -386,6 +443,25 @@ def test_selecting_the_session_sentinel_is_never_persisted(tmp_path: Path) -> No
     # key; the persisted selection is left exactly where the operator put it.
     persisted = registry.get_selected_project()
     assert persisted is not None and persisted.id == row.id
+
+
+def test_a_rejected_select_leaves_the_current_selection_unchanged(tmp_path: Path) -> None:
+    # A switch to an id no row answers to must not move the in-memory selection at
+    # all: persisting is attempted FIRST, and only a successful persist (or pinned
+    # mode, with nothing to persist to) moves ``_session_selection``. Regression for
+    # the ordering bug where the in-memory selection moved unconditionally before the
+    # registry validated the id, permanently breaking the session on any rejection.
+    project = tmp_path / "project"
+    project.mkdir()
+    registry = FakeProjectRegistry()
+    row = registry.add_project(project)
+    selection = SelectionState(pinned_root=tmp_path, registry=registry)
+    selection.select(row.id)
+
+    with pytest.raises(ProjectNotRegistered):
+        selection.select("no-such-id")
+
+    assert selection.current_id() == row.id
 
 
 def test_subscribers_receive_the_newly_resolved_root(tmp_path: Path) -> None:

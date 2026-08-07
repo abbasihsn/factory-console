@@ -163,12 +163,17 @@ class RegistryUnreadable(FactoryConsoleError):
 
     Not a member of :data:`SelectionFailure` for that same reason — that union names
     states of the SELECTION, and "I could not look" is not one of them.
+
+    The message deliberately carries no filesystem path or OS detail — the caller
+    logs the underlying error server-side (see
+    :func:`~factory_console.api.deps._read_registry`); the client only needs to know
+    to retry.
     """
 
-    def __init__(self, reason: str) -> None:
+    def __init__(self) -> None:
         super().__init__(
             code="registry_unreadable",
-            message=f"The project registry could not be read: {reason}",
+            message="The project registry could not be read.",
             status=503,
         )
 
@@ -213,8 +218,10 @@ class SelectionState:
 
         ``registry`` may be ``None``, and that is a valid configuration rather than a
         wiring bug: it is "pinned mode", which is every pre-v3 app and every existing
-        test. Such an app can never leave :data:`SESSION_PROJECT_ID`, because there is
-        no registry to name another project in — which is precisely today's behaviour.
+        test. Such an app can never PERSIST a selection naming another project, because
+        there is no registry to name it in — but :meth:`select` still moves the
+        process-local selection for the life of the request that calls it, simply with
+        nothing durable behind it (see :meth:`select`).
         """
         self.pinned_root = pinned_root
         self._registry = registry
@@ -248,27 +255,29 @@ class SelectionState:
     def select(self, project_id: str | None) -> None:
         """Point the session at ``project_id``, persist it, and fire the hooks.
 
-        The in-memory session selection is set FIRST and unconditionally, so the switch
-        takes effect for the very next request in this process rather than only after
-        the next boot.
+        Persistence is attempted FIRST — delegated to the registry, except for
+        :data:`SESSION_PROJECT_ID`, which is never written. Only once that succeeds
+        (or there is nothing to persist to) does the in-memory session selection
+        move, so a rejected switch leaves this object exactly as it was: a raise
+        below must never leave ``current_id()`` naming an id no row answers to.
 
-        Persistence is then delegated to the registry — except for
-        :data:`SESSION_PROJECT_ID`, which is never written. That exception is the point
-        of the sentinel: the pinned root is an ephemeral property of one invocation and
-        names no row, so persisting it would both violate the registry's foreign key and
-        let a throwaway "just look at this directory" run overwrite the selection the
-        operator made in the UI. With no registry bound there is nothing to persist to,
-        and the selection is simply process-local.
+        The :data:`SESSION_PROJECT_ID` exception to persistence is the point of the
+        sentinel: the pinned root is an ephemeral property of one invocation and
+        names no row, so persisting it would both violate the registry's foreign key
+        and let a throwaway "just look at this directory" run overwrite the
+        selection the operator made in the UI. With no registry bound there is
+        nothing to persist to, and the selection is simply process-local.
 
         Raises:
             ProjectNotRegistered: ``project_id`` names no registry row. Raised BY the
                 registry, deliberately not pre-empted here: the port already treats a
                 selection of a non-existent project as the one write that must fail
-                loudly rather than succeed at pointing the console at nothing.
+                loudly rather than succeed at pointing the console at nothing. Nothing
+                on this object is mutated when this is raised.
         """
-        self._session_selection = project_id
         if self._registry is not None and project_id != SESSION_PROJECT_ID:
             self._registry.set_selected_project(project_id)
+        self._session_selection = project_id
         root = self._resolve_root(project_id)
         for callback in self._on_change:
             callback(root)

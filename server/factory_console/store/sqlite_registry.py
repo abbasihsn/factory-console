@@ -50,7 +50,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -227,24 +227,40 @@ class SqliteProjectRegistry:
         on ``selected_project_id`` remains the authority underneath and refuses an
         id that is not there regardless.
 
+        The connection is autocommit (see :func:`~factory_console.store.schema.connect`),
+        so the SELECT and the UPDATE are wrapped in one ``BEGIN IMMEDIATE``/``COMMIT``
+        transaction — matching :func:`~factory_console.store.schema.migrate`'s own
+        pattern — to close the window a concurrent :meth:`remove_project` could
+        otherwise interleave through: without it, a row seen as present here could be
+        deleted before the UPDATE, which would then violate the foreign key and raise
+        a raw :class:`sqlite3.IntegrityError` instead of this method's own contract.
+
         Raises:
             ProjectNotRegistered: ``project_id`` names no row. The selection is
                 left exactly as it was — the ``UPDATE`` never runs.
         """
         with self._conn() as conn:
-            selected: RegisteredProject | None = None
-            if project_id is not None:
-                row = conn.execute(
-                    f"SELECT {_SELECT_COLUMNS} FROM projects WHERE id = ?",
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                selected: RegisteredProject | None = None
+                if project_id is not None:
+                    row = conn.execute(
+                        f"SELECT {_SELECT_COLUMNS} FROM projects WHERE id = ?",
+                        (project_id,),
+                    ).fetchone()
+                    if row is None:
+                        raise ProjectNotRegistered(project_id)
+                    selected = self._row_to_project(row)
+                conn.execute(
+                    "UPDATE console_state SET selected_project_id = ? WHERE id = 1",
                     (project_id,),
-                ).fetchone()
-                if row is None:
-                    raise ProjectNotRegistered(project_id)
-                selected = self._row_to_project(row)
-            conn.execute(
-                "UPDATE console_state SET selected_project_id = ? WHERE id = 1",
-                (project_id,),
-            )
+                )
+            except BaseException:
+                if conn.in_transaction:
+                    with suppress(sqlite3.Error):
+                        conn.execute("ROLLBACK")
+                raise
+            conn.execute("COMMIT")
         return selected
 
     @contextmanager
