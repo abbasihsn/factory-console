@@ -1,0 +1,310 @@
+"""Unit tests for :mod:`factory_console.store.schema`.
+
+Three contracts are pinned here. The first is that a fresh db arrives fully formed:
+one connect + migrate reaches ``SCHEMA_VERSION`` with both tables and the single
+``console_state`` row present, and doing it again changes nothing — that idempotence is
+what allows :func:`~factory_console.store.schema.migrate` to sit on every operation
+instead of behind a boot hook.
+
+The second is the fail-closed rule, and it is the one with teeth: a db whose
+``user_version`` is higher than this build's must be REFUSED and left byte-for-byte
+alone, because a newer console's extra constraints are exactly what this build cannot
+know about.
+
+The third is the set of guarantees that are silently inert when missed —
+``PRAGMA foreign_keys`` being ON (without it ``ON DELETE SET NULL`` does nothing at
+all), the 0600 file inside its 0700 directory that v3.1's credentials inherit, the
+UNIQUE index being the authority on duplicate paths, and the connection actually being
+closed on the way out.
+
+Every case runs against ``tmp_path``, so no test can touch a developer's real store.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+import stat
+import threading
+from pathlib import Path
+
+import pytest
+
+from factory_console.store import schema
+from factory_console.store.location import STORE_DIR_MODE
+from factory_console.store.schema import (
+    DB_FILE_MODE,
+    SCHEMA_VERSION,
+    StoreSchemaTooNew,
+    connect,
+    migrate,
+)
+
+
+@pytest.fixture
+def db_path(tmp_path: Path) -> Path:
+    """A db file inside its own directory, which ``ensure_store_dir`` requires."""
+    return tmp_path / "store" / "console.db"
+
+
+def _mode_of(path: Path) -> int:
+    """Return just the permission bits of ``path``, without the file-type bits."""
+    return stat.S_IMODE(path.stat().st_mode)
+
+
+def _table_names(conn: sqlite3.Connection) -> set[str]:
+    """Return the names of the db's user tables, straight from ``sqlite_master``."""
+    rows = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+    return {row["name"] for row in rows}
+
+
+def _user_version(db_path: Path) -> int:
+    """Read ``user_version`` over a raw connection, bypassing this module's helpers."""
+    raw = sqlite3.connect(db_path)
+    try:
+        return int(raw.execute("PRAGMA user_version").fetchone()[0])
+    finally:
+        raw.close()
+
+
+def test_fresh_db_migrates_to_the_current_version_with_both_tables(db_path: Path) -> None:
+    with connect(db_path) as conn:
+        assert migrate(conn) == SCHEMA_VERSION
+        assert _table_names(conn) >= {"projects", "console_state"}
+
+    assert _user_version(db_path) == SCHEMA_VERSION
+
+
+def test_migrate_is_idempotent_across_connects(db_path: Path) -> None:
+    # The property that lets every operation call migrate(): a second (and third) pass
+    # over an up-to-date db must be a no-op, not a re-run of migration 1 — which would
+    # fail on CREATE TABLE, or duplicate the seeded selection row.
+    with connect(db_path) as conn:
+        migrate(conn)
+    with connect(db_path) as conn:
+        assert migrate(conn) == SCHEMA_VERSION
+    with connect(db_path) as conn:
+        assert migrate(conn) == SCHEMA_VERSION
+        assert conn.execute("SELECT COUNT(*) AS n FROM console_state").fetchone()["n"] == 1
+
+
+def test_console_state_holds_exactly_one_row(db_path: Path) -> None:
+    with connect(db_path) as conn:
+        migrate(conn)
+
+        row = conn.execute("SELECT id, selected_project_id FROM console_state").fetchone()
+        assert row["id"] == 1
+        assert row["selected_project_id"] is None
+
+        # CHECK (id = 1) is what makes "exactly one selection" a schema fact rather
+        # than a convention application code has to uphold.
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute("INSERT INTO console_state (id, selected_project_id) VALUES (2, NULL)")
+
+
+def test_db_file_is_0600_inside_a_0700_directory(db_path: Path) -> None:
+    # v3.1 puts a password hash in this file; the modes are established at creation so
+    # that release inherits a tight store instead of shipping a chmod for files already
+    # in the wild.
+    with connect(db_path) as conn:
+        migrate(conn)
+
+    assert _mode_of(db_path) == DB_FILE_MODE
+    assert _mode_of(db_path.parent) == STORE_DIR_MODE
+
+
+def test_a_preexisting_loose_mode_db_file_is_tightened_on_open(db_path: Path) -> None:
+    # A db restored from a backup, copied between machines, or left mid-write by a
+    # prior process that died between connect and chmod must not stay at whatever
+    # mode it arrived with — chmod runs on every open, not only the one that
+    # creates the file, matching ensure_store_dir's own "tightened rather than
+    # left as found" rule for the directory.
+    db_path.parent.mkdir(parents=True)
+    db_path.touch(mode=0o644)
+
+    with connect(db_path) as conn:
+        migrate(conn)
+
+    assert _mode_of(db_path) == DB_FILE_MODE
+
+
+def test_wal_and_shm_sidecars_are_also_tightened(db_path: Path) -> None:
+    # WAL mode makes SQLite hold recently-written pages in `-wal`/`-shm` sidecar
+    # files; a 0600 db file next to a world-readable sidecar would leak the same
+    # data v3.1's password hash needs the db file itself protected from.
+    with connect(db_path) as conn:
+        migrate(conn)
+        conn.execute("UPDATE console_state SET selected_project_id = NULL WHERE id = 1")
+
+    wal_path = db_path.with_name(db_path.name + "-wal")
+    shm_path = db_path.with_name(db_path.name + "-shm")
+    assert wal_path.exists()
+    assert shm_path.exists()
+    assert _mode_of(wal_path) == DB_FILE_MODE
+    assert _mode_of(shm_path) == DB_FILE_MODE
+
+
+def test_foreign_keys_are_on_inside_the_context(db_path: Path) -> None:
+    # Not decoration: foreign_keys is OFF by default per connection, and with it off
+    # console_state's ON DELETE SET NULL is silently ignored, so deleting the selected
+    # project would leave the selection pointing at a row that no longer exists.
+    with connect(db_path) as conn:
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+
+        migrate(conn)
+        conn.execute(
+            "INSERT INTO projects (id, name, path, added_at) VALUES (?, ?, ?, ?)",
+            ("p1", "One", "/tmp/one", "2026-01-01T00:00:00Z"),
+        )
+        conn.execute("UPDATE console_state SET selected_project_id = 'p1' WHERE id = 1")
+
+        conn.execute("DELETE FROM projects WHERE id = 'p1'")
+
+        selected = conn.execute("SELECT selected_project_id FROM console_state").fetchone()
+        assert selected["selected_project_id"] is None
+
+
+def test_duplicate_project_path_is_rejected_by_the_unique_index(db_path: Path) -> None:
+    # The UNIQUE index — not a pre-insert SELECT in application code — is the authority
+    # on "a project is registered once".
+    with connect(db_path) as conn:
+        migrate(conn)
+        conn.execute(
+            "INSERT INTO projects (id, name, path, added_at) VALUES (?, ?, ?, ?)",
+            ("p1", "One", "/projects/one", "2026-01-01T00:00:00Z"),
+        )
+
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO projects (id, name, path, added_at) VALUES (?, ?, ?, ?)",
+                ("p2", "One again", "/projects/one", "2026-01-02T00:00:00Z"),
+            )
+
+
+def test_a_newer_schema_is_refused_and_left_unmodified(db_path: Path) -> None:
+    with connect(db_path) as conn:
+        migrate(conn)
+    # A db from a hypothetical newer console: one version ahead, with a table this
+    # build knows nothing about.
+    raw = sqlite3.connect(db_path)
+    try:
+        raw.execute("CREATE TABLE credentials (id INTEGER PRIMARY KEY)")
+        raw.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+        raw.commit()
+        before = {
+            row[0] for row in raw.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+    finally:
+        raw.close()
+
+    with connect(db_path) as conn:
+        with pytest.raises(StoreSchemaTooNew) as excinfo:
+            migrate(conn)
+
+        # Fails closed, having changed nothing: same version, same tables, same row.
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION + 1
+        assert _table_names(conn) == before
+        assert conn.execute("SELECT COUNT(*) AS n FROM console_state").fetchone()["n"] == 1
+
+    error = excinfo.value
+    assert error.code == "store_schema_too_new"
+    assert error.status == 500
+    assert error.details == {"found": SCHEMA_VERSION + 1, "supported": SCHEMA_VERSION}
+    # The db's location is the server's business, never a client's.
+    assert str(db_path) not in error.message
+    assert str(SCHEMA_VERSION + 1) in error.message
+    assert str(SCHEMA_VERSION) in error.message
+    assert _user_version(db_path) == SCHEMA_VERSION + 1
+
+
+def test_a_failing_migration_rolls_back_its_version_bump(
+    monkeypatch: pytest.MonkeyPatch, db_path: Path
+) -> None:
+    # The reason the version bump shares the migration's transaction: a db must never
+    # be left claiming a version whose tables did not commit, or the next open would
+    # skip the migration that never actually ran.
+    def _half_applied(conn: sqlite3.Connection) -> None:
+        conn.execute("CREATE TABLE half (id INTEGER PRIMARY KEY)")
+        raise RuntimeError("migration blew up")
+
+    monkeypatch.setattr(schema, "_MIGRATIONS", (_half_applied,))
+    monkeypatch.setattr(schema, "SCHEMA_VERSION", 1)
+
+    with connect(db_path) as conn:
+        with pytest.raises(RuntimeError, match="migration blew up"):
+            migrate(conn)
+
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
+        assert "half" not in _table_names(conn)
+
+
+def test_two_connections_migrating_at_once_do_not_both_run_migration_1(db_path: Path) -> None:
+    # The concurrency this module actually has: one connection per operation, called
+    # from anyio's worker threads. Both threads read user_version == 0 while a third
+    # connection holds the write lock, so both decide work is needed; the fix is that
+    # each then re-reads the version INSIDE its own BEGIN IMMEDIATE, so the loser
+    # skips the migration the winner committed instead of failing on
+    # `table projects already exists`.
+    with connect(db_path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
+
+    blocker = sqlite3.connect(db_path, isolation_level=None)
+    results: list[int] = []
+    errors: list[BaseException] = []
+    # Set from each thread's own connection trace callback the instant it ISSUES
+    # `BEGIN IMMEDIATE` — which fires before that statement can block on blocker's
+    # lock, not after. A fixed `time.sleep` before releasing the lock cannot
+    # guarantee both threads have reached that statement (a loaded runner could let
+    # one thread finish its whole migration before the other even starts, which
+    # never exercises the two-connections-both-decide-work-is-needed race this test
+    # is named for, while every assertion below would still hold vacuously). Waiting
+    # on these events instead only releases the lock once contention is REAL.
+    reached_begin_immediate = [threading.Event(), threading.Event()]
+
+    def _migrate_once(ready: threading.Event) -> None:
+        try:
+            with connect(db_path) as conn:
+                conn.set_trace_callback(
+                    lambda sql: ready.set() if sql.strip().upper() == "BEGIN IMMEDIATE" else None
+                )
+                results.append(migrate(conn))
+        except BaseException as exc:  # noqa: BLE001 - the failure IS the assertion
+            errors.append(exc)
+
+    try:
+        blocker.execute("BEGIN IMMEDIATE")
+        threads = [
+            threading.Thread(target=_migrate_once, args=(event,))
+            for event in reached_begin_immediate
+        ]
+        for thread in threads:
+            thread.start()
+        for event in reached_begin_immediate:
+            assert event.wait(timeout=10), "a migrating thread never reached BEGIN IMMEDIATE"
+        blocker.execute("ROLLBACK")
+        for thread in threads:
+            thread.join(timeout=30)
+    finally:
+        blocker.close()
+
+    assert errors == []
+    assert results == [SCHEMA_VERSION, SCHEMA_VERSION]
+    with connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) AS n FROM console_state").fetchone()["n"] == 1
+
+
+def test_connection_is_closed_after_the_context_exits(db_path: Path) -> None:
+    with connect(db_path) as conn:
+        migrate(conn)
+    with pytest.raises(sqlite3.ProgrammingError):
+        conn.execute("SELECT 1")
+
+
+def test_connection_is_closed_when_the_body_raises(db_path: Path) -> None:
+    # The close lives in a finally, so a failing operation cannot leak a handle.
+    with pytest.raises(RuntimeError):  # noqa: SIM117 - the nested `with` IS the subject
+        with connect(db_path) as conn:
+            migrate(conn)
+            raise RuntimeError("boom")
+
+    with pytest.raises(sqlite3.ProgrammingError):
+        conn.execute("SELECT 1")
