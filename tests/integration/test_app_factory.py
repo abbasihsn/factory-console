@@ -25,6 +25,7 @@ from factory_console.api.deps import (
     get_file_watcher,
     get_file_writer,
     get_run_artifact_reader,
+    get_watcher_supervisor,
 )
 from factory_console.app import _SpaStaticFiles, create_app
 from factory_console.domain import TICKET_ID_PATTERN, Project
@@ -185,9 +186,30 @@ def test_get_file_watcher_returns_none_when_no_watcher_wired() -> None:
 
 def test_get_file_watcher_returns_none_when_state_unset() -> None:
     # Even on an app.state with no file_watcher attribute at all, the provider
-    # returns None rather than raising (unlike get_file_adapter's wiring guard).
+    # returns None rather than raising (unlike get_file_adapter's wiring guard) — and
+    # with no supervisor bound either, the pre-v3 app.state fallback is what answers.
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
     assert get_file_watcher(request) is None  # type: ignore[arg-type]
+
+
+def test_get_watcher_supervisor_returns_the_supervisor_create_app_always_builds() -> None:
+    # Unlike the watcher it owns, the supervisor is not optional: every app built by
+    # create_app has one, even the watcher-less adapter-only app this helper builds.
+    app = _make_app()
+    request = SimpleNamespace(app=app)
+    supervisor = get_watcher_supervisor(request)  # type: ignore[arg-type]
+    assert supervisor is app.state.watcher_supervisor
+    assert supervisor.current() is None
+    assert supervisor.generation() == 0
+
+
+def test_get_watcher_supervisor_raises_when_unbound() -> None:
+    # An app.state without a supervisor means the app was not built by create_app at
+    # all, so the seam fails loudly rather than reporting "never replaced" — a claim
+    # about the selection made from a fact about the console's own wiring.
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
+    with pytest.raises(RuntimeError, match="watcher_supervisor"):
+        get_watcher_supervisor(request)  # type: ignore[arg-type]
 
 
 def test_get_file_adapter_raises_when_unbound() -> None:

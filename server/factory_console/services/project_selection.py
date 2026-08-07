@@ -92,14 +92,22 @@ class NoProjectSelected(FactoryConsoleError):
     hunting for a URL that was never wrong. ``details`` carries the
     :data:`SelectionFailure` member so a client branches on the machine-readable
     reason instead of matching on prose.
+
+    Attributes:
+        reason: The same :data:`SelectionFailure` member, typed, for the one caller
+            that reports this condition instead of raising it —
+            :mod:`factory_console.api.v1.health`, which answers ``200`` with a named
+            ``selectionReason`` and must not dig it back out of an untyped
+            ``details`` mapping.
     """
 
     def __init__(self) -> None:
+        self.reason: SelectionFailure = "no_selection"
         super().__init__(
             code="no_project_selected",
             message="No project is selected; select one to view it.",
             status=409,
-            details={"reason": "no_selection"},
+            details={"reason": self.reason},
         )
 
 
@@ -115,14 +123,22 @@ class SelectedProjectNotRegistered(FactoryConsoleError):
     Deliberately NOT a fallback to the pinned root or to another project. Falling
     back would answer a question about the project the user selected with a
     different project's data, under the selected project's name.
+
+    Attributes:
+        project_id: The selected id that no row answers to.
+        reason: The :data:`SelectionFailure` member this error names, typed — see
+            :class:`NoProjectSelected` for why both attributes exist beside
+            ``details``.
     """
 
     def __init__(self, project_id: str) -> None:
+        self.project_id = project_id
+        self.reason: SelectionFailure = "selected_project_not_registered"
         super().__init__(
             code="selected_project_not_registered",
             message=f"The selected project {project_id} is no longer registered.",
             status=409,
-            details={"reason": "selected_project_not_registered", "projectId": project_id},
+            details={"reason": self.reason, "projectId": project_id},
         )
 
 
@@ -140,9 +156,19 @@ class SelectedProjectUnavailable(FactoryConsoleError):
     there" about a directory it merely declined to look at — the same distinction
     :func:`~factory_console.file_adapter.project_condition.classify_project_path`
     refuses to blur. ``details`` repeats the reason machine-readably.
+
+    Attributes:
+        path: The selected project's path, which is known even though it cannot be
+            read — ``/health`` still reports it, so an operator sees WHICH directory
+            to go and look at.
+        reason: The :data:`SelectionFailure` member this error names, typed — see
+            :class:`NoProjectSelected` for why both attributes exist beside
+            ``details``.
     """
 
     def __init__(self, path: Path, failure: SelectionFailure) -> None:
+        self.path = path
+        self.reason: SelectionFailure = failure
         what = "is missing" if failure == "selected_project_missing" else "could not be read"
         super().__init__(
             code="selected_project_unavailable",
@@ -196,10 +222,12 @@ class SelectionState:
     :meth:`~factory_console.store.registry_protocol.ProjectRegistry.get_selected_project`),
     not this object's.
 
-    **The on-change hook exists before it has a subscriber.** The file watcher must be
-    re-rooted when the selection moves, and its supervisor lands in a later ticket;
-    exposing :meth:`subscribe` now means that ticket ATTACHES rather than reopens this
-    file and re-derives when a change counts as a change. Nothing subscribes yet.
+    **The one subscriber is the watcher supervisor.** The file watcher must be re-rooted
+    when the selection moves, so :func:`factory_console.app._watcher_retarget_hook` wraps
+    a :class:`~factory_console.services.watcher_supervisor.WatcherSupervisor` and
+    ``create_app`` registers it through :meth:`subscribe`. It is the reason this hook
+    exists, and — see :meth:`subscribe` — it deliberately never raises and never blocks
+    the caller.
     """
 
     def __init__(
@@ -286,10 +314,20 @@ class SelectionState:
         """Register ``callback`` to receive the newly selected root on every switch.
 
         Called with the resolved root, or ``None`` when the new selection resolves to
-        no path at all (cleared, or an id whose row has gone). Subscribers are invoked
-        in registration order, synchronously, inside :meth:`select` — so a subscriber
-        that raises fails the switch that provoked it, which is the honest outcome for
-        a supervisor that could not re-root itself.
+        no path at all (cleared, or an id whose row has gone). Subscribers are invoked in
+        registration order, synchronously, inside :meth:`select`, on whatever thread
+        called it — the event-loop thread for a request handler, a plain thread with no
+        loop at all for a test or a future CLI-side switch — so a subscriber that raises
+        WOULD fail the switch that provoked it, and one that blocks would block it.
+
+        The one real subscriber is careful not to rely on that. ``select()`` is called
+        from a request handler, and re-rooting the watcher both blocks (an observer join)
+        and can fail (a watcher that will not build), so
+        :func:`factory_console.app._watcher_retarget_hook` returns immediately and runs
+        the swap as a task whose halves are documented never to raise. The deliberate
+        consequence: losing live updates never turns a successful project switch into a
+        failed request. Do not build an error path on a raising subscriber — nothing
+        raises, and a switch is never failed by a lost watcher.
         """
         self._on_change.append(callback)
 

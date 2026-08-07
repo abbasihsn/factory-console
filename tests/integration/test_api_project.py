@@ -19,6 +19,8 @@ from factory_console.app import create_app
 from factory_console.domain import Project
 from factory_console.file_adapter import FakeFileAdapter
 from factory_console.file_adapter.discovery import ProjectNotFound
+from factory_console.services.project_selection import SelectionState
+from factory_console.store.fake_registry import FakeProjectRegistry
 
 # Distinctive, resolved paths so the body assertions are meaningful (roadmapPath and
 # runStateDir stay unseeded, i.e. ``None``, exercising the optional-path serialization).
@@ -42,12 +44,18 @@ class _ProjectNotFoundAdapter(FakeFileAdapter):
         raise ProjectNotFound(root)
 
 
-def _make_app(adapter: FakeFileAdapter | None = None) -> FastAPI:
+def _make_app(
+    adapter: FakeFileAdapter | None = None,
+    *,
+    project_root: Path = Path("/factory/demo-project"),
+    registry: FakeProjectRegistry | None = None,
+) -> FastAPI:
     """Build the real app over a project-seeded FakeFileAdapter (or the given one)."""
     return create_app(
         adapter or FakeFileAdapter(project=_PROJECT, tickets=[]),
         version="0.0.0",
-        project_root=Path("/factory/demo-project"),
+        project_root=project_root,
+        project_registry=registry,
     )
 
 
@@ -82,3 +90,36 @@ def test_get_project_maps_project_not_found_to_404_envelope() -> None:
     resp = client.get("/api/v1/project")
     assert resp.status_code == 404
     assert resp.json()["error"]["code"] == "project_not_found"
+
+
+# --------------------------------------------------------------------------- #
+# Resolution through the v3.0 selection seam (T116)
+# --------------------------------------------------------------------------- #
+
+
+def test_get_project_refuses_with_409_when_nothing_is_selected() -> None:
+    # The endpoint no longer reads the boot-time pin, so a console with no selection
+    # has no project to describe. It says so by name rather than answering 404 (the
+    # URL is fine) or serving some other project's paths under this heading.
+    app = _make_app()
+    app.state.selection = SelectionState(pinned_root=None, registry=None)
+
+    resp = TestClient(app).get("/api/v1/project")
+
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "no_project_selected"
+
+
+def test_get_project_refuses_with_409_when_the_selected_path_is_gone(tmp_path: Path) -> None:
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    registry = FakeProjectRegistry()
+    row = registry.add_project(gone)
+    app = _make_app(project_root=tmp_path / "pinned", registry=registry)
+    app.state.selection.select(row.id)
+    gone.rmdir()
+
+    resp = TestClient(app).get("/api/v1/project")
+
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "selected_project_unavailable"

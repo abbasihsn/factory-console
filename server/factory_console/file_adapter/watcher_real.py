@@ -411,9 +411,24 @@ class RealFileWatcher:
         """Halt observing and join the observer thread (idempotent, never raises).
 
         Safe if never started or already stopped. Latches the ``_stopped`` guard
-        first so any dispatch already queued on the loop no-ops, cancels any
-        pending debounce timers so no coalesced event fires after shutdown, then
-        joins so no watchdog thread lingers.
+        FIRST — that latch, checked by both :meth:`_coalesce` and :meth:`_flush`, is what
+        actually stops an event firing after this returns, since the debounce cleanup may
+        be deferred (see below) — then joins so no watchdog thread lingers, then discards
+        the coalesced state.
+
+        **Callable from OFF the loop thread**, which v3.0's project switch requires: the
+        observer join blocks, so
+        :meth:`~factory_console.services.watcher_supervisor.WatcherSupervisor.retarget_release`
+        is dispatched to a worker thread. Only the join may run there. ``_timers`` /
+        ``_pending`` and the :class:`~asyncio.TimerHandle` objects in them are LOOP-OWNED
+        — ``_coalesce`` writes them on the loop thread and ``TimerHandle.cancel()``
+        mutates the loop's own cancellation bookkeeping, which asyncio guarantees for no
+        thread but the loop's — so that half is handed back to the loop via
+        :meth:`~asyncio.loop.call_soon_threadsafe` instead of being done here. Doing it
+        inline from a worker thread raced ``_coalesce``: it could raise
+        ``RuntimeError: dictionary changed size during iteration`` mid-cancel, abandoning
+        the rest of the cleanup and leaving armed timers whose ``_flush`` then fanned out
+        an event from an already-stopped watcher.
         """
         self._stopped = True
         observer = self._observer
@@ -421,7 +436,41 @@ class RealFileWatcher:
             observer.stop()
             observer.join()
             self._observer = None
-        for timer in self._timers.values():
+        loop = self._loop
+        if loop is None or self._on_loop_thread(loop):
+            self._discard_debounce_state()
+            return
+        try:
+            loop.call_soon_threadsafe(self._discard_debounce_state)
+        except RuntimeError:
+            # The loop is already closed, so nothing it owns can fire again and there is
+            # no thread-safe way left to touch the handles. Dropping the references is
+            # all that remains, and it cannot race a ``_coalesce`` that can no longer run.
+            self._timers.clear()
+            self._pending.clear()
+
+    @staticmethod
+    def _on_loop_thread(loop: asyncio.AbstractEventLoop) -> bool:
+        """Whether the caller is already running ON ``loop``'s own thread.
+
+        The lifespan stops the watcher from inside the async context (on the loop) while
+        a project switch stops it from a worker thread; the loop-owned debounce state has
+        to be cleaned up synchronously in the first case — a shutting-down loop may never
+        run another callback — and deferred in the second.
+        """
+        try:
+            return asyncio.get_running_loop() is loop
+        except RuntimeError:
+            return False
+
+    def _discard_debounce_state(self) -> None:
+        """Cancel every armed debounce timer and drop the coalesced state (loop thread).
+
+        Iterates a SNAPSHOT of the handles: cancelling is what lets the loop drop its
+        reference, and taking the list first keeps the walk safe even if a callback
+        already queued ahead of this one re-arms a timer.
+        """
+        for timer in list(self._timers.values()):
             timer.cancel()
         self._timers.clear()
         self._pending.clear()
@@ -521,7 +570,20 @@ class RealFileWatcher:
         self._timers[rel_path] = self._loop.call_later(_DEBOUNCE_SECONDS, self._flush, rel_path)
 
     def _flush(self, rel_path: str) -> None:
-        """Emit the coalesced event for ``rel_path`` to all subscribers (loop thread)."""
+        """Emit the coalesced event for ``rel_path`` to all subscribers (loop thread).
+
+        Guards on ``_stopped`` for the same reason :meth:`_coalesce` does, and it is this
+        guard — not the timer cancellation — that makes "no event fires after the watcher
+        stopped" true. A ``stop()`` from OFF the loop hands its cleanup back through
+        ``call_soon_threadsafe``, so between that call returning and the loop running the
+        cleanup there is a window in which an already-armed timer can still come due. On
+        a project switch that would fan an event for the project just LEFT out to the
+        outgoing watcher's subscribers. The latch is set synchronously by ``stop()``
+        before any of that, so checking it here closes the window whatever thread stopped
+        us.
+        """
+        if self._stopped:
+            return
         self._timers.pop(rel_path, None)
         pending = self._pending.pop(rel_path, None)
         if pending is None:
