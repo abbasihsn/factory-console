@@ -132,16 +132,14 @@ async function assertRealStoreUntouchedAndCleanUp(): Promise<void> {
 		return;
 	}
 
-	let dbDir: string;
-	try {
-		dbDir = validatedDbDir(state.dbDir);
-	} finally {
-		// This run's own bookkeeping, reclaimed regardless of whether `dbDir`
-		// validates — a rejected value must not also leave a stale state file
-		// behind for the NEXT run to trip over.
-		rmSync(DB_STATE_FILE, { force: true });
-	}
-
+	// The store-touched check runs FIRST and unconditionally, captured rather than
+	// thrown immediately: this harness's whole reason to exist is catching a leak
+	// into the developer's real store, so that must be decided — and reported —
+	// before anything about `dbDir`'s own validity can pre-empt it. A `dbDir` that
+	// fails validation is a SEPARATE, lower-priority problem; letting it throw
+	// first would skip the check it happens to run alongside, silently hiding a
+	// real leak behind an unrelated "bad temp dir" error.
+	let storeViolation: Error | null = null;
 	try {
 		// The artifact itself, not the directory: a directory's mtime only moves
 		// when an entry is added or removed, so comparing it misses a write to an
@@ -159,7 +157,7 @@ async function assertRealStoreUntouchedAndCleanUp(): Promise<void> {
 
 		if (state.homeDbStat === null) {
 			if (currentDbStat !== null) {
-				throw new Error(
+				storeViolation = new Error(
 					`factory-console e2e teardown: ${HOME_CONSOLE_DB_PATH} was created during ` +
 						`this run (it did not exist beforehand) — the harness leaked a write into the ` +
 						`developer's real console store.`
@@ -170,15 +168,29 @@ async function assertRealStoreUntouchedAndCleanUp(): Promise<void> {
 			currentDbStat.mtimeMs !== state.homeDbStat.mtimeMs ||
 			currentDbStat.size !== state.homeDbStat.size
 		) {
-			throw new Error(
+			storeViolation = new Error(
 				`factory-console e2e teardown: ${HOME_CONSOLE_DB_PATH} changed during this run ` +
 					`(${JSON.stringify(state.homeDbStat)} -> ${JSON.stringify(currentDbStat)}) — the ` +
 					`harness wrote into the developer's real console store.`
 			);
 		}
-	} finally {
-		rmSync(dbDir, { recursive: true, force: true });
+	} catch (err) {
+		storeViolation = err instanceof Error ? err : new Error(String(err));
 	}
+
+	// Cleanup always runs, regardless of the store check's outcome, and its own
+	// failure (an unvalidated `dbDir`) is likewise captured rather than thrown —
+	// for the same reason: it must not suppress a real `storeViolation`.
+	let dbDirError: Error | null = null;
+	try {
+		rmSync(validatedDbDir(state.dbDir), { recursive: true, force: true });
+	} catch (err) {
+		dbDirError = err instanceof Error ? err : new Error(String(err));
+	}
+	rmSync(DB_STATE_FILE, { force: true });
+
+	if (storeViolation) throw storeViolation;
+	if (dbDirError) throw dbDirError;
 }
 
 export default globalTeardown;
