@@ -68,6 +68,7 @@ export type {
 	ArtifactRead,
 	ArtifactSkipReason,
 	RegisteredProjectOut,
+	RegistryEntryCondition,
 	ProjectListResponse,
 	CurrentSelection
 } from './models';

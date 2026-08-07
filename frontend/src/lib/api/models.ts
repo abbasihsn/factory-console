@@ -176,6 +176,19 @@ export type ArtifactSkipReason = NonNullable<ArtifactRead['reason']>;
  */
 export type RegisteredProjectOut = components['schemas']['RegisteredProjectOut'];
 
+/**
+ * What the console found at a registered row's path when it last probed it —
+ * T103's `RegistryEntryCondition`, carried on every {@link RegisteredProjectOut}.
+ *
+ * Derived from the row rather than aliased from a schema, because the server
+ * inlines this union into the field instead of publishing it as its own component
+ * — so a member added there widens this automatically (the same reason
+ * {@link ArtifactSkipReason} is derived). That is what makes a
+ * `Record<RegistryEntryCondition, …>` in a view a COMPILE error when a condition
+ * is added server-side and the types are regenerated, rather than a blank cell.
+ */
+export type RegistryEntryCondition = RegisteredProjectOut['condition'];
+
 /** `{ items, total }` envelope of `GET /api/v1/projects`, unwrapped by `listProjects`. */
 export type ProjectListResponse = components['schemas']['ProjectListResponse'];
 
