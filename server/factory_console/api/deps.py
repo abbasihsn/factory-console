@@ -266,6 +266,34 @@ def get_selection_lock(request: Request) -> asyncio.Lock:
     return lock
 
 
+def get_write_lock(request: Request) -> asyncio.Lock:
+    """Return the lock serialising this app's ticket writes.
+
+    Reads ``request.app.state.write_lock``, and raises :class:`RuntimeError` when it is
+    unbound for the same reason :func:`get_selection_lock` does: ``create_app`` always
+    builds one, so an absent one means the app was not built by ``create_app`` — and
+    defaulting to a fresh per-call lock would satisfy the type while serialising nothing.
+
+    **Why a lock exists at all**, given ``ARCHITECTURE.md``'s Cross-cutting
+    **Concurrency** rule that the write path "is serialized by the same single worker":
+    it no longer is by itself. The same rule forbids blocking filesystem I/O on the event
+    loop, so the three handlers in :mod:`factory_console.api.v1.tickets_write` hand both
+    the project load and the write-service call to ``anyio.to_thread.run_sync``, whose
+    default limiter admits many concurrently. A ticket write is a read-modify-write of
+    ``tickets.json`` with no lock anywhere below this layer, so two overlapping writes
+    could render a manifest from the same pre-write bytes and lose one entry, or both pass
+    the create-collision guard for one id. Holding this across the whole critical section
+    keeps the disk I/O off the loop AND the writes one-at-a-time.
+    """
+    lock = getattr(request.app.state, "write_lock", None)
+    if lock is None:
+        raise RuntimeError(
+            "No asyncio.Lock bound on app.state.write_lock; "
+            "build the app with create_app(...), which always constructs one."
+        )
+    return lock
+
+
 def _probe_root(path: Path) -> SelectionFailure | None:
     """Return why ``path`` cannot be served right now, or ``None`` when it can.
 

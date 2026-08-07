@@ -34,6 +34,8 @@ builds the app with ``app_over(first, registry=...)`` rather than ``real_app``.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -876,6 +878,38 @@ async def test_a_write_lands_in_the_selected_project_and_leaves_the_other_untouc
         assert target in first_before
     else:
         assert second_after[target] != second_before.get(target), verb
+
+
+# --------------------------------------------------------------------------- #
+# Two concurrent creates both survive (``app.state.write_lock``)
+# --------------------------------------------------------------------------- #
+
+SECOND_NEW_ID = "CAD-211"
+"""A second fresh id, so the two concurrent creates below collide only on the manifest."""
+
+
+async def test_two_concurrent_creates_both_land_in_the_manifest(tmp_path: Path) -> None:
+    # A create is a read-modify-write of ``tickets.json``, and both halves — the project
+    # load and the write-service call — are handed to ``anyio.to_thread.run_sync``, whose
+    # limiter admits many at once. So the event loop no longer serialises the write path on
+    # its own, and unserialised these two requests each render a manifest from the same
+    # pre-write bytes: last-write-wins drops one entry while still leaving its ``.md`` file
+    # on disk. ``app.state.write_lock`` is what closes that, and this is the proof — remove
+    # the ``async with write_lock`` from ``create_ticket`` and this can lose a ticket.
+    app, root = _real_app(tmp_path)
+    async with _client(app) as client:
+        first, second = await asyncio.gather(
+            client.post("/api/v1/tickets", json=_draft_body(NEW_ID), headers=AUTH),
+            client.post("/api/v1/tickets", json=_draft_body(SECOND_NEW_ID), headers=AUTH),
+        )
+    assert first.status_code == 201
+    assert second.status_code == 201
+
+    manifest = json.loads((root / "docs" / "planning" / "tickets.json").read_text())
+    ids = {entry["id"] for entry in manifest["tickets"]}
+    assert {NEW_ID, SECOND_NEW_ID} <= ids
+    for ticket_id in (NEW_ID, SECOND_NEW_ID):
+        assert (root / _ticket_file(ticket_id)).is_file()
 
 
 # --------------------------------------------------------------------------- #
