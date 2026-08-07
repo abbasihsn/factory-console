@@ -182,11 +182,7 @@ class _ChangeEventHandler(FileSystemEventHandler):
             # the artefact and should never reach a subscriber.
             self._watcher._dispatch_from_thread(kind, dir_scope, rel_path)
             return
-        if (
-            event.is_directory
-            and kind == "created"
-            and rel_path in _WATCHED_JSON_DIR_SCOPES
-        ):
+        if event.is_directory and kind == "created" and rel_path in _WATCHED_JSON_DIR_SCOPES:
             # The watched directory ITSELF just came into existence — results or
             # receipts created after start() (both are absent on a fresh clone,
             # since ``.factory/`` is gitignored, so this is the common case, not
@@ -200,6 +196,19 @@ class _ChangeEventHandler(FileSystemEventHandler):
             # reach the ``dir_scope`` branch above at all.
             self._watcher._schedule_late(rel_path, self)
             return
+        if event.is_directory and (
+            rel_path in self._watcher._json_only_roots or parent in self._watcher._json_only_roots
+        ):
+            # The PORTABLE half of the branch above. macOS FSEvents does not deliver
+            # a subdirectory's own ``created`` event to a non-recursive watch on its
+            # parent — it coalesces the change into a ``modified`` naming the PARENT
+            # — so on macOS the branch above never fires and the artefact directory
+            # stays unwatched forever. Any directory event at or under a json-only
+            # root is therefore taken as a hint to re-check the declared "dir"
+            # artefacts; the call is idempotent and costs one ``is_dir()`` each.
+            # Deliberately NOT a ``return``: the event itself is still noise, so it
+            # falls through to the named drop below and reaches no subscriber.
+            self._watcher._schedule_missing_artifact_dirs(self)
         if parent in self._watcher._json_only_roots:
             # A NAMED drop, not a silent one (T99, criterion 2). This root is
             # scheduled ONLY to observe the artefact(s) the two maps above declare,
@@ -270,11 +279,14 @@ class RealFileWatcher:
         # substantive watch is absent here — its other entries keep whatever meaning
         # that watch gives them.
         self._json_only_roots: frozenset[str] = frozenset()
-        # "dir"-kind artefact directories (results, receipts) scheduled AFTER
-        # start(), because they did not exist on disk yet when it ran — see
-        # ``_schedule_late``. Guards against scheduling the same directory twice
-        # on the observer if its creation is reported more than once.
-        self._late_watched: set[str] = set()
+        # Every "dir"-kind artefact directory (results, receipts) this watcher has
+        # already arranged to observe — whether ``start()`` scheduled it, a
+        # recursive root already covered it, or it was picked up AFTER start()
+        # because it did not exist on disk yet (see ``_schedule_late`` and
+        # ``_schedule_missing_artifact_dirs``). One set for all three routes, so a
+        # directory can never be scheduled twice on the observer — which would
+        # report every event under it twice — no matter which route saw it first.
+        self._scheduled_artifact_dirs: set[str] = set()
         # The register/unregister/fan-out mechanics are shared with FakeFileWatcher
         # via _SubscriberHub (in watcher.py, NOT this guard-scanned source, so it
         # may use ``list.remove`` freely) — one implementation, no drift.
@@ -373,9 +385,19 @@ class RealFileWatcher:
                 root == target or (recursive and target.is_relative_to(root))
                 for root, recursive in scheduled
             ):
+                # Already covered. A "dir" artefact is recorded as handled anyway,
+                # so the late-scheduling fallback never schedules it a second time
+                # on top of the watch that already sees it.
+                if kind == "dir":
+                    self._scheduled_artifact_dirs.add(watched_dir.as_posix())
                 continue
             scheduled.append((target, False))
             json_only_roots.add(watched_dir.as_posix())
+            if kind == "dir" and target.is_dir():
+                # Present at start() and scheduled below. One that is ABSENT is
+                # deliberately left out of the set: it is the case the late
+                # scheduling exists for, and it must stay eligible.
+                self._scheduled_artifact_dirs.add(watched_dir.as_posix())
         self._json_only_roots = frozenset(json_only_roots)
         for root, recursive in scheduled:
             if root.is_dir():
@@ -430,10 +452,47 @@ class RealFileWatcher:
         directory the moment it appears), so no ``call_soon_threadsafe`` hop is
         needed here the way it is for debounce state and the subscriber hub.
         """
-        if self._observer is None or rel_path in self._late_watched:
+        if self._observer is None or rel_path in self._scheduled_artifact_dirs:
             return
-        self._late_watched.add(rel_path)
+        self._scheduled_artifact_dirs.add(rel_path)
         self._observer.schedule(handler, str(self._project_root / rel_path), recursive=False)
+
+    def _schedule_missing_artifact_dirs(self, handler: _ChangeEventHandler) -> None:
+        """Schedule any declared "dir" artefact that now exists but is unwatched.
+
+        The fallback for :meth:`_schedule_late`, and it exists because that method's
+        trigger is not portable. Late scheduling keys on the artefact directory's
+        OWN ``created`` event reaching the parent's watch — which inotify delivers
+        and **macOS FSEvents does not**: a non-recursive FSEvents watch reports a new
+        subdirectory only as a ``modified`` event on the PARENT, naming the parent.
+        So on macOS the create branch never fires, ``.factory/results`` born after
+        ``start()`` is never scheduled, and ``/runs`` silently stops live-updating
+        for the rest of the process's life — the exact failure T99 fixed on Linux,
+        still open on the other supported platform.
+
+        Rather than parse a backend's coalescing, this re-reads the DECLARED list
+        and schedules whatever is now on disk and not yet watched. That keeps the
+        list in ``watched_artifacts.py`` the single source of what is observed, and
+        it is idempotent through ``_scheduled_artifact_dirs``, so calling it on every
+        directory event under a json-only root costs one ``is_dir()`` per declared
+        artefact and can never double-schedule.
+
+        Called on the WATCHDOG THREAD, like :meth:`_schedule_late`, and safe there
+        for the same reason: ``Observer.schedule`` is thread-safe.
+        """
+        if self._observer is None:
+            return
+        for _scope, relative, kind in WATCHED_JSON_ARTIFACTS:
+            if kind != "dir":
+                continue
+            rel_path = relative.as_posix()
+            if rel_path in self._scheduled_artifact_dirs:
+                continue
+            if (self._project_root / rel_path).is_dir():
+                self._scheduled_artifact_dirs.add(rel_path)
+                self._observer.schedule(
+                    handler, str(self._project_root / rel_path), recursive=False
+                )
 
     # -- thread → loop bridge + debounce ------------------------------------ #
 

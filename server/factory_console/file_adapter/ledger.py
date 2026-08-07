@@ -47,16 +47,14 @@ from __future__ import annotations
 import json
 import logging
 import re
-import stat
 from pathlib import Path
 
 from pydantic import ValidationError
 
 from factory_console.domain.ledger import LedgerEntry, LedgerRead, SkippedLine, SkipReason
-from factory_console.file_adapter.bounded_read import read_bounded
 from factory_console.domain.watched_artifacts import LEDGER_RELATIVE_PATH
+from factory_console.file_adapter.bounded_read import read_bounded
 from factory_console.file_adapter.path_safety import (
-    ABSENT_ERRNOS,
     is_regular_file,
     resolve_or_none,
     within_root,
