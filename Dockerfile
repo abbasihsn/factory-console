@@ -57,6 +57,38 @@ COPY --from=wheel-builder --chown=fc:fc /build/dist/*.whl /tmp/
 RUN pip install --user --no-cache-dir /tmp/*.whl && rm /tmp/*.whl
 ENV PATH=/home/fc/.local/bin:$PATH
 
+# HOME pinned rather than left to the runtime's /etc/passwd lookup, because from
+# v3.0 it decides where writable state lands: the console's own registry defaults
+# to ~/.factory-console/console.db, and /home/fc is the one directory the fc user
+# owns (WORKDIR below is a bind mount of someone else's project).
+ENV HOME=/home/fc
+
+# --- The console's own registry: this image stays single-project ------------
+#
+# v3.0 gives the console a store of its OWN (ARCHITECTURE.md, "Console-owned
+# store"): a SQLite registry of projects, created lazily the first time a
+# registry endpoint is called — which the browser UI's project dropdown does on
+# every page load. Deliberately NOT declared here: no VOLUME, and no
+# FACTORY_CONSOLE_DB_PATH override.
+#
+# The reason is the image's actual usage pattern. It serves the ONE project
+# bind-mounted at /project for the life of one `docker run --rm` (see the note
+# below); there is no long-running multi-project serve mode yet — that is v3's
+# LATER work — so a registry that outlives the container has nothing to be about.
+# A VOLUME would also mint an anonymous volume per invocation for a file the
+# container never reads twice, which is a leak, not persistence.
+#
+# What this leaves is honest rather than broken: HOME above is fc-owned, so the
+# lazy creation succeeds at 0700/0600 like anywhere else (nothing crashes), and
+# the registry lives and dies inside the container's writable layer. To keep one
+# across restarts anyway, mount your own storage over it — the mount must be
+# writable by uid 1000, since nothing in the image pre-creates that directory for
+# Docker to copy fc's ownership from:
+#
+#   docker run ... -v "$PWD/console-store:/home/fc/.factory-console" ...   # chown 1000 it first
+#
+# The container never needs that to serve the project it was pointed at.
+
 # The console serves the project in its working directory, so the target project
 # must be bind-mounted at this WORKDIR — nothing is baked into the image
 # (docs/planning is .dockerignore'd). Without the mount, discover_project finds no
