@@ -26,6 +26,11 @@ Every absence assertion is made PER SOURCE, never as a count, exactly as
 ``tests/unit/test_run_service.py`` makes them: "one artifact is missing" is not an
 answer an operator can act on, and a body that said only that would satisfy a count
 assertion while losing the fact this milestone exists to show.
+
+Since v3.0 the root is resolved through the selection seam, so three more cases run
+here: the two ways resolution can refuse (nothing selected, selected path gone) are
+409s rather than a list of absences, and the honest-missing rule is re-asserted over a
+project reached through the REGISTRY rather than the boot-time pin.
 """
 
 from __future__ import annotations
@@ -51,7 +56,9 @@ from factory_console.file_adapter.run_artifacts import (
     RunArtifactReader,
 )
 from factory_console.file_adapter.runs import RECEIPTS_RELATIVE_DIR, RESULTS_RELATIVE_DIR
+from factory_console.services.project_selection import SelectionState
 from factory_console.services.run_service import RunService
+from factory_console.store.fake_registry import FakeProjectRegistry
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "runs"
 
@@ -94,8 +101,14 @@ def _app(
     artifacts: RunArtifactReader,
     *,
     root: Path = FAKE_ROOT,
+    registry: FakeProjectRegistry | None = None,
 ) -> FastAPI:
-    """Build the real app over a seeded manifest and the given artifact reader."""
+    """Build the real app over a seeded manifest and the given artifact reader.
+
+    Leaving ``registry`` unset is pinned mode — the selection can never leave
+    ``root`` — which is what every artifact case here wants; the selection cases
+    pass one so the resolved project is the SELECTED one instead.
+    """
     project = _project(root)
     adapter = FakeFileAdapter(project=project, tickets=[_ticket(i) for i in ticket_ids])
     return create_app(
@@ -103,6 +116,7 @@ def _app(
         version="0.0.0",
         project_root=root,
         run_artifact_reader=artifacts,
+        project_registry=registry,
     )
 
 
@@ -286,6 +300,78 @@ def test_a_real_fixture_project_with_no_artifacts_is_200_over_the_real_adapter()
         assert record["result"]["data"] is None
         assert record["receipt"]["reason"] == "absent"
         assert record["receipt"]["data"] is None
+
+
+def test_a_selected_project_with_no_factory_dir_names_every_absent_source() -> None:
+    """The honest-missing rule survives the v3.0 resolution change, on the SELECTED path.
+
+    The two cases above reach ``minimal``/``tmp_path`` through the boot-time PIN. This
+    one reaches it through the registry — a project the operator added and selected,
+    resolved per request by ``get_current_project_root`` — with the pin pointing
+    somewhere else entirely, so a handler that still read ``app.state.project_root``
+    could not pass. It is the case a multi-project console hits constantly, because
+    ``.factory/`` is gitignored and most registered projects will have none: it must
+    still be 200 with three fully-named absences, not ``[]`` and not a 404.
+    """
+    registry = FakeProjectRegistry()
+    row = registry.add_project(MINIMAL_PROJECT)
+    app = create_app(
+        RealFileAdapter(),
+        version="0.0.0",
+        project_root=FAKE_ROOT,
+        run_artifact_reader=RealRunArtifactReader(),
+        project_registry=registry,
+    )
+    app.state.selection.select(row.id)
+
+    resp = TestClient(app).get("/api/v1/runs")
+
+    assert resp.status_code == 200, "a selected project with no .factory/ is not a 404"
+    body = resp.json()
+    assert [record["ticketId"] for record in body["items"]] == ["TM-001", "TM-015", "TM-028"], (
+        "the SELECTED project's manifest, not the pinned root's — and not an empty list"
+    )
+    assert body["total"] == 3
+    for record in body["items"]:
+        assert record["result"]["reason"] == "absent"
+        assert record["result"]["data"] is None
+        assert record["receipt"]["reason"] == "absent"
+        assert record["receipt"]["data"] is None
+
+
+# --------------------------------------------------------------------------- #
+# The selection seam: no project resolved is a 409, never a list of absences
+# --------------------------------------------------------------------------- #
+
+
+def test_runs_refuses_with_409_when_nothing_is_selected() -> None:
+    # A list of named absences is a statement ABOUT a project — "this one has never
+    # run" — so it must not be the answer when there is no project to make it about.
+    app = _app(["T88"], FakeRunArtifactReader())
+    app.state.selection = SelectionState(pinned_root=None, registry=None)
+
+    resp = TestClient(app).get("/api/v1/runs")
+
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "no_project_selected"
+
+
+def test_runs_refuses_with_409_when_the_selected_path_is_gone(tmp_path: Path) -> None:
+    # "Registered but the working copy is not on this machine" is NOT the same as
+    # "no artifacts": resolution refuses instead of falling back to the pinned root
+    # and reporting another project's run-state under this project's name.
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    registry = FakeProjectRegistry()
+    row = registry.add_project(gone)
+    app = _app(["T88"], FakeRunArtifactReader(), root=tmp_path / "pinned", registry=registry)
+    app.state.selection.select(row.id)
+    gone.rmdir()
+
+    resp = TestClient(app).get("/api/v1/runs")
+
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "selected_project_unavailable"
 
 
 def test_an_empty_manifest_is_the_only_way_to_an_empty_list() -> None:
