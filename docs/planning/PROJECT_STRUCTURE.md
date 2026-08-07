@@ -143,7 +143,7 @@ factory-console/
 |---|---|
 | **foundation** | Everything above `server/factory_console/api|services|domain|file_adapter/` and above `frontend/src/`; CI + release + Dockerfile + scripts + Makefile + observability skeleton + docs stubs. |
 | **file-adapter** | `server/factory_console/{domain,file_adapter}/` + `tests/fixtures/projects/`. The only layer that reads the TARGET PROJECT's files. |
-| **backend** | `server/factory_console/{app.py, cli.py, api/, services/}`. Depends only on domain models + FileAdapter Protocol; never on `real.py` directly (except in `cli.py` and `create_dev_app`). |
+| **backend** | `server/factory_console/{app.py, cli.py, api/, services/}`. Depends only on domain models + FileAdapter Protocol; never on `real.py` directly (except in `cli.py` and `create_dev_app`). Sanctioned exception: `api/deps._probe_root` (T111) does its own narrow readability stat/scandir of the selected project's path for the multi-project selection seam, rather than reusing `file_adapter`'s probing. |
 | **frontend** | `frontend/`. Consumes REST v1 only; never renders markdown client-side (uses server-rendered `bodyHtml`). |
 | **store** | `server/factory_console/store/` + `domain/registry.py`. The console's OWN durable state — the console DB, which lives outside every target project and is written by nothing else. |
 | **github** | `server/factory_console/github_adapter/` + `domain/github.py` + `services/github_service.py`. Talks to the GitHub API only; never reads a target project's files. |

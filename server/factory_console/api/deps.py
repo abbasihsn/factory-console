@@ -28,20 +28,52 @@ runs endpoint. Like the adapter and the writer, a missing reader is a wiring bug
 raises on, not a configuration the endpoint degrades over: the port is TOTAL, so an
 absent artifact already has a named answer, and there is nothing left for a ``None``
 reader to mean.
+
+:func:`get_project_registry`, :func:`get_selection_state` and
+:func:`get_current_project_root` are v3.0's selection seam. The first two read what
+``create_app`` bound on ``app.state``; the third is the one that matters — the single
+place that answers "which project root is THIS request about?", so the thirteen
+handler sites stop re-deriving it from the boot-time pin. The precedence it
+implements, and the named vocabulary it fails with, are documented in
+:mod:`factory_console.services.project_selection`; this module only performs the
+resolution and the blocking-call offload it needs.
 """
 
 from __future__ import annotations
 
-from typing import Annotated
+import logging
+import os
+import sqlite3
+import stat as stat_module
+from collections.abc import Callable
+from functools import partial
+from pathlib import Path
+from typing import Annotated, TypeVar
 
+import anyio.to_thread
 from fastapi import Path as PathParam
 from fastapi import Request
 
 from factory_console.domain.ticket import TICKET_ID_PATTERN
+from factory_console.file_adapter.path_safety import ABSENT_ERRNOS
 from factory_console.file_adapter.protocol import FileAdapter
 from factory_console.file_adapter.run_artifacts import RunArtifactReader
 from factory_console.file_adapter.watcher import FileWatcher
 from factory_console.file_adapter.writer_protocol import FileWriter
+from factory_console.services.project_selection import (
+    SESSION_PROJECT_ID,
+    NoProjectSelected,
+    RegistryUnreadable,
+    SelectedProjectNotRegistered,
+    SelectedProjectUnavailable,
+    SelectionFailure,
+    SelectionState,
+)
+from factory_console.store.registry_protocol import ProjectRegistry
+
+_LOGGER = logging.getLogger(__name__)
+
+_ReadResult = TypeVar("_ReadResult")
 
 TicketIdPath = Annotated[str, PathParam(pattern=TICKET_ID_PATTERN)]
 """A ``{ticket_id}`` path parameter validated at the FastAPI boundary.
@@ -125,3 +157,178 @@ def get_run_artifact_reader(request: Request) -> RunArtifactReader:
             "build the app with create_app(run_artifact_reader=...)."
         )
     return reader
+
+
+def get_project_registry(request: Request) -> ProjectRegistry | None:
+    """Return the :class:`ProjectRegistry` bound to the app at boot, or ``None``.
+
+    Reads ``request.app.state.project_registry``, which ``create_app`` sets from its
+    optional ``project_registry`` argument. Returns ``None`` (never raises) when no
+    registry was wired, degrading like :func:`get_file_watcher` rather than raising
+    like :func:`get_file_adapter` — and that difference is load-bearing rather than
+    stylistic. A registry-less app is PINNED MODE: it serves exactly the one root
+    ``factory-console PATH`` discovered, which is every pre-v3 app, every existing
+    test, and the behaviour v3.0 promises not to change. Raising here would make the
+    single valid configuration this milestone must preserve look like a wiring bug.
+    """
+    return getattr(request.app.state, "project_registry", None)
+
+
+def get_selection_state(request: Request) -> SelectionState:
+    """Return the :class:`SelectionState` ``create_app`` built at boot.
+
+    Reads ``request.app.state.selection``. Raises :class:`RuntimeError` when it is
+    unbound — unlike :func:`get_project_registry` beside it, this is never a valid
+    configuration: ``create_app`` ALWAYS constructs one (a registry-less app simply
+    gets a permanently pinned selection), so an absent one means the app was not built
+    by ``create_app`` at all. There is no honest ``None`` answer either, since the
+    caller's next question is "which project?", and inventing one is precisely the
+    fallback :mod:`factory_console.services.project_selection` refuses.
+    """
+    selection = getattr(request.app.state, "selection", None)
+    if selection is None:
+        raise RuntimeError(
+            "No SelectionState bound on app.state.selection; "
+            "build the app with create_app(...), which always constructs one."
+        )
+    return selection
+
+
+def _probe_root(path: Path) -> SelectionFailure | None:
+    """Return why ``path`` cannot be served right now, or ``None`` when it can.
+
+    A deliberately NARROWER probe than
+    :func:`~factory_console.file_adapter.project_condition.classify_project_path`, and
+    not a reuse of it. That one answers a five-way
+    :data:`~factory_console.domain.registry.RegistryEntryCondition` for the project
+    SWITCHER, where "a real directory that is not a project" and "a project the
+    factory has never run against" are useful things to show a user picking a row.
+    This one answers a request that is already committed to a project, where the only
+    question is whether the console can read the directory at all — the manifest and
+    ``.factory/`` checks are then the endpoints' own business, with their own existing
+    errors. Three answers, so: present-directory, missing, unreadable.
+
+    The errno classification IS reused, via
+    :data:`~factory_console.file_adapter.path_safety.ABSENT_ERRNOS`, because getting it
+    wrong has the same consequence in both places: a permission error must never be
+    reported as absence, or an operator is sent hunting for a directory that was there
+    the whole time. ``ABSENT_ERRNOS`` is narrower than
+    :meth:`~pathlib.Path.is_dir`'s own swallowing (which varies across 3.12/3.13), so
+    a symlink loop stays ``unreadable`` on every interpreter.
+
+    Two calls, because one cannot answer both halves. The :meth:`~pathlib.Path.stat`
+    settles existence and directory-ness — a path replaced by a regular file is
+    ``missing``, since no project directory is there. The :func:`os.scandir` then
+    settles READABILITY, which the stat cannot: a ``chmod 000`` directory stats
+    perfectly well from a traversable parent, and only an attempt to look INSIDE it
+    raises ``EACCES``. Exactly one entry is pulled, so the cost does not grow with the
+    project.
+    """
+    try:
+        stat_result = path.stat()
+    except OSError as error:
+        if error.errno in ABSENT_ERRNOS:
+            return "selected_project_missing"
+        _LOGGER.warning("selected project: %s could not be stat'd: %r", path, error)
+        return "selected_project_unreadable"
+
+    if not stat_module.S_ISDIR(stat_result.st_mode):
+        return "selected_project_missing"
+
+    try:
+        with os.scandir(path) as entries:
+            next(entries, None)
+    except OSError as error:
+        if error.errno in ABSENT_ERRNOS:
+            return "selected_project_missing"
+        _LOGGER.warning("selected project: %s could not be read: %r", path, error)
+        return "selected_project_unreadable"
+    return None
+
+
+async def get_current_project_root(request: Request) -> Path:
+    """Resolve the project root THIS request is about — the v3.0 selection seam.
+
+    Consumers write ``root: Path = Depends(get_current_project_root)`` and get the
+    root of the SELECTED project instead of the one pinned at boot. The precedence,
+    stated in full in :mod:`factory_console.services.project_selection`, is applied
+    here in order:
+
+    1. The session selection is :data:`SESSION_PROJECT_ID` and a pinned root exists →
+       the pinned root, with no registry read and no stat. This is the rule that makes
+       ``factory-console PATH`` serve the path the operator typed, even when the
+       registry holds a persisted selection naming a different project.
+    2. No selection at all → :class:`NoProjectSelected`.
+    3. Otherwise the selection names a registry id, which is looked up through the
+       port; an id no row answers to → :class:`SelectedProjectNotRegistered`.
+    4. The row's path is probed; a path that is missing or unreadable →
+       :class:`SelectedProjectUnavailable`, naming which.
+
+    **Steps 3 and 4 NEVER fall back** — not to the pinned root, not to the first
+    registered project, not to the previous selection. A resolution that could not
+    establish its answer refuses, because the alternative is serving one project's
+    tickets, run-state and spend under another project's name. That silent mis-answer
+    is unfalsifiable from the UI, whereas a named 409 is a thing the user can fix.
+
+    Both the registry read and the stat are BLOCKING (``sqlite3`` and syscalls), so
+    both are awaited through ``anyio.to_thread.run_sync(partial(...))`` per
+    ``ARCHITECTURE.md``'s Cross-cutting **Concurrency** rule. Discharging it HERE
+    discharges it once for all thirteen handler sites instead of thirteen times.
+    Nothing is cached: a fresh read per request, so a selection changed in another tab
+    — or a project removed — is visible on the next request rather than at the next
+    boot.
+
+    Raises:
+        NoProjectSelected: nothing is selected and no path was pinned.
+        SelectedProjectNotRegistered: the selected id names no registry row.
+        SelectedProjectUnavailable: the selected path is missing or unreadable.
+        RegistryUnreadable: the console's own store could not be read.
+    """
+    selection = get_selection_state(request)
+    registry = get_project_registry(request)
+
+    # ``current_id`` reads through to the persisted selection when no session
+    # selection is set, so it is a (potentially) blocking store read like any other.
+    selected_id = await _read_registry(selection.current_id)
+
+    if selected_id == SESSION_PROJECT_ID and selection.pinned_root is not None:
+        return selection.pinned_root
+    if selected_id is None or selected_id == SESSION_PROJECT_ID:
+        # A session id without a pin is the pathless, never-switched boot: the
+        # sentinel names a root that does not exist, which is "nothing selected".
+        raise NoProjectSelected()
+    if registry is None:
+        # Pinned mode cannot name another project, so an id here means the selection
+        # outlived the registry it came from. Refusing is the monotonic answer; the
+        # pin is NOT substituted.
+        raise SelectedProjectNotRegistered(selected_id)
+
+    row = await _read_registry(partial(registry.get_project, selected_id))
+    if row is None:
+        raise SelectedProjectNotRegistered(selected_id)
+
+    failure = await anyio.to_thread.run_sync(partial(_probe_root, row.path))
+    if failure is not None:
+        raise SelectedProjectUnavailable(row.path, failure)
+    return row.path
+
+
+async def _read_registry(read: Callable[[], _ReadResult]) -> _ReadResult:
+    """Run a blocking registry read off the loop, naming an I/O failure as a 503.
+
+    The offload is the house rule; the ``except`` is why this is a helper rather than
+    two inline ``run_sync`` calls. An :class:`OSError` or :class:`sqlite3.Error` out
+    of the store means the console could not reach its OWN database — a missing or
+    unreadable state directory, a full or unmounted volume, a locked or malformed
+    db file — which is a statement about the console's health, not about the user's
+    selection. Left to propagate it would surface as a 500 with no code; as
+    :class:`RegistryUnreadable` it is a 503 that names the condition. The cause is
+    logged here, server-side, with ``exc_info`` — :class:`RegistryUnreadable`'s
+    client-visible message deliberately carries none of it, so the console's state
+    directory and OS-level detail never reach the browser.
+    """
+    try:
+        return await anyio.to_thread.run_sync(read)
+    except (OSError, sqlite3.Error) as error:
+        _LOGGER.error("project registry could not be read", exc_info=error)
+        raise RegistryUnreadable() from error
