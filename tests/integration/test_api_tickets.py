@@ -7,12 +7,16 @@ the checked-in ``with_run_state`` fixture (6 tickets spanning every run-state) f
 the fixture-driven list/filter/detail assertions. Pin that filters return the
 expected id subset, that an unknown id maps to the ``ticket_not_found`` 404
 envelope, and that an invalid id is rejected at the ``Path`` boundary as the
-``invalid_ticket_id`` 400 envelope without reaching the adapter.
+``invalid_ticket_id`` 400 envelope without reaching the adapter. Since v3.0 all three
+handlers resolve their root through the selection seam, so each also pins the two ways
+that resolution can refuse — nothing selected, and a selected path that is gone — as
+409s rather than as an empty list or another project's tickets.
 """
 
 from datetime import datetime
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -20,6 +24,8 @@ from factory_console.app import create_app
 from factory_console.domain import Project, RunState, Ticket
 from factory_console.file_adapter import FakeFileAdapter
 from factory_console.file_adapter.real import RealFileAdapter
+from factory_console.services.project_selection import SelectionState
+from factory_console.store.fake_registry import FakeProjectRegistry
 
 # Locate the checked-in fixture project the same way as test_real_file_adapter.py.
 PROJECTS_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "projects"
@@ -47,8 +53,17 @@ def _fake_ticket(ticket_id: str, *, title: str, status: str, track: str, milesto
     )
 
 
-def _fake_app() -> FastAPI:
-    """Build the real app over a FakeFileAdapter seeded with two distinctive tickets."""
+def _fake_app(
+    *,
+    project_root: Path = Path("/factory/demo-project"),
+    registry: FakeProjectRegistry | None = None,
+) -> FastAPI:
+    """Build the real app over a FakeFileAdapter seeded with two distinctive tickets.
+
+    ``project_root`` and ``registry`` are the selection seam's two inputs: leaving
+    both at their defaults is pinned mode (what every pre-v3 test asserts), and
+    passing a registry lets a case drive the SELECTED project instead.
+    """
     tickets = [
         _fake_ticket(
             "FAKE-1", title="Alpha widget", status="todo", track="backend", milestone="MVP"
@@ -60,7 +75,12 @@ def _fake_app() -> FastAPI:
         tickets=tickets,
         run_states={"FAKE-1": RunState.ready},
     )
-    return create_app(adapter, version="0.0.0", project_root=Path("/factory/demo-project"))
+    return create_app(
+        adapter,
+        version="0.0.0",
+        project_root=project_root,
+        project_registry=registry,
+    )
 
 
 def _real_app() -> FastAPI:
@@ -163,6 +183,48 @@ def test_detail_invalid_id_rejected_at_path_boundary_as_400() -> None:
     resp = client.get("/api/v1/tickets/bad$id")
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "invalid_ticket_id"
+
+
+# --------------------------------------------------------------------------- #
+# The selection seam: no project resolved is a 409, never another project's tickets
+# --------------------------------------------------------------------------- #
+
+# All three handlers resolve their root through the SAME dependency, so each case
+# below is parametrized over the three routes rather than written three times —
+# a route that forgot the dep would answer 200 here and be caught.
+TICKET_ROUTES = ["/api/v1/tickets", "/api/v1/tickets/FAKE-1", "/api/v1/tickets/FAKE-1/deps"]
+
+
+@pytest.mark.parametrize("route", TICKET_ROUTES)
+def test_refuses_with_409_when_nothing_is_selected(route: str) -> None:
+    # An empty list is a statement ABOUT a project — "this one has no tickets" — so
+    # it must not be the answer when there is no project to make it about.
+    app = _fake_app()
+    app.state.selection = SelectionState(pinned_root=None, registry=None)
+
+    resp = TestClient(app).get(route)
+
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "no_project_selected"
+
+
+@pytest.mark.parametrize("route", TICKET_ROUTES)
+def test_refuses_with_409_when_the_selected_path_is_gone(route: str, tmp_path: Path) -> None:
+    # The selected row's working copy is not on this machine. Resolution refuses
+    # rather than falling back to the pinned root, which would serve one project's
+    # tickets under another project's name.
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    registry = FakeProjectRegistry()
+    row = registry.add_project(gone)
+    app = _fake_app(project_root=tmp_path / "pinned", registry=registry)
+    app.state.selection.select(row.id)
+    gone.rmdir()
+
+    resp = TestClient(app).get(route)
+
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "selected_project_unavailable"
 
 
 # --------------------------------------------------------------------------- #

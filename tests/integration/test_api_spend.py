@@ -14,7 +14,9 @@ Pins the three things the ticket says a passing bug would slip through: no ledge
 and an EMPTY ledger are distinguishable responses (both report zero dollars, so a
 test that checks only the totals passes on the bug), skipped lines are visible so a
 partial total is visibly partial, and no ``session_id`` appears anywhere in the
-serialised body.
+serialised body. Since v3.0 the root is resolved through the selection seam, so the two
+ways that resolution can refuse — nothing selected, and a selected path that is gone —
+are pinned as 409s rather than as the "no ledger" body they most resemble.
 """
 
 from __future__ import annotations
@@ -31,6 +33,8 @@ from factory_console.app import create_app
 from factory_console.domain import Project
 from factory_console.file_adapter import FakeFileAdapter
 from factory_console.file_adapter.ledger import MAX_LEDGER_BYTES, MAX_SKIPPED_LINES
+from factory_console.services.project_selection import SelectionState
+from factory_console.store.fake_registry import FakeProjectRegistry
 
 # The same verbatim real ledger line the unit tests read (see the module docstring).
 REAL_ENTRY_LINE = (
@@ -78,11 +82,13 @@ def _write_over_cap_ledger(project_root: Path) -> Path:
     return path
 
 
-def _make_app(project_root: Path) -> FastAPI:
+def _make_app(project_root: Path, *, registry: FakeProjectRegistry | None = None) -> FastAPI:
     """Build the real app bound to ``project_root``, over a stub adapter.
 
     The spend route never touches the adapter — it reads the ledger off the root
     directly — so the fake is seeded with the bare minimum ``create_app`` needs.
+    Leaving ``registry`` unset is pinned mode, which is what every ledger case here
+    wants; the selection cases pass one to drive the SELECTED project instead.
     """
     project = Project(
         rootPath=project_root,
@@ -94,6 +100,7 @@ def _make_app(project_root: Path) -> FastAPI:
         FakeFileAdapter(project=project, tickets=[]),
         version="0.0.0",
         project_root=project_root,
+        project_registry=registry,
     )
 
 
@@ -429,6 +436,41 @@ def test_a_malformed_line_leading_with_a_session_id_does_not_leak_it(tmp_path: P
     assert resp.status_code == 200
     assert SESSION_ID not in resp.text
     assert resp.json()["skipped"] == [{"lineNo": 1, "reason": "not_json"}]
+
+
+# --------------------------------------------------------------------------- #
+# The selection seam: no project resolved is a 409, never a "no ledger" body
+# --------------------------------------------------------------------------- #
+
+
+def test_spend_refuses_with_409_when_nothing_is_selected(tmp_path: Path) -> None:
+    # ``found: false`` over zeroed totals is a statement ABOUT a project — "this one
+    # has no ledger" — and is exactly the false-money claim this endpoint is careful
+    # about, so it must not be the answer when there is no project at all.
+    app = _make_app(tmp_path)
+    app.state.selection = SelectionState(pinned_root=None, registry=None)
+
+    resp = TestClient(app).get("/api/v1/spend")
+
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "no_project_selected"
+
+
+def test_spend_refuses_with_409_when_the_selected_path_is_gone(tmp_path: Path) -> None:
+    # A registered project whose working copy is not on this machine. Refusing beats
+    # falling back to the pinned root, which would bill one project for another's run.
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    registry = FakeProjectRegistry()
+    row = registry.add_project(gone)
+    app = _make_app(tmp_path / "pinned", registry=registry)
+    app.state.selection.select(row.id)
+    gone.rmdir()
+
+    resp = TestClient(app).get("/api/v1/spend")
+
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "selected_project_unavailable"
 
 
 # --------------------------------------------------------------------------- #
