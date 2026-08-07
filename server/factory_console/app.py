@@ -418,6 +418,22 @@ def create_app(
     # `asyncio.Lock` attribute would end that. One lock per app, like every other
     # `app.state` singleton.
     app.state.selection_lock = asyncio.Lock()
+    # Serialises the ticket write path. `ARCHITECTURE.md`'s Cross-cutting **Concurrency**
+    # rule promises a single writer ("the write path is serialized by the same single
+    # worker"), and while the handlers ran their blocking work inline the event loop
+    # delivered that for free. It no longer does: `api/v1/tickets_write.py` now hands both
+    # the project load and the write-service call to `anyio.to_thread.run_sync` (the same
+    # rule's other half — no blocking filesystem I/O on the loop), and anyio's default
+    # thread limiter admits many of them at once. A ticket write is a read-modify-write of
+    # `tickets.json` with no lock below this layer, so two overlapping writes could each
+    # render a manifest from the same pre-write bytes and last-write-wins would silently
+    # drop one entry — or let two creates of the same id both pass the duplicate guard.
+    # This lock is what restores the single-writer-at-a-time invariant across the offload.
+    #
+    # One lock per app, on `app.state` like every other singleton, and read back through
+    # `Depends(get_write_lock)`: a lock built anywhere per-call would satisfy the type and
+    # serialise nothing.
+    app.state.write_lock = asyncio.Lock()
     token = write_token or secrets.token_urlsafe(_WRITE_TOKEN_BYTES)
     app.state.write_token = token
     # ``generated`` mirrors the ``or`` above exactly rather than testing ``is None``:

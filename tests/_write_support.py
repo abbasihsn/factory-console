@@ -31,6 +31,7 @@ from factory_console.app import create_app
 from factory_console.config import WRITE_TOKEN_HEADER
 from factory_console.file_adapter.real import RealFileAdapter
 from factory_console.file_adapter.real_writer import RealFileWriter
+from factory_console.store.registry_protocol import ProjectRegistry
 
 WITH_RUN_STATE = Path(__file__).resolve().parent / "fixtures" / "projects" / "with_run_state"
 """The checked-in staged-run-state fixture. Read-only — always copy before writing."""
@@ -53,12 +54,20 @@ AUTH = {WRITE_TOKEN_HEADER: PINNED_TOKEN}
 """The one header that authorizes a write, carrying :data:`PINNED_TOKEN`."""
 
 
-def app_over(root: Path) -> FastAPI:
+def app_over(root: Path, *, registry: ProjectRegistry | None = None) -> FastAPI:
     """Build the app over the filesystem pair, both ports rooted at ``root``.
 
     Rooting the adapter and the writer at the same tree is what makes an adapter read
     after a writer apply observe the written state — the coupling production has and
     the in-memory pair does not.
+
+    ``root`` and ``registry`` are the selection seam's two inputs (as in
+    ``test_api_tickets.py``'s ``_fake_app`` and ``test_api_runs.py``'s ``_app``).
+    Leaving ``registry`` unset is PINNED MODE — the selection can never leave ``root``,
+    which is what every write case that only cares about one project wants. Passing one
+    lets a case drive the SELECTED project via ``app.state.selection.select(row.id)``,
+    which is the only way to prove a write lands in the selected tree rather than the
+    pinned one.
     """
     return create_app(
         RealFileAdapter(),
@@ -66,18 +75,29 @@ def app_over(root: Path) -> FastAPI:
         project_root=root,
         file_writer=RealFileWriter(),
         write_token=PINNED_TOKEN,
+        project_registry=registry,
     )
 
 
-def real_app(tmp_path: Path) -> tuple[FastAPI, Path]:
-    """Build the filesystem-pair app over a THROWAWAY copy of the fixture.
+def fixture_copy(dest: Path) -> Path:
+    """Copy the checked-in fixture project to ``dest`` and return that path.
 
     The copy is what makes a write test safe: the checked-in fixture is shared by the
-    read-side suites and must never be mutated.
+    read-side suites and must never be mutated. Exposed separately from
+    :func:`real_app` because a multi-project case needs TWO independent trees under one
+    app, which a helper that also builds the app cannot give it.
     """
-    root = tmp_path / "project"
-    shutil.copytree(WITH_RUN_STATE, root)
-    return app_over(root), root
+    shutil.copytree(WITH_RUN_STATE, dest)
+    return dest
+
+
+def real_app(tmp_path: Path, *, registry: ProjectRegistry | None = None) -> tuple[FastAPI, Path]:
+    """Build the filesystem-pair app over a THROWAWAY copy of the fixture.
+
+    ``registry`` is forwarded to :func:`app_over`; the default ``None`` is pinned mode.
+    """
+    root = fixture_copy(tmp_path / "project")
+    return app_over(root, registry=registry), root
 
 
 def client(app: FastAPI) -> AsyncClient:
