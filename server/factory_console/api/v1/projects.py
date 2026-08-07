@@ -104,6 +104,7 @@ The absolute host paths on the wire are the existing precedent, not a new disclo
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from functools import partial
 from pathlib import Path
@@ -120,6 +121,7 @@ from factory_console.api.deps import (
     _read_registry,
     get_file_adapter,
     get_project_registry,
+    get_selection_lock,
     get_selection_state,
 )
 from factory_console.api.write_token import WRITE_TOKEN_SECURITY, require_write_token
@@ -187,6 +189,7 @@ Nothing else is admitted: an id that is neither 32 lowercase hex digits nor the 
 is rejected at the boundary, and because neither alternative can contain a path
 separator or a ``.``, an id can never name a parent directory.
 """
+
 
 class SessionProjectNotRemovable(FactoryConsoleError):
     """The reserved ``session`` row cannot be removed: it was never registered.
@@ -811,6 +814,7 @@ async def remove_project(
     project_id: ProjectIdPath,
     registry: ProjectRegistry | None = Depends(get_project_registry),
     selection: SelectionState = Depends(get_selection_state),
+    selection_lock: asyncio.Lock = Depends(get_selection_lock),
 ) -> Response:
     """Stop tracking ``project_id``. ``204``, and nothing on the project's disk changes.
 
@@ -864,8 +868,9 @@ async def remove_project(
         partial(_remove_registered_project, project_id, store, selection)
     )
     if was_selected:
-        root = await _read_registry(partial(selection._resolve_and_persist, None))
-        selection._apply_selected(None, root)
+        async with selection_lock:
+            root = await _read_registry(partial(selection._resolve_and_persist, None))
+            selection._apply_selected(None, root)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -878,6 +883,7 @@ async def select_current(
     payload: SelectProjectRequest,
     registry: ProjectRegistry | None = Depends(get_project_registry),
     selection: SelectionState = Depends(get_selection_state),
+    selection_lock: asyncio.Lock = Depends(get_selection_lock),
 ) -> CurrentSelectionResponse:
     """Point the console at ``payload.projectId`` and report what it now serves.
 
@@ -931,9 +937,15 @@ async def select_current(
             raise ProjectNotRegistered(payload.projectId)
     else:
         _require_registry(registry)
-    root = await _read_registry(partial(selection._resolve_and_persist, payload.projectId))
-    selection._apply_selected(payload.projectId, root)
-    resolved = await _read_registry(
-        partial(_resolve_current, selection, registry, RealProjectConditionProbe())
-    )
+    async with selection_lock:
+        root = await _read_registry(partial(selection._resolve_and_persist, payload.projectId))
+        selection._apply_selected(payload.projectId, root)
+        # The read stays INSIDE the lock so the response describes the switch this
+        # request made. Outside it, a switch landing between the apply and the read
+        # would have this caller answer with the other one's project — reporting a
+        # selection it did not ask for, which is worse than the extra hold: switches
+        # are rare operator actions and nothing on a read path waits on this lock.
+        resolved = await _read_registry(
+            partial(_resolve_current, selection, registry, RealProjectConditionProbe())
+        )
     return _current_response(resolved)

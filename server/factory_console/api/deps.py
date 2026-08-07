@@ -45,6 +45,7 @@ resolution and the blocking-call offload it needs.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sqlite3
@@ -230,6 +231,39 @@ def get_selection_state(request: Request) -> SelectionState:
             "build the app with create_app(...), which always constructs one."
         )
     return selection
+
+
+def get_selection_lock(request: Request) -> asyncio.Lock:
+    """Return the lock serialising this app's two-phase selection switches.
+
+    Reads ``request.app.state.selection_lock``, and raises :class:`RuntimeError` when
+    it is unbound for the same reason :func:`get_selection_state` does: ``create_app``
+    always builds one, so an absent one means the app was not built by ``create_app``.
+
+    **Why a lock exists at all**, given that
+    :meth:`~factory_console.services.project_selection.SelectionState.select` is itself
+    atomic: an HTTP caller cannot use ``select()``. Its registry round trip blocks and
+    its on-change hook must run on the loop, so the write routes in
+    :mod:`factory_console.api.v1.projects` split it — ``_resolve_and_persist`` off-loop,
+    ``_apply_selected`` back on it. A switch therefore SPANS an ``await``, and the loop
+    does not serialise it the way it serialises an ordinary handler. Two concurrent
+    switches, or a switch racing the delete-triggered clear in ``remove_project``, can
+    persist in one order and apply in the other, leaving the in-memory selection and the
+    watcher target naming a project the registry no longer records as selected. Every
+    caller of that split pair must hold this; there is no correct way to run one half
+    without it.
+
+    Failing loudly rather than defaulting to a fresh lock is deliberate — a per-call
+    lock would satisfy the type and serialise nothing, which is the failure mode this
+    dependency exists to make impossible.
+    """
+    lock = getattr(request.app.state, "selection_lock", None)
+    if lock is None:
+        raise RuntimeError(
+            "No asyncio.Lock bound on app.state.selection_lock; "
+            "build the app with create_app(...), which always constructs one."
+        )
+    return lock
 
 
 def _probe_root(path: Path) -> SelectionFailure | None:
