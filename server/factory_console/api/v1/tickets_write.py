@@ -51,7 +51,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 
 from factory_console.api.deps import TicketIdPath, get_file_adapter, get_file_writer
-from factory_console.api.write_token import WRITE_TOKEN_SCHEME_NAME, require_write_token
+from factory_console.api.write_token import WRITE_TOKEN_SECURITY, require_write_token
 from factory_console.domain.write import TicketDraft, TicketEdit, WriteResult
 from factory_console.errors import FactoryConsoleError
 from factory_console.file_adapter.protocol import FileAdapter
@@ -151,12 +151,6 @@ router = APIRouter(
     dependencies=[Depends(require_write_token), Depends(reject_unknown_query_params)],
 )
 
-# ``require_write_token`` is a plain dependency rather than a ``SecurityBase``, so
-# FastAPI cannot derive a ``security`` requirement from it. Each write operation
-# therefore names the scheme ``publish_write_token_scheme`` publishes, or the OpenAPI
-# document would describe a header that no operation actually requires.
-_WRITE_TOKEN_SECURITY: dict[str, Any] = {"security": [{WRITE_TOKEN_SCHEME_NAME: []}]}
-
 # The dry-run flag, shared by all three verbs. The wire name is camelCase per the REST
 # v1 contract; the alias keeps the Python parameter snake_case so it feeds ``WriteService``'s
 # ``dry_run`` keyword without renaming the concept mid-call.
@@ -176,7 +170,7 @@ _DRY_RUN_RESPONSE: dict[int | str, dict[str, Any]] = {
     "/tickets",
     status_code=status.HTTP_201_CREATED,
     responses=_DRY_RUN_RESPONSE,
-    openapi_extra=_WRITE_TOKEN_SECURITY,
+    openapi_extra=WRITE_TOKEN_SECURITY,
 )
 async def create_ticket(
     payload: TicketDraft,
@@ -205,7 +199,7 @@ async def create_ticket(
     return result
 
 
-@router.put("/tickets/{ticket_id}", openapi_extra=_WRITE_TOKEN_SECURITY)
+@router.put("/tickets/{ticket_id}", openapi_extra=WRITE_TOKEN_SECURITY)
 async def edit_ticket(
     ticket_id: TicketIdPath,
     payload: TicketEdit,
@@ -228,7 +222,7 @@ async def edit_ticket(
     return result
 
 
-@router.delete("/tickets/{ticket_id}", openapi_extra=_WRITE_TOKEN_SECURITY)
+@router.delete("/tickets/{ticket_id}", openapi_extra=WRITE_TOKEN_SECURITY)
 async def delete_ticket(
     ticket_id: TicketIdPath,
     request: Request,
