@@ -18,7 +18,14 @@ It also accepts an optional
 :class:`~factory_console.file_adapter.run_artifacts.RunArtifactReader` (T88/T89's
 per-ticket artifact port), stashed on ``app.state.run_artifact_reader`` for the
 ``Depends(get_run_artifact_reader)`` seam the runs endpoint consumes; it too is
-stateless and drives no lifespan. It mints the per-session write token (T64) — the
+stateless and drives no lifespan. It also accepts an optional
+:class:`~factory_console.store.registry_protocol.ProjectRegistry` (T106's port over the
+console's OWN state), stashed on ``app.state.project_registry`` for the
+``Depends(get_project_registry)`` seam, and ALWAYS constructs a
+:class:`~factory_console.services.project_selection.SelectionState` on
+``app.state.selection`` — seeded from ``project_root``, so an app built without a
+registry is simply an app that is permanently pinned, which is today's behaviour
+exactly. It mints the per-session write token (T64) — the
 defence-in-depth secret every v2
 mutation must present in the
 :data:`~factory_console.config.WRITE_TOKEN_HEADER` header — stashing it on
@@ -72,6 +79,8 @@ from factory_console.file_adapter.run_artifacts import RunArtifactReader
 from factory_console.file_adapter.watcher import FileWatcher
 from factory_console.file_adapter.writer_protocol import FileWriter
 from factory_console.logging import request_log_line
+from factory_console.services.project_selection import SelectionState
+from factory_console.store.registry_protocol import ProjectRegistry
 
 # ``API_V1_PREFIX`` (imported above) is owned by the ``api.v1`` package so the
 # ``/api/v1`` prefix lives in one place; every v1 endpoint (including the health
@@ -231,6 +240,7 @@ def create_app(
     file_watcher: FileWatcher | None = None,
     file_writer: FileWriter | None = None,
     run_artifact_reader: RunArtifactReader | None = None,
+    project_registry: ProjectRegistry | None = None,
     write_token: str | None = None,
 ) -> FastAPI:
     """Build the Factory Console app around an injected ``FileAdapter``.
@@ -252,6 +262,18 @@ def create_app(
     it is stateless, so it drives no lifespan, and leaving it ``None`` is the same
     trade as the writer — every other route keeps working, and the runs route reports
     the wiring bug rather than inventing an answer about the factory.
+
+    The optional ``project_registry`` (T106's :class:`ProjectRegistry` port over the
+    console's own store) is stashed on ``app.state.project_registry`` for the
+    ``Depends(get_project_registry)`` seam, and a
+    :class:`~factory_console.services.project_selection.SelectionState` is ALWAYS built
+    on ``app.state.selection`` from ``project_root`` and that registry. Leaving the
+    registry ``None`` is not a degraded app: it is PINNED MODE — the selection can
+    never leave the boot-time root, which is precisely what every pre-v3 app did, and
+    is why this milestone can add the seam without changing a single endpoint's
+    behaviour. ``app.state.project_root`` keeps naming the PINNED root either way; the
+    selection is read per request through ``Depends(get_current_project_root)`` and
+    never rewrites it.
 
     ``write_token`` pins the per-session write secret every v2 mutation must present
     in the :data:`~factory_console.config.WRITE_TOKEN_HEADER` header (an operator
@@ -284,6 +306,8 @@ def create_app(
     app.state.file_watcher = file_watcher
     app.state.file_writer = file_writer
     app.state.run_artifact_reader = run_artifact_reader
+    app.state.project_registry = project_registry
+    app.state.selection = SelectionState(pinned_root=project_root, registry=project_registry)
     token = write_token or secrets.token_urlsafe(_WRITE_TOKEN_BYTES)
     app.state.write_token = token
     # ``generated`` mirrors the ``or`` above exactly rather than testing ``is None``:
