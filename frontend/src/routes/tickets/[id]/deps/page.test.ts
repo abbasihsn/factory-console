@@ -15,8 +15,9 @@ import Page from './+page.svelte';
 
 const getTicketDepsMock = vi.mocked(getTicketDeps);
 
-// `+page.svelte`'s `PageData` merges the root layout's `project`, so the rendered
-// `data` prop must carry it too (the page itself only reads the deps / id).
+// `+page.svelte`'s `PageData` merges the root layout's data — the `project` plus
+// the switcher's registry rows — so the rendered `data` prop must carry all of it
+// (the page itself only reads the deps / id).
 const project = {
 	rootPath: '/home/dev/factory-console',
 	ticketsManifestPath: '/home/dev/factory-console/docs/planning/tickets.json',
@@ -69,11 +70,11 @@ const sparseNeighborhood: DepNeighborhood = {
 };
 
 function foundData(deps: DepNeighborhood): PageData {
-	return { project, notFound: false, deps };
+	return { project, projects: [], selectedId: null, notFound: false, deps };
 }
 
 function notFoundData(id: string): PageData {
-	return { project, notFound: true, id };
+	return { project, projects: [], selectedId: null, notFound: true, id };
 }
 
 describe('dep neighborhood load', () => {

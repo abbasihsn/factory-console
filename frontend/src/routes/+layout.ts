@@ -1,5 +1,6 @@
 import { error } from '@sveltejs/kit';
 import type { LayoutLoad } from './$types';
+import { listProjects, type RegisteredProjectOut } from '$lib/api';
 import { normalizeError, type ApiError, type Project } from '$lib/api/contracts';
 
 // SPA mode: no server-side rendering or prerendering. adapter-static emits a
@@ -31,10 +32,52 @@ const INVALID_RESPONSE: ApiError = {
 	message: 'The backend returned an unreadable response.'
 };
 
-// Fetch the resolved project once so every route can show it in the top bar.
+// Fetch the resolved project once so every route can show it in the top bar,
+// alongside the registry rows the switcher offers. Both reads are issued together
+// (`Promise.all`) because neither needs the other's answer, so the shell waits on
+// the slower one rather than on their sum.
+//
+// Only the project read is fatal (see `loadProject`): the registry degrades to an
+// empty list, and the switcher renders nothing for it, leaving today's
+// single-project shell exactly as it was.
+export const load: LayoutLoad = async ({ fetch }) => {
+	const [project, projects] = await Promise.all([loadProject(fetch), loadRegistry()]);
+	return { project, projects, selectedId: selectedIdOf(projects) };
+};
+
+/**
+ * Which row the switcher shows as current.
+ *
+ * Read off the rows rather than fetched from `GET /projects/current`: the server
+ * flattens `selected` onto every row from that same selection state, so the list
+ * response already carries the answer and a second round-trip could only
+ * disagree with it. `null` covers both "no registry" (the degraded empty list)
+ * and a selection the registry cannot name.
+ */
+function selectedIdOf(projects: readonly RegisteredProjectOut[]): string | null {
+	return projects.find((project) => project.selected)?.id ?? null;
+}
+
+/**
+ * The registry rows, or `[]` when the registry cannot be read.
+ *
+ * **A registry read that fails must not blank the shell.** The console served one
+ * project long before it could switch between them, and it still can: an
+ * unreachable, unreadable or not-yet-present registry costs the user the
+ * dropdown, not the app. Every other failure in this load is fatal precisely
+ * because nothing can render without a project — that is not true here.
+ */
+async function loadRegistry(): Promise<RegisteredProjectOut[]> {
+	try {
+		return await listProjects();
+	} catch {
+		return [];
+	}
+}
+
 // Failures become SvelteKit errors so `page.error` carries a normalized
 // `ApiError` that `+error.svelte` renders.
-export const load: LayoutLoad = async ({ fetch }) => {
+async function loadProject(fetch: typeof globalThis.fetch): Promise<Project> {
 	let response: Response;
 	try {
 		response = await fetch(PROJECT_ENDPOINT, {
@@ -51,11 +94,9 @@ export const load: LayoutLoad = async ({ fetch }) => {
 		throw error(response.status, normalizeError(body));
 	}
 
-	let project: Project;
 	try {
-		project = (await response.json()) as Project;
+		return (await response.json()) as Project;
 	} catch {
 		throw error(503, INVALID_RESPONSE);
 	}
-	return { project };
-};
+}
