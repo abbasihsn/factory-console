@@ -4,8 +4,9 @@ The one fixture here is package-wide isolation: every integration test's
 ``FACTORY_CONSOLE_DB_PATH`` is pointed at its own ``tmp_path`` before the test body
 runs, so no test — nor any subprocess it launches with the ambient environment,
 per ``test_cli.py`` — can create or touch the developer's (or CI runner's) real
-``~/.factory-console/console.db``. See T104's :func:`~factory_console.store.location.resolve_db_path`
-for why this one variable is the whole override surface.
+``~/.factory-console/console.db``. See T104's
+:func:`~factory_console.store.location.resolve_db_path` for why this one variable is
+the whole override surface.
 """
 
 from __future__ import annotations
