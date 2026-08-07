@@ -69,15 +69,29 @@ describe('ProjectSwitcher', () => {
 		expect(one.container.querySelector('select')).toBeNull();
 	});
 
-	it('lists every registered project and shows the selected one', () => {
+	it('lists every registered project, then the management entry, and shows the selected one', () => {
 		render(ProjectSwitcher, { props: { projects: PROJECTS, selectedId: 'p1' } });
 
 		const select = screen.getByLabelText('Project') as HTMLSelectElement;
-		expect([...select.options].map((option) => option.value)).toEqual(['p1', 'p2']);
+		expect([...select.options].map((option) => option.value)).toEqual(['p1', 'p2', '__manage__']);
 		expect([...select.options].map((option) => option.textContent?.trim())).toEqual([
 			'console',
-			'factory'
+			'factory',
+			'Manage projects…'
 		]);
+		expect(select.value).toBe('p1');
+	});
+
+	it('navigates to /projects from the management entry instead of switching to it', async () => {
+		render(ProjectSwitcher, { props: { projects: PROJECTS, selectedId: 'p1' } });
+
+		const select = screen.getByLabelText('Project') as HTMLSelectElement;
+		await fireEvent.change(select, { target: { value: '__manage__' } });
+
+		expect(gotoMock).toHaveBeenCalledWith('/projects');
+		expect(selectProjectMock).not.toHaveBeenCalled();
+		// The switcher survives the navigation, so the control must go back to the
+		// project actually selected rather than sit on an entry that is not one.
 		expect(select.value).toBe('p1');
 	});
 
