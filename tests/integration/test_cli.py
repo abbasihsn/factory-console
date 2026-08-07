@@ -25,6 +25,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 import factory_console
@@ -32,15 +33,20 @@ from factory_console import cli
 from factory_console.cli import app
 from factory_console.config import WRITE_TOKEN_HEADER
 from factory_console.file_adapter.run_artifacts import RealRunArtifactReader
+from factory_console.file_adapter.watcher_real import RealFileWatcher
+from factory_console.services.project_selection import SESSION_PROJECT_ID
+from factory_console.store.sqlite_registry import SqliteProjectRegistry
 
 runner = CliRunner()
 
-# Every ``FACTORY_CONSOLE_*`` variable the CLI reads through Typer's ``envvar=``.
+# Every ``FACTORY_CONSOLE_*`` variable the CLI reads, through Typer's ``envvar=`` or
+# (``FACTORY_CONSOLE_DB_PATH``) through the store's own settings object.
 _ENV_VARS = (
     "FACTORY_CONSOLE_HOST",
     "FACTORY_CONSOLE_PORT",
     "FACTORY_CONSOLE_LOG_LEVEL",
     "FACTORY_CONSOLE_WRITE_TOKEN",
+    "FACTORY_CONSOLE_DB_PATH",
 )
 
 
@@ -53,6 +59,15 @@ def _clear_ambient_console_env(monkeypatch: pytest.MonkeyPatch) -> None:
     turns any invocation that omits ``--host`` into an exit-2 run, and a bogus
     ``FACTORY_CONSOLE_LOG_LEVEL`` does the same. That reaches the subprocess cases too,
     since ``_child_env`` inherits ``os.environ``.
+
+    ``FACTORY_CONSOLE_DB_PATH`` is stripped for the same reason one step removed: it is
+    not a Typer option, but the CLI now opens a
+    :class:`~factory_console.store.sqlite_registry.SqliteProjectRegistry` through it, so
+    an ambient value would decide which store the cases below address. Clearing it points
+    the default construction at the operator's real path — which is harmless precisely
+    because construction is side-effect-free (T108): nothing here CALLS the registry
+    without first pointing ``FACTORY_CONSOLE_DB_PATH`` at a ``tmp_path`` file, so no test
+    can create ``~/.factory-console/``.
 
     Cases that WANT a variable set still pass it via ``runner.invoke(env=...)``, which
     applies on top of this — so precedence tests are unaffected.
@@ -67,6 +82,9 @@ _SERVER_DIR = _REPO_ROOT / "server"
 _FIXTURES = _TESTS_DIR / "fixtures" / "projects"
 _MINIMAL = _FIXTURES / "minimal"
 _MALFORMED = _FIXTURES / "malformed"
+# The second App Factory project, so a listing/switch case has a project to name that
+# is unmistakably not the booted one.
+_SECOND = _FIXTURES / "second"
 
 # Matches the URL inside the contract line for both IPv4 (127.0.0.1) and bracketed
 # IPv6 (`[::1]`) hosts, capturing the resolved port.
@@ -438,6 +456,160 @@ def test_production_boot_wires_the_real_run_artifact_reader(
     assert result.exit_code == 0, result.output
     reader = captured["app"].state.run_artifact_reader  # type: ignore[union-attr]
     assert isinstance(reader, RealRunArtifactReader)
+
+
+# --------------------------------------------------------------------------- #
+# v3.0 wiring (T119): the registry, the watcher factory, the ephemeral session pin
+# --------------------------------------------------------------------------- #
+
+
+def test_production_boot_wires_the_registry_and_the_watcher_factory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # v3.0's turn-on, asserted at the composition root: the CLI must hand create_app
+    # BOTH a real registry (or the switcher has no rows to offer) and RealFileWatcher
+    # itself as the ``watcher_factory`` (or the supervisor can hold the boot watcher
+    # but never build a successor, so the first project switch silently leaves the
+    # console watcher-less with live updates dead and no error anywhere).
+    server, captured = _capturing_server()
+    monkeypatch.setattr("factory_console.cli.uvicorn.Server", server)
+    monkeypatch.setattr("factory_console.cli.configure_logging", lambda level: None)
+
+    result = runner.invoke(
+        app,
+        [str(_MINIMAL), "--no-browser", "--port", "0"],
+        env={"FACTORY_CONSOLE_DB_PATH": str(tmp_path / "console.db")},
+    )
+
+    assert result.exit_code == 0, result.output
+    state = captured["app"].state  # type: ignore[union-attr]
+    assert isinstance(state.project_registry, SqliteProjectRegistry)
+    assert state.watcher_supervisor._factory is RealFileWatcher
+    # The pin is the boot root, and it is NOT registered: the ephemeral-session rule.
+    assert state.selection.pinned_root == _MINIMAL
+
+
+def test_boot_does_not_register_the_discovered_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The discovered root is an EPHEMERAL, UNREGISTERED session project. Auto-registering
+    # it would make a read-only viewing invocation — a throwaway clone, a CI job, a
+    # Playwright boot — write a permanent row into the operator's console db, so every
+    # such boot would grow the dropdown for good. Asserted against the db FILE rather
+    # than the listing, so a future listing change cannot hide a write that happened.
+    db_path = tmp_path / "console.db"
+    monkeypatch.setattr("factory_console.cli.uvicorn.Server", _StubServer)
+    monkeypatch.setattr("factory_console.cli.configure_logging", lambda level: None)
+
+    result = runner.invoke(
+        app,
+        [str(_MINIMAL), "--no-browser", "--port", "0"],
+        env={"FACTORY_CONSOLE_DB_PATH": str(db_path)},
+    )
+
+    assert result.exit_code == 0, result.output
+    # A boot that touched the store at all would have created the file (the registry's
+    # first method call is what creates it), so its absence proves nothing was written.
+    assert not db_path.exists()
+
+
+def test_unaddressable_db_path_warns_and_still_boots_pinned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A store the console cannot even ADDRESS must not take the local viewer down: the
+    # single-project viewer never needed a database and must not start needing one. A
+    # blank FACTORY_CONSOLE_DB_PATH is the deterministic, cross-platform way in (the
+    # store rejects it rather than resolving it to the cwd), and the answer must be a
+    # stderr warning plus ``project_registry=None`` — pinned mode, i.e. exactly the
+    # pre-v3 behaviour — never an exit code.
+    #
+    # An UNWRITABLE directory deliberately does NOT take this branch: construction is
+    # side-effect-free (T108), so that failure surfaces at the registry's first method
+    # call, where the endpoints answer it as the named ``registry_unreadable`` 503.
+    server, captured = _capturing_server()
+    monkeypatch.setattr("factory_console.cli.uvicorn.Server", server)
+    monkeypatch.setattr("factory_console.cli.configure_logging", lambda level: None)
+
+    result = runner.invoke(
+        app,
+        [str(_MINIMAL), "--no-browser", "--port", "0"],
+        env={"FACTORY_CONSOLE_DB_PATH": ""},
+    )
+
+    assert result.exit_code == 0, result.output
+    # Click's CliRunner captures the two streams separately; the warning is an operator
+    # notice, so it belongs on stderr and stdout must still carry only the contract line.
+    assert "could not open the project registry" in result.stderr
+    assert "could not open the project registry" not in result.stdout
+    contract = f"Factory Console v{factory_console.__version__} — serving {_MINIMAL} at "
+    assert contract in result.stdout
+    state = captured["app"].state  # type: ignore[union-attr]
+    assert state.project_registry is None
+    assert state.selection.pinned_root == _MINIMAL
+
+
+def test_fresh_boot_lists_exactly_the_session_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The dropdown on a first-ever boot: one row, the reserved ``session`` sentinel for
+    # the pinned root, ``registered: false`` (so the SPA offers "Add this project"
+    # rather than "Remove") and selected. An empty registry must contribute nothing —
+    # and, since the CLI does not auto-register, there is nothing for it to contribute.
+    server, captured = _capturing_server()
+    monkeypatch.setattr("factory_console.cli.uvicorn.Server", server)
+    monkeypatch.setattr("factory_console.cli.configure_logging", lambda level: None)
+
+    result = runner.invoke(
+        app,
+        [str(_MINIMAL), "--no-browser", "--port", "0"],
+        env={"FACTORY_CONSOLE_DB_PATH": str(tmp_path / "console.db")},
+    )
+    assert result.exit_code == 0, result.output
+
+    # No lifespan (a bare TestClient, not the context-manager form): the listing needs
+    # no watcher, and starting one would spin a real watchdog observer for an assertion
+    # about rows.
+    body = TestClient(captured["app"]).get("/api/v1/projects").json()  # type: ignore[arg-type]
+
+    assert body["total"] == 1
+    (row,) = body["items"]
+    assert row["id"] == SESSION_PROJECT_ID
+    assert row["path"] == str(_MINIMAL)
+    assert row["registered"] is False
+    assert row["selected"] is True
+    assert row["addedAt"] is None
+
+
+def test_boot_lists_a_pre_registered_second_project_beside_the_session_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The other half of the wiring: rows that were registered BEFORE this boot must show
+    # up, which is what proves the CLI opened the store the operator's
+    # FACTORY_CONSOLE_DB_PATH names rather than an empty one of its own. ``second/`` is
+    # the fixture a switch has somewhere to switch TO — a different project name and a
+    # disjoint ticket-id space from ``minimal/``.
+    db_path = tmp_path / "console.db"
+    registered = SqliteProjectRegistry(db_path).add_project(_SECOND)
+
+    server, captured = _capturing_server()
+    monkeypatch.setattr("factory_console.cli.uvicorn.Server", server)
+    monkeypatch.setattr("factory_console.cli.configure_logging", lambda level: None)
+
+    result = runner.invoke(
+        app,
+        [str(_MINIMAL), "--no-browser", "--port", "0"],
+        env={"FACTORY_CONSOLE_DB_PATH": str(db_path)},
+    )
+    assert result.exit_code == 0, result.output
+
+    body = TestClient(captured["app"]).get("/api/v1/projects").json()  # type: ignore[arg-type]
+
+    # Session row first (the boot project is what the dropdown opens on), then the
+    # registered one — present but not selected, since a pin never yields the selection.
+    assert [row["id"] for row in body["items"]] == [SESSION_PROJECT_ID, registered.id]
+    assert [row["selected"] for row in body["items"]] == [True, False]
+    assert body["items"][1]["path"] == str(_SECOND)
+    assert body["items"][1]["registered"] is True
 
 
 @pytest.mark.parametrize("pin", ["", "too-short"], ids=["blank", "short"])
