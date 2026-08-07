@@ -55,6 +55,9 @@ from the current directory looking for `docs/planning/tickets.json`, the same wa
   it unset; the token is per-session by design. If you do set it, it must be at least 16
   characters — a blank or too-short value is rejected with exit `2` rather than silently
   falling back to a generated token.
+- `FACTORY_CONSOLE_DB_PATH` — where the console keeps its **own** store; see
+  ["The console store"](#the-console-store) below. Unset (the normal case) means
+  `~/.factory-console/console.db`.
 
 ### The write token
 
@@ -128,6 +131,26 @@ for it, because anything on the command line is readable by every local process.
 If you pinned the token with the dev override above, the value is _not_ echoed — you
 already have it, and printing it would copy it into whatever captures stderr — so the
 line reads `X-Factory-Write-Token: <pinned, not echoed>`.
+
+### The console store
+
+Separately from the project it serves, the console has a small store of **its own**
+state — a SQLite database at `~/.factory-console/console.db`. Nothing belonging to a
+project is copied into it: tickets, run-state and roadmap are always read straight
+from that project's files.
+
+`FACTORY_CONSOLE_DB_PATH` overrides the location. It names the **file**, not a
+directory, so two runs can keep two separate stores side by side in one temporary
+directory — which is how the test suites stay out of your real one. Setting it to an
+empty value is rejected rather than treated as "use the default", since an empty
+override is almost always a variable someone meant to set and didn't.
+
+Neither the file nor its directory is created up front. The store is created **lazily,
+the first time something actually uses it**; the directory is created `0700` and the
+database file `0600`, because a later version keeps credentials in it. In particular
+the local `factory-console PATH` viewer described above **never creates it** — running
+the console over a project leaves no `~/.factory-console/` behind on a machine whose
+owner never asked for one.
 
 ## Exit codes
 

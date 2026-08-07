@@ -55,12 +55,13 @@ factory-console/
 │       │   ├── project.py
 │       │   ├── ticket.py                  # exports TICKET_ID_PATTERN
 │       │   ├── deps.py
+│       │   ├── registry.py                # RegisteredProject + RegistryEntry(Condition)          (T103)
 │       │   └── run_state.py
 │       ├── services/                      # orchestrators; no I/O
 │       │   ├── __init__.py
 │       │   ├── ticket_service.py                                                                  (T22)
 │       │   └── deps_service.py                                                                    (T23)
-│       ├── file_adapter/                  # the ONLY place that touches disk
+│       ├── file_adapter/                  # the only layer that reads the TARGET PROJECT's files
 │       │   ├── __init__.py
 │       │   ├── protocol.py                # FileAdapter Protocol                                  (T10)
 │       │   ├── fake.py                    # FakeFileAdapter                                       (T10)
@@ -70,6 +71,9 @@ factory-console/
 │       │   ├── ticket_md.py               # .md + front-matter parser + PathTraversal + TicketFileMissing (T13)
 │       │   ├── markdown_render.py         # markdown-it-py + bleach sanitization                  (T14)
 │       │   └── run_state.py               # run-state prober (read-only)                          (T15)
+│       ├── store/                         # the console's OWN writable DB (v3 — outside every project)
+│       │   ├── __init__.py                # docstring-only, re-export-free                        (T104)
+│       │   └── location.py                # ConsoleStoreSettings + resolve_db_path + ensure_store_dir (T104)
 │       └── _static/                       # BUILT SPA copied here at package time (gitignored)
 │
 ├── frontend/
@@ -138,6 +142,11 @@ factory-console/
 | Track | Owns |
 |---|---|
 | **foundation** | Everything above `server/factory_console/api|services|domain|file_adapter/` and above `frontend/src/`; CI + release + Dockerfile + scripts + Makefile + observability skeleton + docs stubs. |
-| **file-adapter** | `server/factory_console/{domain,file_adapter}/` + `tests/fixtures/projects/`. The ONLY layer that calls `open()`. |
+| **file-adapter** | `server/factory_console/{domain,file_adapter}/` + `tests/fixtures/projects/`. The only layer that reads the TARGET PROJECT's files. |
 | **backend** | `server/factory_console/{app.py, cli.py, api/, services/}`. Depends only on domain models + FileAdapter Protocol; never on `real.py` directly (except in `cli.py` and `create_dev_app`). |
 | **frontend** | `frontend/`. Consumes REST v1 only; never renders markdown client-side (uses server-rendered `bodyHtml`). |
+| **store** | `server/factory_console/store/` + `domain/registry.py`. The console's OWN durable state — the console DB, which lives outside every target project and is written by nothing else. |
+| **github** | `server/factory_console/github_adapter/` + `domain/github.py` + `services/github_service.py`. Talks to the GitHub API only; never reads a target project's files. |
+
+**`domain/` is shared vocabulary.** A track may ADD a new module there — named in its own ticket — but
+may NOT edit another track's module there.

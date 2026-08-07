@@ -19,5 +19,6 @@ The Python package `factory_console` (imported as `factory_console`, package roo
 - `factory_console/api/v1/` — HTTP handlers (T20–T24).
 - `factory_console/services/` — orchestrators calling the FileAdapter Protocol (T22–T23).
 - `factory_console/domain/` — Pydantic models (T07).
-- `factory_console/file_adapter/` — the ONLY layer that touches disk (T10–T17).
+- `factory_console/file_adapter/` — the only layer that reads the TARGET PROJECT's files (T10–T17).
+- `factory_console/store/` — the console's OWN writable DB, outside every project (v3, T104).
 - `factory_console/_static/` — built SPA copied here at package time (gitignored).
