@@ -27,7 +27,12 @@
 </script>
 
 <div class="min-h-screen bg-bg text-text">
-	<TopBar project={data.project} onReload={invalidateAll} />
+	<TopBar
+		project={data.project}
+		projects={data.projects}
+		selectedId={data.selectedId}
+		onReload={invalidateAll}
+	/>
 	<div class="mx-auto flex max-w-5xl justify-end px-4 pt-3">
 		<LiveIndicator status={$status} lastEvent={$lastEvent} />
 	</div>
