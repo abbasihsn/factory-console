@@ -1,9 +1,25 @@
-"""Integration tests for the v3.0 registry read endpoints (T112).
+"""Integration tests for the v3.0 registry endpoints — the reads (T112), the writes (T113).
 
-Both routes are driven over HTTP against a real ``create_app`` app, because what they
+All five routes are driven over HTTP against a real ``create_app`` app, because what they
 promise is a published CONTRACT the SPA generates types from: the field names, the
 ``{items, total}`` envelope, the ``condition`` vocabulary and the 200-with-a-``reason``
 answer are only actually asserted through a request.
+
+The three mutations are additionally the only routes here behind the write token, so
+each one's gate is asserted alongside its effect: the token is what stops another local
+process — or a drive-by browser request, since the console runs no CORS policy and no
+CSRF token — from making the console open an arbitrary path on this machine and serve
+it over HTTP. Whether a route is gated at all is pinned in one place in
+``test_api_write_token.py``; what is pinned HERE is that a rejected request also
+CHANGED NOTHING, which the gate table cannot see.
+
+The mutation tests that register a path use the REAL
+:class:`~factory_console.file_adapter.real.RealFileAdapter`, not the fake. ``POST
+/projects`` validates a candidate directory by discovering a project in it, and
+:meth:`~factory_console.file_adapter.fake.FakeFileAdapter.load_project` answers its
+seeded project for any path at all — so the fake would make the "this is not an App
+Factory project" refusal untestable, and every other add would pass for the wrong
+reason.
 
 The registry is T107's :class:`FakeProjectRegistry`, so nothing here needs a database.
 The PATHS, however, are real ``tmp_path`` directories built by :func:`_project_dir`,
@@ -37,15 +53,26 @@ from pydantic import ValidationError
 
 from factory_console.api.v1.projects import RegisteredProjectOut
 from factory_console.app import create_app
+from factory_console.config import WRITE_TOKEN_HEADER
 from factory_console.domain import Project
 from factory_console.domain.registry import RegisteredProject
 from factory_console.file_adapter import FakeFileAdapter
 from factory_console.file_adapter.discovery import MANIFEST_RELPATH
+from factory_console.file_adapter.protocol import FileAdapter
+from factory_console.file_adapter.real import RealFileAdapter
 from factory_console.services.project_selection import SESSION_PROJECT_ID, SelectionState
 from factory_console.store.fake_registry import FakeProjectRegistry
 
 _LIST_ROUTE = "/api/v1/projects"
 _CURRENT_ROUTE = "/api/v1/projects/current"
+# The project-scoped read the selection actually feeds, used to prove a switch moved
+# what EVERY endpoint answers rather than just what ``/projects/current`` reports.
+_PROJECT_ROUTE = "/api/v1/project"
+
+# The write token every mutation must present, and a same-length near-miss.
+PINNED_TOKEN = "pinned-write-token-for-tests"
+WRONG_TOKEN = "pinned-write-token-for-tesXX"
+AUTH = {WRITE_TOKEN_HEADER: PINNED_TOKEN}
 
 # ``chmod 000`` is meaningless for root (which bypasses the permission bits) and on
 # Windows (which has no such mode), so an ``unreadable`` case would silently assert the
@@ -72,8 +99,18 @@ def _project_dir(root: Path, *, manifest: bool = True, factory: bool = True) -> 
     return root
 
 
-def _make_app(project_root: Path, registry: FakeProjectRegistry | None = None) -> FastAPI:
-    """Build a real app; no route under test ever reads through the file adapter."""
+def _make_app(
+    project_root: Path,
+    registry: FakeProjectRegistry | None = None,
+    adapter: FileAdapter | None = None,
+) -> FastAPI:
+    """Build a real app; the read routes never read through the file adapter.
+
+    ``adapter`` defaults to a :class:`FakeFileAdapter` because that is true of every
+    read test. The add route is the one that DOES consult it — to decide whether a
+    candidate directory is an App Factory project — so those tests pass a
+    :class:`RealFileAdapter` and let the real discovery answer.
+    """
     project = Project(
         rootPath=Path("/proj"),
         ticketsManifestPath=Path("/proj/docs/planning/tickets.json"),
@@ -81,10 +118,20 @@ def _make_app(project_root: Path, registry: FakeProjectRegistry | None = None) -
         discoveredAt=datetime(2026, 1, 1),
     )
     return create_app(
-        FakeFileAdapter(project=project, tickets=[]),
+        adapter if adapter is not None else FakeFileAdapter(project=project, tickets=[]),
         version="0.0.0",
         project_root=project_root,
         project_registry=registry,
+        write_token=PINNED_TOKEN,
+    )
+
+
+def _real_app(tmp_path: Path, registry: FakeProjectRegistry | None = None) -> FastAPI:
+    """Build an app over the real adapter, pinned at a real project directory."""
+    return _make_app(
+        _project_dir(tmp_path / "pinned"),
+        FakeProjectRegistry() if registry is None else registry,
+        adapter=RealFileAdapter(),
     )
 
 
@@ -448,3 +495,412 @@ def test_a_row_round_trips_through_the_forbidding_wire_model(tmp_path: Path) -> 
         assert RegisteredProjectOut.model_validate(row).model_dump(mode="json") == row
         with pytest.raises(ValidationError, match="extra_forbidden"):
             RegisteredProjectOut.model_validate({**row, "lastOpenedAt": "2026-08-07T00:00:00Z"})
+
+
+# --------------------------------------------------------------------------- #
+# The write-token gate on all three mutations
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [{}, {WRITE_TOKEN_HEADER: WRONG_TOKEN}],
+    ids=["no-header", "wrong-header"],
+)
+def test_every_mutation_rejects_a_bad_token_and_changes_nothing(
+    headers: dict[str, str], tmp_path: Path
+) -> None:
+    # The gate has to fail CLOSED, not merely answer 401: an unauthenticated POST that
+    # still registered the path would have already granted the arbitrary-path read the
+    # token exists to withhold. So the registry and the selection are both re-read
+    # afterwards and must be exactly as they were.
+    registry = FakeProjectRegistry()
+    existing = registry.add_project(_project_dir(tmp_path / "existing"))
+    app = _real_app(tmp_path, registry)
+    candidate = _project_dir(tmp_path / "candidate")
+    client = TestClient(app)
+
+    rejected = [
+        client.post(_LIST_ROUTE, json={"path": str(candidate)}, headers=headers),
+        client.delete(f"{_LIST_ROUTE}/{existing.id}", headers=headers),
+        client.put(_CURRENT_ROUTE, json={"projectId": existing.id}, headers=headers),
+    ]
+
+    for response in rejected:
+        assert response.status_code == 401, response.request.method
+        error = response.json()["error"]
+        assert error["code"] == "write_token_invalid", response.request.method
+        # The opaque envelope the SPA's existing WriteTokenPrompt already handles.
+        assert set(error) == {"code", "message"}, response.request.method
+
+    assert [row.id for row in registry.list_projects()] == [existing.id]
+    assert app.state.selection.current_id() == SESSION_PROJECT_ID
+
+
+# --------------------------------------------------------------------------- #
+# POST /projects — registering a project
+# --------------------------------------------------------------------------- #
+
+
+def test_adding_a_project_returns_its_row_and_the_listing_then_has_it(tmp_path: Path) -> None:
+    # 201 with the created row, not a bodiless Location: the row carries three facts
+    # only the server holds — the minted id, the addedAt stamp and the probed condition
+    # — so a client handed a URL would have to immediately GET it to render the dropdown
+    # entry it just created.
+    app = _real_app(tmp_path)
+    candidate = _project_dir(tmp_path / "candidate")
+
+    client = TestClient(app)
+    response = client.post(_LIST_ROUTE, json={"path": str(candidate)}, headers=AUTH)
+
+    assert response.status_code == 201
+    row = response.json()
+    assert row["path"] == str(candidate)
+    assert row["name"] == "candidate"
+    assert row["registered"] is True
+    assert row["condition"] == "ok"
+    assert row["addedAt"] is not None
+    # The published shape is exactly the one the listing publishes.
+    assert RegisteredProjectOut.model_validate(row).model_dump(mode="json") == row
+    assert _by_id(_list(app)[1])[row["id"]] == row
+
+
+def test_adding_a_project_does_not_select_it(tmp_path: Path) -> None:
+    # Registration and selection are separate acts: conflating them would yank the board
+    # out from under an operator adding a second project while reading the first.
+    app = _real_app(tmp_path)
+    candidate = _project_dir(tmp_path / "candidate")
+
+    response = TestClient(app).post(_LIST_ROUTE, json={"path": str(candidate)}, headers=AUTH)
+
+    assert response.status_code == 201
+    assert response.json()["selected"] is False
+    assert app.state.selection.current_id() == SESSION_PROJECT_ID
+    assert _current(app)[1]["selected"]["id"] == SESSION_PROJECT_ID
+
+
+def test_a_supplied_name_wins_over_the_directory_name(tmp_path: Path) -> None:
+    # The stored name is the user's label and is never re-derived from the path, so a
+    # later rename of the directory cannot silently rename the project in the switcher.
+    app = _real_app(tmp_path)
+    candidate = _project_dir(tmp_path / "candidate")
+
+    response = TestClient(app).post(
+        _LIST_ROUTE, json={"path": str(candidate), "name": "My Console"}, headers=AUTH
+    )
+
+    assert response.status_code == 201
+    assert response.json()["name"] == "My Console"
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["relative/project", "", "   "],
+    ids=["relative", "blank", "whitespace"],
+)
+def test_a_path_that_is_not_an_identity_is_invalid_project_path_400(
+    path: str, tmp_path: Path
+) -> None:
+    # A relative path would be resolved against the SERVER's working directory —
+    # something the caller, on the other side of an HTTP boundary, cannot see and did
+    # not choose — so the row would name a directory nobody asked for. A blank one is
+    # the same mistake wearing a different hat: Path("") is Path("."), the cwd again.
+    # All three are the one stable code, with the difference carried in the message.
+    app = _real_app(tmp_path)
+
+    response = TestClient(app).post(_LIST_ROUTE, json={"path": path}, headers=AUTH)
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_project_path"
+    # The caller's own input is echoed back; the resolved form never is.
+    assert response.json()["error"]["details"]["path"] == path
+
+
+def test_a_directory_that_is_not_a_project_is_project_not_found_404(tmp_path: Path) -> None:
+    # The registry itself would happily hold this row — it records intent, not existence
+    # — so the refusal is the ENDPOINT's: registering a directory with no tickets
+    # manifest would put a permanently unusable row in the operator's dropdown.
+    app = _real_app(tmp_path)
+    plain = _project_dir(tmp_path / "plain", manifest=False)
+
+    response = TestClient(app).post(_LIST_ROUTE, json={"path": str(plain)}, headers=AUTH)
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "project_not_found"
+    assert _list(app)[1]["total"] == 1, "the session row only; nothing was registered"
+
+
+def test_registering_the_same_directory_twice_is_duplicate_project_path_409(
+    tmp_path: Path,
+) -> None:
+    # NOT idempotent, by design: a silent 200 could not be told apart from a fresh add,
+    # so the SPA could not say "you already track this" and offer to switch to it. The
+    # second spelling is the same directory reached through a `..`, which is what proves
+    # the conflict is decided on the CANONICAL path rather than on the literal string.
+    app = _real_app(tmp_path)
+    candidate = _project_dir(tmp_path / "candidate")
+    client = TestClient(app)
+
+    first = client.post(_LIST_ROUTE, json={"path": str(candidate)}, headers=AUTH)
+    second = client.post(
+        _LIST_ROUTE, json={"path": str(candidate / ".." / "candidate")}, headers=AUTH
+    )
+
+    assert first.status_code == 201
+    assert second.status_code == 409
+    error = second.json()["error"]
+    assert error["code"] == "duplicate_project_path"
+    # The existing row's id, so the client can offer "switch to it" instead of making
+    # the user hunt through the list for a project they cannot re-add.
+    assert error["details"]["existingId"] == first.json()["id"]
+    assert _list(app)[1]["total"] == 2, "the session row plus exactly one add"
+
+
+def test_an_unknown_body_field_is_rejected_rather_than_ignored(tmp_path: Path) -> None:
+    # extra="forbid" on the request that makes the console open an arbitrary path: a key
+    # the server does not understand is far likelier to be a caller sending a field this
+    # contract never agreed to than a harmless typo, and dropping it silently would let
+    # that caller believe an option took effect.
+    app = _real_app(tmp_path)
+    candidate = _project_dir(tmp_path / "candidate")
+
+    response = TestClient(app).post(
+        _LIST_ROUTE, json={"path": str(candidate), "select": True}, headers=AUTH
+    )
+
+    assert response.status_code == 422
+    assert _list(app)[1]["total"] == 1, "nothing was registered"
+
+
+def test_adding_needs_a_registry_to_add_to(tmp_path: Path) -> None:
+    # Pinned mode is a valid configuration for the READS (it is every pre-v3 app), but a
+    # mutation has no degraded answer available: there is no store to write the row to.
+    # That is a wiring fact about this deployment, not something the client can fix, so
+    # it fails like the writer seam does — a 500 with a stack trace in the server's log
+    # — rather than as a 4xx the SPA would render as user error.
+    app = _make_app(_project_dir(tmp_path / "pinned"), adapter=RealFileAdapter())
+    candidate = _project_dir(tmp_path / "candidate")
+
+    with pytest.raises(RuntimeError, match="project_registry"):
+        TestClient(app).post(_LIST_ROUTE, json={"path": str(candidate)}, headers=AUTH)
+
+
+# --------------------------------------------------------------------------- #
+# DELETE /projects/{project_id} — un-registering a project
+# --------------------------------------------------------------------------- #
+
+
+def test_removing_a_project_drops_it_from_the_listing(tmp_path: Path) -> None:
+    # 204 with an empty body: removal deletes one row from the console's OWN table and
+    # never touches the project directory, so there is no diff to preview and no
+    # artefact to report — unlike the ticket writes.
+    registry = FakeProjectRegistry()
+    row = registry.add_project(_project_dir(tmp_path / "tracked"))
+    app = _real_app(tmp_path, registry)
+
+    response = TestClient(app).delete(f"{_LIST_ROUTE}/{row.id}", headers=AUTH)
+
+    assert response.status_code == 204
+    assert response.content == b""
+    assert row.id not in _by_id(_list(app)[1])
+    assert row.path.is_dir(), "the project's own files are untouched"
+
+
+def test_removing_an_unknown_id_is_project_not_registered_404(tmp_path: Path) -> None:
+    # The port answers False rather than raising, so the 404 is the EDGE's decision. It
+    # is the right one: a 204 for an id the console never held would tell the SPA its
+    # dropdown is now in a state it is not.
+    app = _real_app(tmp_path)
+    unknown_id = "0" * 32
+
+    response = TestClient(app).delete(f"{_LIST_ROUTE}/{unknown_id}", headers=AUTH)
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "project_not_registered"
+
+
+def test_removing_the_session_row_is_session_project_not_removable_409(tmp_path: Path) -> None:
+    # The sentinel is published as a row on every listing, so a client legitimately
+    # holds this id — but it was never registered and there is nothing to delete. A 409
+    # says so; a 404 would claim the id names nothing, contradicting the listing that
+    # just handed it out, and a 422 would call a well-known id malformed.
+    app = _real_app(tmp_path)
+
+    response = TestClient(app).delete(f"{_LIST_ROUTE}/{SESSION_PROJECT_ID}", headers=AUTH)
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "session_project_not_removable"
+    assert SESSION_PROJECT_ID in _by_id(_list(app)[1]), "the row is still offered"
+
+
+def test_a_malformed_project_id_is_rejected_at_the_boundary(tmp_path: Path) -> None:
+    # The path param admits exactly two forms — 32 hex digits or the sentinel — so an id
+    # no row could ever answer to never reaches the store, and because neither form can
+    # contain a separator or a dot, an id can never name a parent directory.
+    app = _real_app(tmp_path)
+
+    response = TestClient(app).delete(f"{_LIST_ROUTE}/not-an-id", headers=AUTH)
+
+    assert response.status_code == 422
+
+
+def test_removing_the_selected_project_leaves_nothing_selected(tmp_path: Path) -> None:
+    # The persisted selection is cleared by the schema's ON DELETE SET NULL, but the
+    # PROCESS-LOCAL one would otherwise outlive its row — and every project-scoped read
+    # would then answer selected_project_not_registered instead of the
+    # no_project_selected that is actually true. Never a silent fallback to the pin.
+    registry = FakeProjectRegistry()
+    row = registry.add_project(_project_dir(tmp_path / "tracked"))
+    app = _real_app(tmp_path, registry)
+    client = TestClient(app)
+    assert client.put(_CURRENT_ROUTE, json={"projectId": row.id}, headers=AUTH).status_code == 200
+
+    assert client.delete(f"{_LIST_ROUTE}/{row.id}", headers=AUTH).status_code == 204
+
+    assert _current(app)[1] == {"selected": None, "reason": "no_selection"}
+    assert client.get(_PROJECT_ROUTE).json()["error"]["code"] == "no_project_selected"
+
+
+def test_removing_an_unselected_project_leaves_the_selection_alone(tmp_path: Path) -> None:
+    # Clearing on every delete would bump the watcher generation and tear down live
+    # updates for every SSE client whenever an operator tidied up an unrelated row.
+    registry = FakeProjectRegistry()
+    kept = registry.add_project(_project_dir(tmp_path / "kept"))
+    doomed = registry.add_project(_project_dir(tmp_path / "doomed"))
+    app = _real_app(tmp_path, registry)
+    client = TestClient(app)
+    client.put(_CURRENT_ROUTE, json={"projectId": kept.id}, headers=AUTH)
+
+    assert client.delete(f"{_LIST_ROUTE}/{doomed.id}", headers=AUTH).status_code == 204
+
+    assert _current(app)[1]["selected"]["id"] == kept.id
+
+
+# --------------------------------------------------------------------------- #
+# PUT /projects/current — switching project
+# --------------------------------------------------------------------------- #
+
+
+def test_selecting_a_project_moves_what_every_endpoint_answers(tmp_path: Path) -> None:
+    # The switch answers the SAME envelope GET /projects/current does, built from the
+    # same resolution, so the SPA can feed the response straight into the header it
+    # would otherwise refetch — and the move is visible to the project-scoped reads too,
+    # which is the whole point of gating this route.
+    registry = FakeProjectRegistry()
+    row = registry.add_project(_project_dir(tmp_path / "chosen"))
+    app = _real_app(tmp_path, registry)
+    client = TestClient(app)
+
+    response = client.put(_CURRENT_ROUTE, json={"projectId": row.id}, headers=AUTH)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "selected": {
+            "id": row.id,
+            "name": row.name,
+            "path": str(row.path),
+            "addedAt": response.json()["selected"]["addedAt"],
+            "registered": True,
+            "selected": True,
+            "condition": "ok",
+        },
+        "reason": None,
+    }
+    assert _current(app)[1] == response.json()
+    assert _by_id(_list(app)[1])[row.id]["selected"] is True
+    assert client.get(_PROJECT_ROUTE).json()["rootPath"] == str(row.path)
+
+
+def test_selecting_an_unknown_id_is_project_not_registered_404(tmp_path: Path) -> None:
+    # The one write the port makes fail loudly rather than succeed at pointing the whole
+    # console at nothing — and the selection must not have moved on the way.
+    registry = FakeProjectRegistry()
+    row = registry.add_project(_project_dir(tmp_path / "chosen"))
+    app = _real_app(tmp_path, registry)
+    client = TestClient(app)
+    client.put(_CURRENT_ROUTE, json={"projectId": row.id}, headers=AUTH)
+    unknown_id = "0" * 32
+
+    response = client.put(_CURRENT_ROUTE, json={"projectId": unknown_id}, headers=AUTH)
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "project_not_registered"
+    assert _current(app)[1]["selected"]["id"] == row.id, "the failed switch changed nothing"
+
+
+def test_selecting_the_session_row_switches_back_to_the_pinned_root(tmp_path: Path) -> None:
+    # A `factory-console PATH` boot must be able to switch BACK to the path the operator
+    # typed, so the reserved id is an ordinary target whenever a pin exists — and it is
+    # the ONLY selectable target in pinned mode, which is why it needs no registry.
+    registry = FakeProjectRegistry()
+    row = registry.add_project(_project_dir(tmp_path / "chosen"))
+    app = _real_app(tmp_path, registry)
+    client = TestClient(app)
+    client.put(_CURRENT_ROUTE, json={"projectId": row.id}, headers=AUTH)
+
+    response = client.put(_CURRENT_ROUTE, json={"projectId": SESSION_PROJECT_ID}, headers=AUTH)
+
+    assert response.status_code == 200
+    assert response.json()["selected"]["id"] == SESSION_PROJECT_ID
+    assert response.json()["selected"]["registered"] is False
+    assert app.state.selection.current_id() == SESSION_PROJECT_ID
+
+
+def test_selecting_the_session_row_without_a_pin_is_project_not_registered_404(
+    tmp_path: Path,
+) -> None:
+    # With no pin the sentinel names no directory at all, so accepting it would move the
+    # session onto nothing — the same "succeeded at selecting nothing" outcome an
+    # unknown registry id is refused for, reached by the one path the registry cannot
+    # see. Same statement to the caller, so the same code.
+    registry = FakeProjectRegistry()
+    app = _real_app(tmp_path, registry)
+    app.state.selection = SelectionState(pinned_root=None, registry=registry)
+
+    response = TestClient(app).put(
+        _CURRENT_ROUTE, json={"projectId": SESSION_PROJECT_ID}, headers=AUTH
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "project_not_registered"
+    assert _current(app)[1] == {"selected": None, "reason": "no_selection"}
+
+
+def test_selecting_a_project_whose_path_is_gone_succeeds_and_names_the_reason(
+    tmp_path: Path,
+) -> None:
+    # A degraded condition is explicitly NOT a precondition for selecting: selecting a
+    # project whose directory has been deleted is exactly what an operator does in order
+    # to then remove the row, so the switch must succeed and the CONSEQUENCE be named —
+    # rather than the switch failing opaquely and stranding them on the project they
+    # were trying to leave.
+    registry = FakeProjectRegistry()
+    (tmp_path / "gone").mkdir()
+    row = registry.add_project(tmp_path / "gone")
+    app = _real_app(tmp_path, registry)
+    row.path.rmdir()
+
+    client = TestClient(app)
+    response = client.put(_CURRENT_ROUTE, json={"projectId": row.id}, headers=AUTH)
+
+    assert response.status_code == 200
+    assert response.json() == {"selected": None, "reason": "selected_project_missing"}
+    # The selection really did move, and the project-scoped reads now refuse with the
+    # named 409 rather than falling back to the pinned root.
+    assert app.state.selection.current_id() == row.id
+    refused = client.get(_PROJECT_ROUTE)
+    assert refused.status_code == 409
+    assert refused.json()["error"]["code"] == "selected_project_unavailable"
+    # Which is what makes the row removable from the state it is now in.
+    assert client.delete(f"{_LIST_ROUTE}/{row.id}", headers=AUTH).status_code == 204
+
+
+def test_selecting_needs_a_registry_for_a_registered_id(tmp_path: Path) -> None:
+    # Pinned mode can never name another project, so an id here has no store to be
+    # looked up in; accepting it would move the session onto an id nothing answers to.
+    # Same wiring-bug verdict as the add route.
+    app = _make_app(_project_dir(tmp_path / "pinned"))
+    unknown_id = "0" * 32
+
+    with pytest.raises(RuntimeError, match="project_registry"):
+        TestClient(app).put(_CURRENT_ROUTE, json={"projectId": unknown_id}, headers=AUTH)

@@ -351,22 +351,41 @@ async def get_current_project_root(request: Request) -> Path:
     return row.path
 
 
-async def _read_registry(read: Callable[[], _ReadResult]) -> _ReadResult:
-    """Run a blocking registry read off the loop, naming an I/O failure as a 503.
+def _guard_registry_io(call: Callable[[], _ReadResult]) -> _ReadResult:
+    """Run ``call``, naming a failure to reach the console's own store as a 503.
 
-    The offload is the house rule; the ``except`` is why this is a helper rather than
-    two inline ``run_sync`` calls. An :class:`OSError` or :class:`sqlite3.Error` out
-    of the store means the console could not reach its OWN database — a missing or
-    unreadable state directory, a full or unmounted volume, a locked or malformed
-    db file — which is a statement about the console's health, not about the user's
-    selection. Left to propagate it would surface as a 500 with no code; as
-    :class:`RegistryUnreadable` it is a 503 that names the condition. The cause is
-    logged here, server-side, with ``exc_info`` — :class:`RegistryUnreadable`'s
-    client-visible message deliberately carries none of it, so the console's state
-    directory and OS-level detail never reach the browser.
+    The ``except`` half of :func:`_read_registry`, split out because one caller cannot
+    take the offload half. An :class:`OSError` or :class:`sqlite3.Error` out of the
+    store means the console could not reach its OWN database — a missing or unreadable
+    state directory, a full or unmounted volume, a locked or malformed db file — which
+    is a statement about the console's health, not about the user's selection. Left to
+    propagate it would surface as a 500 with no code; as :class:`RegistryUnreadable` it
+    is a 503 that names the condition. The cause is logged here, server-side, with
+    ``exc_info`` — :class:`RegistryUnreadable`'s client-visible message deliberately
+    carries none of it, so the console's state directory and OS-level detail never reach
+    the browser.
+
+    The second caller is
+    :meth:`~factory_console.services.project_selection.SelectionState.select`, which
+    :mod:`factory_console.api.v1.projects` must invoke ON the event-loop thread (its
+    on-change hook rebuilds a watcher that captures the running loop) and therefore
+    cannot route through :func:`_read_registry`. Sharing this function is what keeps a
+    locked database answering ONE code whichever side of the offload it is hit from.
     """
     try:
-        return await anyio.to_thread.run_sync(read)
+        return call()
     except (OSError, sqlite3.Error) as error:
         _LOGGER.error("project registry could not be read", exc_info=error)
         raise RegistryUnreadable() from error
+
+
+async def _read_registry(read: Callable[[], _ReadResult]) -> _ReadResult:
+    """Run a blocking registry call off the loop, naming an I/O failure as a 503.
+
+    The offload is the house rule (``ARCHITECTURE.md``, Cross-cutting →
+    **Concurrency**) and applies to registry WRITES as much as to reads — the v3.0
+    mutation routes hand their whole handler body through here for exactly that reason.
+    :func:`_guard_registry_io` is the failure mapping, applied inside the worker thread
+    so both callers share one translation.
+    """
+    return await anyio.to_thread.run_sync(partial(_guard_registry_io, read))
