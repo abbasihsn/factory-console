@@ -72,8 +72,22 @@
 	// last said is selected.
 	const shownId = $derived(pendingId ?? selectedId ?? '');
 
+	// The last entry of the dropdown is a NAVIGATION, not a project, so it needs a
+	// value no minted project id can collide with — the id is the only thing a
+	// `<select>` change hands back, and the two must never be confused.
+	const MANAGE_VALUE = '__manage__';
+
 	function handleChange(event: Event): void {
-		const id = (event.currentTarget as HTMLSelectElement).value;
+		const select = event.currentTarget as HTMLSelectElement;
+		const id = select.value;
+		if (id === MANAGE_VALUE) {
+			// Restore the control before leaving: this switcher lives in `TopBar` and
+			// survives the navigation, so a `<select>` left showing "Manage projects…"
+			// would sit over every route claiming that is the current project.
+			select.value = shownId;
+			void goto('/projects');
+			return;
+		}
 		// Re-selecting the current project is a no-op: the write would be idempotent
 		// anyway, but there is no reason to spend a round-trip and a full reload on
 		// it — and it is also how the user backs out of a failed attempt.
@@ -175,14 +189,13 @@
 				     server accepts a switch onto it, and `+layout.ts`'s project read then
 				     treats the resulting 409 as fatal, replacing the whole shell
 				     (switcher included) with no way back to a working project. -->
-				<option
-					value={project.id}
-					title={project.path}
-					disabled={project.condition !== 'ok'}
-				>
+				<option value={project.id} title={project.path} disabled={project.condition !== 'ok'}>
 					{project.name}{project.condition === 'ok' ? '' : ' (unavailable)'}
 				</option>
 			{/each}
+			<!-- Trailing, after every project: the registry management route, where a
+			     row can be added or removed rather than merely switched to. -->
+			<option value={MANAGE_VALUE}>Manage projects…</option>
 		</select>
 
 		{#if tokenNeeded}

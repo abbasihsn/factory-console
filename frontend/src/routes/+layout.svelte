@@ -3,6 +3,7 @@
 	import { invalidateAll } from '$app/navigation';
 	import TopBar from '$lib/components/TopBar.svelte';
 	import LiveIndicator from '$lib/components/LiveIndicator.svelte';
+	import ProjectStatusBanner from '$lib/components/ProjectStatusBanner.svelte';
 	import { createLiveStore } from '$lib/stores/live';
 	import { onMount, type Snippet } from 'svelte';
 	import type { LayoutData } from './$types';
@@ -24,6 +25,16 @@
 		// Re-runs on each new event; the initial bump of 0 is skipped.
 		if ($bump > 0) invalidateAll();
 	});
+
+	// The registry row the shell is serving, for the condition banner below the
+	// top bar. `null` covers single-project mode (no registry rows at all), a
+	// selection the registry cannot name, and the reserved unregistered `session`
+	// row: a `factory-console PATH` boot with no `.factory/` dir is the ORDINARY
+	// state of a fresh clone, not a fault, and the banner must not fire for it —
+	// only for a row someone actually registered.
+	const selectedProject = $derived(
+		data.projects.find((project) => project.id === data.selectedId && project.registered) ?? null
+	);
 </script>
 
 <div class="min-h-screen bg-bg text-text">
@@ -33,6 +44,7 @@
 		selectedId={data.selectedId}
 		onReload={invalidateAll}
 	/>
+	<ProjectStatusBanner project={selectedProject} />
 	<div class="mx-auto flex max-w-5xl justify-end px-4 pt-3">
 		<LiveIndicator status={$status} lastEvent={$lastEvent} />
 	</div>

@@ -44,6 +44,8 @@ Within a few seconds the console discovers the project, starts a local server on
 - A **roadmap** (`/roadmap`) rendering the project's `ROADMAP.md` as milestone sections.
 - **Run visibility** (`/runs`) — what the factory did per ticket: run state, PR link, outcome, and receipt, with every missing artifact named as missing rather than left blank — see [Runs](docs/usage.md#runs).
 - **Spend visibility** (`/spend`) — what the factory cost, from its ledger: totals plus a breakdown by ticket, model, and agent level — see [Spend](docs/usage.md#spend).
+- **Project registry management** (`/projects`) — every project the console tracks, its probed condition, and per-row Select/Remove — see [Managing the registry](docs/usage.md#managing-the-registry).
+- A **project condition banner** under the top bar, on every route, naming a degraded project's registered condition and its remedy — see [Managing the registry](docs/usage.md#managing-the-registry).
 - **Live updates**: open pages auto-refresh over SSE when a ticket's run-state changes on disk, with a status indicator pill (and graceful fallback to the Reload button).
 
 Press Ctrl-C to stop. See [`docs/usage.md`](docs/usage.md) for flags, exit codes, and path resolution.

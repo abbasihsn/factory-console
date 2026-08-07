@@ -48,6 +48,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Isolate the console's own store
+        # Exported once via GITHUB_ENV rather than per-step, because EVERY step
+        # below can reach the store: pytest, the packaged-wheel smoke boot, and
+        # the CLI Playwright spawns. The harness already points itself at its own
+        # temp file (e2e global-setup, the integration conftest); this is the
+        # backstop for everything that does not, and the leak-guard step at the
+        # end of the job is what proves the pair of them worked.
+        #
+        # GITHUB_ENV, not a job-level `env:` block, because the value has to be
+        # RUNNER_TEMP-derived and the `runner` context is not available at job
+        # level — and a literal "$RUNNER_TEMP/..." in an `env:` value is never
+        # shell-expanded. It gets its own subdirectory rather than sitting at the
+        # root of RUNNER_TEMP, because creating the store chmods its parent
+        # directory to 0700, and that parent should be one the store owns and not
+        # the scratch dir every other step on the runner shares.
+        run: echo "FACTORY_CONSOLE_DB_PATH=$RUNNER_TEMP/factory-console-ci/console.db" >> "$GITHUB_ENV"
+
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
@@ -110,6 +127,23 @@ jobs:
           name: coverage-${{ matrix.os }}-${{ matrix.python }}
           path: coverage.xml
           if-no-files-found: error
+
+      - name: Assert the runner's home store is untouched
+        # The CI half of the harness's leak guard: the suites isolate themselves,
+        # this proves it rather than trusting it, so a future change that drops
+        # the isolation fails a check instead of quietly writing a registry into
+        # whatever home it runs in — a developer's, not just a throwaway runner's.
+        # always() because a suite that failed halfway can still have leaked, and
+        # that is exactly the run where you want to be told.
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -e "$HOME/.factory-console" ]; then
+            ls -la "$HOME/.factory-console" || true
+            echo "::error::$HOME/.factory-console exists after the suite: something ignored FACTORY_CONSOLE_DB_PATH and wrote the console store into the runner's real home."
+            exit 1
+          fi
+          echo "clean: no $HOME/.factory-console after the suite."
 
   docker:
     # Build and smoke-test the multi-stage image so the Dockerfile can't ship
