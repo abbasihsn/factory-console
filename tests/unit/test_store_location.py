@@ -164,6 +164,47 @@ def test_ensure_store_dir_refuses_the_home_directory(
         ensure_store_dir(tmp_path / DEFAULT_DB_FILENAME)
 
 
+def test_ensure_store_dir_refuses_the_home_directory_through_a_symlink(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The guard's two operands must be normalized the SAME way: Path.home() comes
+    # back unresolved, so a symlinked home (or an override typed through a
+    # symlinked ancestor) must still resolve to the same directory the guard
+    # compares against, not slip past because one side was resolved and the other
+    # wasn't.
+    real_home = tmp_path / "real-home"
+    real_home.mkdir()
+    home_link = tmp_path / "home-link"
+    home_link.symlink_to(real_home)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home_link))
+
+    with pytest.raises(ValueError, match="shared directory"):
+        ensure_store_dir(real_home / DEFAULT_DB_FILENAME)
+
+
 def test_ensure_store_dir_refuses_the_system_temp_root(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="shared directory"):
         ensure_store_dir(Path(tempfile.gettempdir()).resolve() / DEFAULT_DB_FILENAME)
+
+
+def test_ensure_store_dir_refuses_the_literal_tmp_path() -> None:
+    # The case that matters most in practice: an operator types the literal
+    # `/tmp`, not whatever `tempfile.gettempdir()` (`TMPDIR`) happens to hold. On
+    # macOS the two differ (`/tmp` is a symlink to `/private/tmp`, while
+    # `TMPDIR` is a per-process directory under `/private/var/folders/...`), so a
+    # guard that only checked `tempfile.gettempdir()` let this exact override
+    # through to `chmod(/private/tmp, 0o700)`.
+    with pytest.raises(ValueError, match="shared directory"):
+        ensure_store_dir(Path("/tmp") / DEFAULT_DB_FILENAME)
+
+
+def test_ensure_store_dir_tightens_every_directory_it_creates(tmp_path: Path) -> None:
+    # mkdir(parents=True, mode=...) applies `mode` only to the deepest directory
+    # it creates — the intermediate ones it makes along the way are left at the
+    # umask default unless something else tightens them.
+    db_path = tmp_path / "nested" / "store" / DEFAULT_DB_FILENAME
+
+    parent = ensure_store_dir(db_path)
+
+    assert _mode_of(parent) == STORE_DIR_MODE
+    assert _mode_of(tmp_path / "nested") == STORE_DIR_MODE

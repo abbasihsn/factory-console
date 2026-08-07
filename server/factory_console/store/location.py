@@ -129,21 +129,45 @@ def ensure_store_dir(db_path: Path) -> Path:
     Refuses a ``db_path`` whose parent IS the home directory or the system temp
     root: ``FACTORY_CONSOLE_DB_PATH`` names a file, not a directory, so an override
     of ``~/console.db`` or ``/tmp/console.db`` would otherwise chmod a directory
-    this store does not own and everything else on the machine shares.
+    this store does not own and everything else on the machine shares. Both sides
+    of that check are resolved the same way ``resolve_db_path`` resolves its own
+    output, and the temp root is checked as both ``tempfile.gettempdir()`` (the
+    per-process ``TMPDIR``) and the literal ``/tmp`` — on macOS the two differ, so
+    an override of ``/tmp/console.db`` would otherwise resolve to ``/private/tmp``
+    and slip past a check that only knew about ``TMPDIR``.
 
-    The chmod on the parent runs unconditionally once that check passes, even when
-    the directory already existed, so a loose pre-existing ``~/.factory-console/``
-    is tightened rather than left as found. ``mkdir`` itself also requests 0700, so
-    a freshly-created directory is never briefly world-readable at the umask
-    default before the chmod line runs. The db FILE's 0600 mode is not this
-    function's business: ``schema.py`` sets it at the point it creates the file.
+    Any directory this call creates — the parent and, for a multi-level override,
+    the ancestors ``mkdir(parents=True, ...)`` had to create along with it — is
+    chmod'd to 0700 explicitly: ``mkdir``'s ``mode`` argument is applied only to
+    the deepest directory it creates, not to the intermediate ones made along the
+    way, so those would otherwise sit at the umask default. The chmod also runs
+    unconditionally on a parent that already existed, so a loose pre-existing
+    ``~/.factory-console/`` is tightened rather than left as found. The db FILE's
+    0600 mode is not this function's business: ``schema.py`` sets it at the point
+    it creates the file.
     """
     parent = db_path.parent
-    if parent in (Path.home(), Path(tempfile.gettempdir()).resolve()):
+    resolved_parent = resolve_or_none(parent)
+    if resolved_parent is None:
+        raise ValueError(f"could not resolve store directory {parent}")
+    shared_dirs = {
+        resolve_or_none(Path.home()),
+        resolve_or_none(Path(tempfile.gettempdir())),
+        resolve_or_none(Path("/tmp")),
+    }
+    if resolved_parent in shared_dirs:
         raise ValueError(
             "FACTORY_CONSOLE_DB_PATH must name a file inside its own directory, "
-            f"not directly under the shared directory {parent}"
+            f"not directly under the shared directory {resolved_parent}"
         )
-    parent.mkdir(parents=True, exist_ok=True, mode=STORE_DIR_MODE)
-    os.chmod(parent, STORE_DIR_MODE)
-    return parent
+    to_tighten = []
+    node = resolved_parent
+    while not node.exists():
+        to_tighten.append(node)
+        node = node.parent
+    resolved_parent.mkdir(parents=True, exist_ok=True, mode=STORE_DIR_MODE)
+    if resolved_parent not in to_tighten:
+        to_tighten.append(resolved_parent)
+    for directory in to_tighten:
+        os.chmod(directory, STORE_DIR_MODE)
+    return resolved_parent
