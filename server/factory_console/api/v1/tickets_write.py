@@ -33,18 +33,19 @@ are both BLOCKING filesystem work, so both are awaited through
 **Concurrency** rule — the writer does real disk I/O, which is the last thing that
 belongs on the event loop.
 
-*That offload is why every handler holds* :func:`~factory_console.api.deps.get_write_lock`
-*across its whole body.* The same **Concurrency** rule also promises a single writer ("the
-write path is serialized by the same single worker"), and while the load and the write ran
-inline the event loop delivered that for free — a second write could not begin until the
-first returned. Off-loaded onto anyio's thread pool they genuinely overlap, and a ticket
-write is a read-modify-write of ``tickets.json`` with no lock anywhere below this layer:
-two concurrent creates would each render a manifest from the same pre-write bytes and
-last-write-wins would silently drop one entry (whose ``.md`` file was written all the
-same), or both would pass the duplicate-id guard and neither get its 409. So the lock
-wraps the load AND the service call together — the critical section is the whole
-read-modify-write, not either half — restoring one-writer-at-a-time without putting the
-disk I/O back on the loop.
+*That offload is why every handler routes through* :func:`_load_and_write`, *which holds*
+:func:`~factory_console.api.deps.get_write_lock` *across its whole body.* The same
+**Concurrency** rule also promises a single writer ("the write path is serialized by the
+same single worker"), and while the load and the write ran inline the event loop delivered
+that for free — a second write could not begin until the first returned. Off-loaded onto
+anyio's thread pool they genuinely overlap, and a ticket write is a read-modify-write of
+``tickets.json`` with no lock anywhere below this layer: two concurrent creates would each
+render a manifest from the same pre-write bytes and last-write-wins would silently drop one
+entry (whose ``.md`` file was written all the same), or both would pass the duplicate-id
+guard and neither get its 409. So :func:`_load_and_write` wraps the load AND the service
+call together — the critical section is the whole read-modify-write, not either half — as
+the ONE place that pattern is implemented, so a future write route cannot add itself
+without the lock.
 
 **Two orderings decide what these routes are, and both are settled here.**
 
@@ -89,6 +90,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 from typing import Annotated, Any
@@ -104,6 +106,7 @@ from factory_console.api.deps import (
     get_write_lock,
 )
 from factory_console.api.write_token import WRITE_TOKEN_SECURITY, require_write_token
+from factory_console.domain import Project
 from factory_console.domain.write import TicketDraft, TicketEdit, WriteResult
 from factory_console.errors import FactoryConsoleError
 from factory_console.file_adapter.protocol import FileAdapter
@@ -141,6 +144,26 @@ def _log_write(verb: str, result: WriteResult) -> None:
     _LOGGER.info(
         write_log_line(verb, result.ticketId, result.applied, result.changedFiles),
     )
+
+
+async def _load_and_write(
+    write_lock: asyncio.Lock,
+    adapter: FileAdapter,
+    root: Path,
+    call: Callable[[Project], WriteResult],
+) -> WriteResult:
+    """Run one locked, off-loaded read-modify-write: load ``root``, then ``call`` it.
+
+    The ONE enforcement point for the single-writer invariant the module docstring
+    describes: acquires ``write_lock`` for the whole critical section, loads the
+    project through ``adapter``, then runs ``call`` against it — both blocking steps
+    off the event loop via ``anyio.to_thread.run_sync``. Every write handler below
+    calls this instead of re-deriving the lock-and-offload pattern, so a future
+    fourth write route gets the invariant by calling it rather than by remembering to.
+    """
+    async with write_lock:
+        project = await anyio.to_thread.run_sync(partial(adapter.load_project, root))
+        return await anyio.to_thread.run_sync(partial(call, project))
 
 
 def reject_unknown_query_params(request: Request) -> None:
@@ -249,11 +272,12 @@ async def create_ticket(
     they are one read-modify-write of the manifest, and that guard is what makes the
     duplicate-id ``WriteConflict`` above hold against a concurrent create of the same id.
     """
-    async with write_lock:
-        project = await anyio.to_thread.run_sync(partial(adapter.load_project, root))
-        result = await anyio.to_thread.run_sync(
-            partial(WriteService(writer, adapter).create, project, payload, dry_run=dry_run)
-        )
+    result = await _load_and_write(
+        write_lock,
+        adapter,
+        root,
+        lambda project: WriteService(writer, adapter).create(project, payload, dry_run=dry_run),
+    )
     _log_write("create", result)
     response.status_code = status.HTTP_201_CREATED if result.applied else status.HTTP_200_OK
     return result
@@ -281,17 +305,14 @@ async def edit_ticket(
     duration — an edit rewrites the manifest from what the load observed, so it is the same
     read-modify-write the module docstring's create case describes.
     """
-    async with write_lock:
-        project = await anyio.to_thread.run_sync(partial(adapter.load_project, root))
-        result = await anyio.to_thread.run_sync(
-            partial(
-                WriteService(writer, adapter).edit,
-                project,
-                ticket_id,
-                payload,
-                dry_run=dry_run,
-            )
-        )
+    result = await _load_and_write(
+        write_lock,
+        adapter,
+        root,
+        lambda project: WriteService(writer, adapter).edit(
+            project, ticket_id, payload, dry_run=dry_run
+        ),
+    )
     _log_write("edit", result)
     return result
 
@@ -318,10 +339,11 @@ async def delete_ticket(
     their combined duration — a delete rewrites the manifest from what the load observed,
     so it is the same read-modify-write the module docstring's create case describes.
     """
-    async with write_lock:
-        project = await anyio.to_thread.run_sync(partial(adapter.load_project, root))
-        result = await anyio.to_thread.run_sync(
-            partial(WriteService(writer, adapter).delete, project, ticket_id, dry_run=dry_run)
-        )
+    result = await _load_and_write(
+        write_lock,
+        adapter,
+        root,
+        lambda project: WriteService(writer, adapter).delete(project, ticket_id, dry_run=dry_run),
+    )
     _log_write("delete", result)
     return result

@@ -87,7 +87,7 @@ from factory_console.file_adapter.real_writer import RealFileWriter
 from factory_console.file_adapter.run_artifacts import RealRunArtifactReader
 from factory_console.file_adapter.watcher_real import RealFileWatcher
 from factory_console.logging import LOG_LEVELS, configure_logging, normalize_log_level
-from factory_console.store.sqlite_registry import SqliteProjectRegistry
+from factory_console.store.sqlite_registry import open_project_registry_or_warn
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -256,27 +256,10 @@ def main(
     # log-level/token still exits 2 and a missing project still exits 1 before the
     # console's own store is ever consulted. Construction is side-effect-free (T108:
     # it resolves a path and stores it, creating nothing), so the ordering costs
-    # nothing — it is about where a failure would surface.
-    #
-    # A store the console cannot even ADDRESS must not take the local viewer down:
-    # the single-project viewer never needed a database and must not start needing
-    # one, so the failure is a stderr warning and ``project_registry=None`` — which is
-    # PINNED MODE, exactly the pre-v3 behaviour, not a degraded app.
-    #
-    # ``ValueError`` and ``RuntimeError`` are the whole failure surface here, and the
-    # catch is deliberately not broader. Everything this constructor does is
-    # ``resolve_db_path()``, which raises ``ValueError`` for a blank or unresolvable
-    # ``FACTORY_CONSOLE_DB_PATH`` and whose ``Path.home()``/``expanduser()`` raise
-    # ``RuntimeError`` where no home directory can be determined. The failures an
-    # unwritable directory, a corrupt file or a too-new schema cause are NOT reachable
-    # from here at all — they happen at the registry's first METHOD call, inside
-    # ``SqliteProjectRegistry._conn``, where the endpoints already answer them as the
-    # named ``registry_unreadable`` 503 rather than as a dead boot.
-    try:
-        project_registry: SqliteProjectRegistry | None = SqliteProjectRegistry()
-    except (ValueError, RuntimeError) as exc:
-        typer.echo(f"warning: could not open the project registry: {exc}", err=True)
-        project_registry = None
+    # nothing — it is about where a failure would surface. See
+    # ``open_project_registry_or_warn`` for the degrade-to-pinned policy itself,
+    # shared with ``create_dev_app``.
+    project_registry = open_project_registry_or_warn(lambda msg: typer.echo(msg, err=True))
 
     try:
         resolved_port = _resolve_port(host, port)

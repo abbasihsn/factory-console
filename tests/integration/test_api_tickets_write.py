@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -71,7 +72,7 @@ from factory_console.api.write_token import WRITE_TOKEN_SCHEME_NAME
 from factory_console.app import create_app
 from factory_console.config import WRITE_TOKEN_HEADER
 from factory_console.domain import Project
-from factory_console.file_adapter import FakeFileAdapter
+from factory_console.file_adapter import FakeFileAdapter, atomic_write
 from factory_console.file_adapter.fake_writer import FakeFileWriter
 from factory_console.logging import _LOG_FORMAT
 from factory_console.services.project_selection import SelectionState
@@ -888,20 +889,60 @@ SECOND_NEW_ID = "CAD-211"
 """A second fresh id, so the two concurrent creates below collide only on the manifest."""
 
 
-async def test_two_concurrent_creates_both_land_in_the_manifest(tmp_path: Path) -> None:
+SLOW_APPLY_SECONDS = 0.3
+"""Long enough that an UNLOCKED fast create can finish inside the slow one's window.
+
+Same "only a lower bound matters" shape as ``SLOW_PERSIST_SECONDS``
+(``test_api_selection_concurrency.py``): nothing here asserts an upper bound, so a
+loaded CI box makes this slower, never flaky.
+"""
+
+
+async def test_two_concurrent_creates_both_land_in_the_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # A create is a read-modify-write of ``tickets.json``, and both halves — the project
     # load and the write-service call — are handed to ``anyio.to_thread.run_sync``, whose
     # limiter admits many at once. So the event loop no longer serialises the write path on
     # its own, and unserialised these two requests each render a manifest from the same
     # pre-write bytes: last-write-wins drops one entry while still leaving its ``.md`` file
-    # on disk. ``app.state.write_lock`` is what closes that, and this is the proof — remove
-    # the ``async with write_lock`` from ``create_ticket`` and this can lose a ticket.
+    # on disk. ``app.state.write_lock`` is what closes that, and this is the proof.
+    #
+    # Forcing the interleaving, not relying on incidental thread-pool timing: SLOW
+    # (``NEW_ID``) is patched to ``time.sleep`` inside ``atomic_write.apply_changes`` —
+    # AFTER its own read/render of the pre-write manifest, BEFORE its own write — the same
+    # after-read/before-write shape ``SlowSelectRegistry``
+    # (``test_api_selection_concurrency.py``) uses for the selection race, and for the same
+    # reason: the sleep must land after the read so both requests are proven to have read
+    # the SAME pre-write bytes, not merely started close together. With ``write_lock`` held
+    # across the whole offloaded call, FAST cannot even begin its own read until SLOW
+    # releases it at the end of the sleep, so both land correctly. Remove the lock and FAST's
+    # entire read-modify-write completes, unblocked, DURING the sleep — so SLOW's later write,
+    # computed from the manifest before FAST's, clobbers FAST's entry when it finally lands.
     app, root = _real_app(tmp_path)
+
+    real_apply_changes = atomic_write.apply_changes
+
+    def _slow_apply_changes(project: Any, planned: Any) -> Any:
+        if any(change.relPath.endswith(f"{NEW_ID}.md") for change in planned):
+            time.sleep(SLOW_APPLY_SECONDS)
+        return real_apply_changes(project, planned)
+
+    monkeypatch.setattr(
+        "factory_console.file_adapter.atomic_write.apply_changes", _slow_apply_changes
+    )
+
     async with _client(app) as client:
-        first, second = await asyncio.gather(
-            client.post("/api/v1/tickets", json=_draft_body(NEW_ID), headers=AUTH),
-            client.post("/api/v1/tickets", json=_draft_body(SECOND_NEW_ID), headers=AUTH),
+        # The slow create starts first and is still inside its worker-thread sleep when
+        # the fast one begins, which is what puts two creates in flight.
+        slow_call = asyncio.create_task(
+            client.post("/api/v1/tickets", json=_draft_body(NEW_ID), headers=AUTH)
         )
+        await asyncio.sleep(0)
+        fast_call = asyncio.create_task(
+            client.post("/api/v1/tickets", json=_draft_body(SECOND_NEW_ID), headers=AUTH)
+        )
+        first, second = await asyncio.gather(slow_call, fast_call)
     assert first.status_code == 201
     assert second.status_code == 201
 

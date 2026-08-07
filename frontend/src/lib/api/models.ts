@@ -186,3 +186,9 @@ export type ProjectListResponse = components['schemas']['ProjectListResponse'];
  * 200 with a `reason`, never an error.
  */
 export type CurrentSelection = components['schemas']['CurrentSelectionResponse'];
+
+/** Request body for `POST /api/v1/projects` — the directory to track, and its label. */
+export type AddProjectRequest = components['schemas']['AddProjectRequest'];
+
+/** Request body for `PUT /api/v1/projects/current` — the id to switch to. */
+export type SelectProjectRequest = components['schemas']['SelectProjectRequest'];

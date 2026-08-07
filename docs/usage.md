@@ -149,24 +149,28 @@ empty value is rejected rather than treated as "use the default", since an empty
 override is almost always a variable someone meant to set and didn't.
 
 Neither the file nor its directory is created up front. The store is created **lazily,
-the first time something actually uses it**; the directory is created `0700` and the
-database file `0600`, because a later version keeps credentials in it. In particular
-the local `factory-console PATH` viewer described above **never creates it** — running
-the console over a project leaves no `~/.factory-console/` behind on a machine whose
-owner never asked for one.
+the first time something actually reads or writes it** — a registry endpoint call, not
+just the CLI boot — and the directory is created `0700` and the database file `0600`,
+because a later version keeps credentials in it. Starting `factory-console PATH` never
+creates it by itself (`SqliteProjectRegistry()` construction is side-effect-free), so a
+boot that calls no registry endpoint at all — a throwaway clone, a CI job, a Playwright
+run — leaves no `~/.factory-console/` behind; the first `GET /api/v1/projects`, same as
+the first `POST`, is what creates it.
 
 ## Multiple projects
 
+v3.0 lays the backend groundwork for multiple projects; the switcher UI itself — the
+header's dropdown, its **Add this project** button, and the no-selection prompt — is not
+part of this release and arrives with a later version. What is live today is the
+`/api/v1/projects` endpoint family: `POST` registers a directory, `GET` lists the
+session row plus every registered one (each with its `condition`), `PUT /current`
+switches which project every page reads from (live-update stream included, registering
+never switches, and switching never unregisters), and `DELETE /{id}` unregisters a row.
+
 The project you launch on is a **session** project: it is served for as long as the
 process lives and is deliberately **not** written to the console store, so running the
-console over a clone leaves no trace behind. To keep a project across runs, use the
-SPA's **Add this project** button (`POST /api/v1/projects` underneath) — that is the one
-act that registers it. Registered projects, plus the session one, fill the header's
-project **dropdown**; picking one switches what every page shows, live-update stream
-included. Registering never switches, and switching never unregisters. With nothing
-selected — a console whose registered projects you have not chosen between — pages say
-so and prompt you to pick one rather than guessing at a project on your behalf; the same
-happens when the selected project's directory has been moved away or made unreadable.
+console over a clone leaves no trace behind, unless something actually calls one of the
+endpoints above (see ["The console store"](#the-console-store) above).
 
 Starting the console **without** a project directory is not available yet: without a
 `PATH` (and with no App Factory project above the current directory) the CLI still exits

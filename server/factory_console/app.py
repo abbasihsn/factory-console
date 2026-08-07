@@ -492,7 +492,7 @@ def create_dev_app() -> FastAPI:
     from factory_console.file_adapter.real_writer import RealFileWriter
     from factory_console.file_adapter.run_artifacts import RealRunArtifactReader
     from factory_console.file_adapter.watcher_real import RealFileWatcher
-    from factory_console.store.sqlite_registry import SqliteProjectRegistry
+    from factory_console.store.sqlite_registry import open_project_registry_or_warn
 
     # Same exit-2-style handling the CLI gives this variable. A bare ValueError here
     # would surface as an unhandled traceback out of uvicorn's factory loader — and
@@ -508,14 +508,9 @@ def create_dev_app() -> FastAPI:
     # ``scripts/dev.sh`` exercises multi-project rather than a pinned-only app the
     # shipped binary does not match. Degrading to ``None`` on an unaddressable store
     # matters MORE here than in the CLI: ``--reload`` re-runs this factory on every
-    # save, so a raise would crash-loop the dev server. See the CLI's own construction
-    # for why ``ValueError``/``RuntimeError`` is the whole failure surface of a
-    # side-effect-free constructor.
-    try:
-        project_registry: SqliteProjectRegistry | None = SqliteProjectRegistry()
-    except (ValueError, RuntimeError) as exc:
-        print(f"warning: could not open the project registry: {exc}", file=sys.stderr)
-        project_registry = None
+    # save, so a raise would crash-loop the dev server. See
+    # ``open_project_registry_or_warn`` for the shared degrade-to-pinned policy.
+    project_registry = open_project_registry_or_warn(lambda msg: print(msg, file=sys.stderr))
 
     root = discover_project(None, Path.cwd())
     return create_app(

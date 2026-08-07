@@ -5,20 +5,27 @@
  * `runs.ts` and `spend.ts` are: this endpoint family carries a vocabulary of its
  * own — registry rows, the reserved `session` row, `condition`, the current
  * selection — that belongs together, and the switcher is its only consumer.
- * Every call goes through the shared {@link request}, so all five inherit the
+ * Every call goes through the shared {@link request}, so all four inherit the
  * same-origin refusal, the request timeout and the `ApiError` envelope.
  *
- * **The two reads send no token; all three mutations do.** The server gates only
+ * **The one read sends no token; all three mutations do.** The server gates only
  * the mutations (`POST`, `DELETE`, `PUT /current`), so the wrappers below take
  * the session write token and send it in {@link TOKEN_HEADER} exactly as
  * `client.ts`'s `sendWrite` does. A rejected token comes back as the `401`
  * `write_token_invalid` envelope with its code intact, which is what lets a
  * caller route it to the write-token prompt instead of rendering it as a failure
- * of the registry.
+ * of the registry. `GET /api/v1/projects/current` has no wrapper here yet — nothing
+ * in `frontend/src` consumes it until the switcher UI arrives.
  */
 import { request, TOKEN_HEADER } from './client';
 import { ApiError } from './errors';
-import type { CurrentSelection, ProjectListResponse, RegisteredProjectOut } from './models';
+import type {
+	AddProjectRequest,
+	CurrentSelection,
+	ProjectListResponse,
+	RegisteredProjectOut,
+	SelectProjectRequest
+} from './models';
 
 /** `DELETE /projects/{id}`'s success status — a bodiless `204`. See {@link removeProject}. */
 const NO_CONTENT = 204;
@@ -75,7 +82,7 @@ export async function listProjects(): Promise<RegisteredProjectOut[]> {
  * final component.
  */
 export function addProject(
-	body: { path: string; name?: string },
+	body: AddProjectRequest,
 	token: string
 ): Promise<RegisteredProjectOut> {
 	return request<RegisteredProjectOut>('projects', writeInit('POST', token, body));
@@ -129,5 +136,6 @@ export async function removeProject(id: string, token: string): Promise<void> {
  * is precisely the state an operator selects into in order to remove the row.
  */
 export function selectProject(id: string, token: string): Promise<CurrentSelection> {
-	return request<CurrentSelection>('projects/current', writeInit('PUT', token, { projectId: id }));
+	const body: SelectProjectRequest = { projectId: id };
+	return request<CurrentSelection>('projects/current', writeInit('PUT', token, body));
 }
