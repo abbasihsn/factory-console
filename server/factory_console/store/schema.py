@@ -152,11 +152,21 @@ def migrate(conn: sqlite3.Connection) -> int:
 
     Idempotent, and cheap when there is nothing to do: an up-to-date db costs one
     ``PRAGMA user_version`` read and no transaction, which is what lets callers call
-    this once per connection instead of arranging a boot-time migration hook.
+    this once per connection instead of arranging a boot-time migration hook. That
+    first read is only a fast path, though — it decides whether any work *might* be
+    needed, and never which migration to run.
 
-    Each pending migration runs in its own transaction that also carries its
-    ``PRAGMA user_version`` bump, so a failure mid-migration rolls the version back
-    with the DDL — a db is never left claiming a version whose tables did not commit.
+    If work might be needed, one ``BEGIN IMMEDIATE`` takes the write lock up front
+    (a plain ``BEGIN`` is DEFERRED and would take no lock until its first statement,
+    letting two of this module's per-operation connections both read version 0 and
+    both try to run migration 1, the loser failing on ``table projects already
+    exists``). The authoritative version is then re-read *inside* that transaction,
+    so a connection that waited on the lock sees whatever the winner committed and
+    runs only the migrations still genuinely pending.
+
+    The pending migrations and their ``PRAGMA user_version`` bumps share that one
+    transaction, so a failure mid-migration rolls the version back with the DDL — a
+    db is never left claiming a version whose tables did not commit.
     ``user_version`` cannot be parameterised (SQLite does not accept a placeholder in
     a PRAGMA), so the value is formatted into the statement; it is an ``int`` derived
     from this module's own tuple index and **never** from caller or client input.
@@ -174,18 +184,29 @@ def migrate(conn: sqlite3.Connection) -> int:
     current: int = conn.execute("PRAGMA user_version").fetchone()[0]
     if current > SCHEMA_VERSION:
         raise StoreSchemaTooNew(found=current, supported=SCHEMA_VERSION)
-    for index in range(current, SCHEMA_VERSION):
-        version = index + 1
-        conn.execute("BEGIN")
-        try:
+    if current == SCHEMA_VERSION:
+        # Fast path: nothing to do, so do not pay for a transaction or a write lock.
+        return SCHEMA_VERSION
+
+    # IMMEDIATE, not the default DEFERRED: take the write lock before reading the
+    # version we act on, so concurrent migrators serialise here rather than both
+    # deciding to run the same migration.
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        # Re-read under the lock: this — not the fast-path read above — is the
+        # authoritative version, and it may have moved while we waited.
+        current = conn.execute("PRAGMA user_version").fetchone()[0]
+        if current > SCHEMA_VERSION:
+            raise StoreSchemaTooNew(found=current, supported=SCHEMA_VERSION)
+        for index in range(current, SCHEMA_VERSION):
             _MIGRATIONS[index](conn)
-            # Literal, not a placeholder: PRAGMA takes no parameters. `version` is an
+            # Literal, not a placeholder: PRAGMA takes no parameters. The value is an
             # int from range() over our own tuple, so this is not an injection seam.
-            conn.execute(f"PRAGMA user_version = {version}")
-        except BaseException:
-            conn.execute("ROLLBACK")
-            raise
-        conn.execute("COMMIT")
+            conn.execute(f"PRAGMA user_version = {index + 1}")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT")
     return SCHEMA_VERSION
 
 

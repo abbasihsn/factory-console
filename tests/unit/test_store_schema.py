@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import sqlite3
 import stat
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -203,6 +205,47 @@ def test_a_failing_migration_rolls_back_its_version_bump(
 
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
         assert "half" not in _table_names(conn)
+
+
+def test_two_connections_migrating_at_once_do_not_both_run_migration_1(db_path: Path) -> None:
+    # The concurrency this module actually has: one connection per operation, called
+    # from anyio's worker threads. Both threads read user_version == 0 while a third
+    # connection holds the write lock, so both decide work is needed; the fix is that
+    # each then re-reads the version INSIDE its own BEGIN IMMEDIATE, so the loser
+    # skips the migration the winner committed instead of failing on
+    # `table projects already exists`.
+    with connect(db_path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
+
+    blocker = sqlite3.connect(db_path, isolation_level=None)
+    results: list[int] = []
+    errors: list[BaseException] = []
+
+    def _migrate_once() -> None:
+        try:
+            with connect(db_path) as conn:
+                results.append(migrate(conn))
+        except BaseException as exc:  # noqa: BLE001 - the failure IS the assertion
+            errors.append(exc)
+
+    try:
+        blocker.execute("BEGIN IMMEDIATE")
+        threads = [threading.Thread(target=_migrate_once) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        # Long enough for both threads to pass the fast-path read and be waiting on
+        # the write lock; well inside connect()'s 5s busy_timeout.
+        time.sleep(0.3)
+        blocker.execute("ROLLBACK")
+        for thread in threads:
+            thread.join(timeout=30)
+    finally:
+        blocker.close()
+
+    assert errors == []
+    assert results == [SCHEMA_VERSION, SCHEMA_VERSION]
+    with connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) AS n FROM console_state").fetchone()["n"] == 1
 
 
 def test_connection_is_closed_after_the_context_exits(db_path: Path) -> None:
