@@ -189,11 +189,7 @@
 				     server accepts a switch onto it, and `+layout.ts`'s project read then
 				     treats the resulting 409 as fatal, replacing the whole shell
 				     (switcher included) with no way back to a working project. -->
-				<option
-					value={project.id}
-					title={project.path}
-					disabled={project.condition !== 'ok'}
-				>
+				<option value={project.id} title={project.path} disabled={project.condition !== 'ok'}>
 					{project.name}{project.condition === 'ok' ? '' : ' (unavailable)'}
 				</option>
 			{/each}
