@@ -104,9 +104,10 @@ def classify_project_path(path: Path) -> RegistryEntryCondition:
     4. ``.factory/`` — probed in its OWN ``try``, after step 3 has answered, so a
        directory whose manifest is cleanly absent reports ``not_a_project`` rather
        than borrowing an error raised by a later probe it never needed. Absent →
-       ``no_factory_dir`` (an :class:`OSError`, again, ``unreadable``): a real, browsable project whose
-       run-state, runs and spend are legitimately missing rather than zero. This is
-       the ORDINARY state of a fresh clone, since ``.factory/`` is gitignored.
+       ``no_factory_dir`` (an :class:`OSError`, again, ``unreadable``): a real,
+       browsable project whose run-state, runs and spend are legitimately missing
+       rather than zero. This is the ORDINARY state of a fresh clone, since
+       ``.factory/`` is gitignored.
     5. Otherwise ``ok``.
 
     **A permission error is NEVER answered as the more permissive** ``not_a_project``.
