@@ -84,7 +84,7 @@ def _app(artifacts: FakeRunArtifactReader) -> FastAPI:
         status="todo",
         track="backend",
         milestone="v2.2",
-        filePath=FAKE_ROOT / "docs/planning/tickets/T98.md",
+        filePath=FAKE_ROOT / "docs/planning/tickets/T98.json",
         bodyMarkdown="# T98",
         bodyHtml="<h1>T98</h1>",
         raw={"id": "T98"},

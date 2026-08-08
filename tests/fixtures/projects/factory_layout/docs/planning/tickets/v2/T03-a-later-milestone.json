@@ -1,0 +1,14 @@
+{
+  "id": "T03",
+  "context": "The view over what the earlier milestone built.",
+  "approach": "1. Add the route.\n2. Render it.",
+  "critical_files": [
+    "src/t03.py"
+  ],
+  "interface_data": "N/A",
+  "verification": {
+    "commands": [
+      "pytest -q"
+    ]
+  }
+}

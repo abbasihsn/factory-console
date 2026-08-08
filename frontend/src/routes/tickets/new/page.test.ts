@@ -41,7 +41,21 @@ const project = {
 	discoveredAt: '2026-07-22T00:00:00Z'
 };
 
-const emptyInitial = { id: '', title: '', dependsOn: '', provides: '', files: '', body: '' };
+// Every field blank, matching `+page.ts`'s loader — including the five v3 content
+// fields, which start empty rather than pre-filled: a stub value would satisfy both
+// validators and tell a lane nothing.
+const emptyInitial = {
+	id: '',
+	title: '',
+	dependsOn: '',
+	provides: '',
+	context: '',
+	approach: '',
+	criticalFiles: '',
+	interfaceData: '',
+	verificationCommands: '',
+	verificationNotes: ''
+};
 
 function pageData(): PageData {
 	return { project, projects: [], selectedId: null, initial: emptyInitial };
@@ -71,10 +85,36 @@ describe('create ticket load', () => {
 	});
 });
 
-// Fill the two required fields and submit the create form.
+/**
+ * The five content fields as typed into the form, and the shape they reach the wire in.
+ *
+ * The form cannot be submitted without all five: they are required by
+ * `schemas/ticket.schema.json`, and `criticalFiles`/`verificationCommands` carry its
+ * `minItems: 1`. A helper that filled only id and title would leave submit disabled, so
+ * every case below drives the whole surface.
+ */
+const CONTENT_INPUT: ReadonlyArray<readonly [string, string]> = [
+	['Context', 'Why this ticket exists.'],
+	['Staged approach', 'Create the module, then wire it up.'],
+	['Critical files', 'src/a.ts'],
+	['Interface and data', 'N/A'],
+	['Verification commands', 'pnpm test']
+];
+
+const CONTENT_BODY = {
+	context: 'Why this ticket exists.',
+	approach: 'Create the module, then wire it up.',
+	criticalFiles: ['src/a.ts'],
+	interfaceData: 'N/A',
+	verificationCommands: ['pnpm test']
+};
+
 async function submitValidForm(id = 'T99', title = 'A brand new ticket'): Promise<void> {
 	await fireEvent.input(screen.getByLabelText('Ticket id'), { target: { value: id } });
 	await fireEvent.input(screen.getByLabelText('Title'), { target: { value: title } });
+	for (const [label, value] of CONTENT_INPUT) {
+		await fireEvent.input(screen.getByLabelText(label), { target: { value } });
+	}
 	await fireEvent.click(screen.getByRole('button', { name: 'Create ticket' }));
 }
 
@@ -104,8 +144,7 @@ describe('create ticket route', () => {
 			title: 'A brand new ticket',
 			dependsOn: [],
 			provides: '',
-			files: [],
-			bodyMarkdown: ''
+			...CONTENT_BODY
 		};
 		await waitFor(() =>
 			expect(previewWriteMock).toHaveBeenCalledWith({ verb: 'create', body: expectedBody }, TOKEN)
@@ -180,8 +219,7 @@ describe('create ticket route', () => {
 			title: 'A brand new ticket',
 			dependsOn: [],
 			provides: '',
-			files: [],
-			bodyMarkdown: ''
+			...CONTENT_BODY
 		};
 
 		await submitValidForm();
@@ -227,8 +265,7 @@ describe('create ticket route', () => {
 			title: 'A brand new ticket',
 			dependsOn: [],
 			provides: '',
-			files: [],
-			bodyMarkdown: ''
+			...CONTENT_BODY
 		};
 
 		await submitValidForm();

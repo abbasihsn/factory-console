@@ -1,0 +1,15 @@
+{
+  "id": "CAD-118",
+  "context": "With events landing in the store (CAD-100), the first thing members want to see is their streak. This service is a pure fold: an ordered event stream plus a reference date gives the current and longest streaks. No I/O, no state.",
+  "approach": "1. Project events onto the habit's expected-day calendar.\n2. Walk backward from the reference day for the current streak.\n3. Walk forward once for the longest run.",
+  "critical_files": [
+    "server/cadence/services/streaks.py",
+    "tests/unit/test_streaks.py"
+  ],
+  "interface_data": "Pure: `summarize(events, calendar, today) -> Streaks(current, longest)`. Dates are the member's local `occurred_on`; the service never re-derives a timezone.",
+  "verification": {
+    "commands": [
+      "pytest tests/unit/test_streaks.py -q"
+    ]
+  }
+}

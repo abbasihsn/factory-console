@@ -6,11 +6,19 @@
  * the server (Pydantic `TicketId` + the create/update endpoints) is the real
  * gate. This mirror gives the user immediate feedback but is NEVER the sole
  * validator.
+ *
+ * **A ticket is five structured fields now, not a markdown body.** App Factory v3
+ * stores ticket content as JSON (`schemas/ticket.schema.json`) and renders Markdown
+ * as a VIEW of it, so the form collects Context, Staged approach, Critical files,
+ * Interface & data and Verification separately rather than one free-text area. The
+ * schema sets `additionalProperties: false`, so there is nowhere to put prose that
+ * belongs to no field — which is why this is a change to what a user writes, not
+ * only to how it is stored.
  */
 
 // Type-only, so this module stays free of any runtime dependency on `$lib/api`
 // (which does fetch) and remains importable from a plain unit test.
-import type { Ticket, TicketCreate, TicketUpdate } from '$lib/api';
+import type { TicketCreate, TicketUpdate } from '$lib/api';
 
 /**
  * Allowed characters for a ticket id.
@@ -25,17 +33,18 @@ export const TICKET_ID_PATTERN = /^[A-Za-z0-9_.-]+$/;
 /**
  * Raw form values as held by the edit/create form.
  *
- * `dependsOn` and `files` are newline-delimited strings while being edited in a
- * textarea; they are also the two the API takes as arrays, so they convert with
- * {@link parseList} / {@link serializeList} to and from the `string[]` that
- * `TicketCreate` / `TicketUpdate` declare.
+ * `dependsOn`, `criticalFiles` and `verificationCommands` are newline-delimited
+ * strings while being edited in a textarea; all three are arrays on the wire, so they
+ * convert with {@link parseList} / {@link serializeList}.
  *
- * `provides` is neither: the write DTOs type it as a scalar `string` (see
- * `TicketDraft.provides` in `$lib/api/types.ts`, from `domain/write.py`'s
- * `provides: str = ""`), so it is edited in a single-line input and its value is sent
- * through as-is. Do not {@link parseList} it — the server stores the string verbatim
- * and the read model hands it back as a SINGLE-ELEMENT `Ticket.provides` list, so
- * anything that looks like a multi-entry list here collapses on the next round-trip.
+ * `provides` is not: the write DTOs type it as a scalar `string` (`domain/write.py`'s
+ * `provides: str = ""`), so it is edited in a single-line input and sent as-is. Do not
+ * {@link parseList} it — the server stores the string verbatim and the read model hands
+ * it back as a SINGLE-ELEMENT `Ticket.provides` list, so anything that looks like a
+ * multi-entry list here collapses on the next round-trip.
+ *
+ * `verificationNotes` is the ONE optional content field, matching the schema. Everything
+ * else is required, and the form says so before the server has to.
  */
 export interface TicketFormValues {
 	/** Ticket id — required in `create` mode, fixed by the route in `edit` mode. */
@@ -46,14 +55,30 @@ export interface TicketFormValues {
 	dependsOn: string;
 	/** The capability tag this ticket provides — a single scalar value on the wire. */
 	provides: string;
-	/** Newline-delimited list of file paths this ticket touches. */
-	files: string;
+	/** Why this ticket exists, what it delivers, how it fits the sub-version. */
+	context: string;
+	/** Ordered build steps — the files to create or modify, in order. */
+	approach: string;
 	/**
-	 * The ticket's markdown body. Optional so existing literals/tests that predate
-	 * the editor stay valid; it is NOT a validated/required field — the server
-	 * accepts an empty `bodyMarkdown`, so {@link validateTicketForm} ignores it.
+	 * Newline-delimited list of every file this ticket creates or modifies.
+	 *
+	 * Not a formality: this is the one content field the factory acts on mechanically.
+	 * It feeds the overlap filter that serializes two lanes which would otherwise edit
+	 * the same path off bases lacking each other's changes, so a short list does not
+	 * fail loudly — it silently weakens a concurrency guard. At least one entry.
 	 */
-	body?: string;
+	criticalFiles: string;
+	/** Inputs/outputs, contracts, entities touched — or the literal `N/A`. */
+	interfaceData: string;
+	/**
+	 * Newline-delimited shell commands that verify this slice, run from the repo root.
+	 *
+	 * At least one, per the schema: under INV-42 a verification that cannot run is not
+	 * a pass, so a ticket declaring no command can never be verified, only assumed.
+	 */
+	verificationCommands: string;
+	/** Optional context the commands need but cannot express (an env var, a service). */
+	verificationNotes?: string;
 }
 
 /**
@@ -83,106 +108,58 @@ export function serializeList(items: string[]): string {
 }
 
 /**
- * Build the PUT body for one set of form values, for `ticket` as it was loaded.
+ * The five content fields, in their wire shapes. Shared by create and edit.
  *
- * A mirrored field is sent only when there is something to say about it, and OMITTED
- * otherwise — never sent as `null` or empty just to fill the shape. Omitting is a
- * data-safety rule, not tidiness: every mirrored field exists twice, in the manifest
- * entry AND in the `.md` YAML header, but `Ticket` reads it from the manifest entry
- * alone. When the entry lacks a value the header still may have one, so sending the
- * form's empty value would overwrite the header's only correct copy — permanently,
- * since every later edit re-bases off the wiped value. The server refreshes a header
- * key only where the request actually supplied it, so omission is the protection.
- *
- * `provides` is a trimmed SCALAR, never {@link parseList}ed; {@link TicketFormValues}
- * says why. It gets the same both-sides-empty omission as its list siblings (see
- * {@link omitProvidesWhenNeverSet}) rather than the general omit-when-unchanged rule
- * those get: a non-empty value is always sent, because the scalar wire shape cannot
- * tell "unchanged" apart from "the user re-typed the same single value" the way a list
- * diff can, and a manifest that stores `provides` as a genuine multi-entry list is a
- * separate, documented open issue this guard does not attempt to fix.
+ * `verificationNotes` is omitted when blank rather than sent as `""`, matching the
+ * server's own rendering rule: the schema makes `notes` optional, and a key
+ * present-and-empty is a different document from a key absent — it would show as an
+ * added line in the diff of every ticket that has no notes, and it claims the author
+ * answered a question they did not.
  */
-export function toTicketUpdate(values: TicketFormValues, ticket: Ticket): TicketUpdate {
-	const dependsOn = parseList(values.dependsOn);
-	const provides = values.provides.trim();
-	const files = parseList(values.files);
+function contentFields(values: TicketFormValues) {
+	const notes = values.verificationNotes?.trim() ?? '';
+	return {
+		context: values.context.trim(),
+		approach: values.approach.trim(),
+		criticalFiles: parseList(values.criticalFiles),
+		interfaceData: values.interfaceData.trim(),
+		verificationCommands: parseList(values.verificationCommands),
+		...(notes.length === 0 ? {} : { verificationNotes: notes })
+	};
+}
 
+/**
+ * Build the PUT body for one set of form values.
+ *
+ * **THE OMIT-WHEN-NEVER-SET GUARD IS GONE, and its disappearance is the point.** It
+ * existed to protect a value that lived in TWO places — the manifest entry and the
+ * ticket `.md`'s YAML header — from an edit that meant to touch neither: sending the
+ * form's empty value would overwrite the header's only correct copy, permanently, since
+ * every later edit re-based off the wiped one. A v3 ticket has no header. Every field
+ * lives in exactly one file, the content file is replaced wholesale, and the manifest
+ * entry is still merged for the keys this form does not name. There is no second copy
+ * left to destroy, so the guard now protects nothing and only hides what is being sent.
+ *
+ * `track` and `milestone` are still omitted, for a different and surviving reason: this
+ * form does not collect them, so sending anything would be inventing a value. The server
+ * refreshes a field only where the request supplied it.
+ */
+export function toTicketUpdate(values: TicketFormValues): TicketUpdate {
 	return {
 		title: values.title.trim(),
-		...(ticket.track == null ? {} : { track: ticket.track }),
-		...(ticket.milestone == null ? {} : { milestone: ticket.milestone }),
-		...omitWhenNeverSet('dependsOn', dependsOn, ticket.dependsOn),
-		...omitWhenNeverSet('files', files, ticket.files),
-		...omitProvidesWhenNeverSet(provides, ticket.provides),
-		bodyMarkdown: values.body ?? ''
-		// `TicketUpdate` still declares `provides` REQUIRED (stale codegen: the server
-		// schema itself defaults it to `""`, `pnpm codegen` against a running backend
-		// would drop the `required` entry) — the object above can omit it in the
-		// both-empty case, so the return is asserted rather than structurally matched.
+		dependsOn: parseList(values.dependsOn),
+		provides: values.provides.trim(),
+		...contentFields(values)
 	} as TicketUpdate;
-}
-
-/**
- * One mirrored list field's entry in the PUT body — or nothing at all, when the field
- * is empty on BOTH sides, where sending it could only destroy something.
- *
- * Omits only when the form and the loaded ticket are both empty, so nothing a user can
- * express is lost: entries they add are sent, and CLEARING a field the ticket really
- * had is still sent, because `loaded` is non-empty there and the clear is deliberate.
- * See {@link toTicketUpdate} for why omission is what protects the `.md` header.
- */
-function omitWhenNeverSet<K extends 'dependsOn' | 'files'>(
-	key: K,
-	value: readonly string[],
-	loaded: readonly string[] | undefined
-): Partial<Pick<TicketUpdate, K>> {
-	const isEmpty = value.length === 0 && (loaded ?? []).length === 0;
-	return isEmpty ? {} : ({ [key]: value } as Pick<TicketUpdate, K>);
-}
-
-/**
- * `provides`'s own both-sides-empty omit guard — the scalar counterpart of
- * {@link omitWhenNeverSet}.
- *
- * Omits ONLY when the typed value and the loaded ticket's `provides` are both empty.
- * That is the one case omission is safe despite `provides` having no `?` in the
- * generated type: the server defaults an omitted `provides` to `""` (`TicketEdit.
- * provides: str = ""`), which is exactly the value this guard would otherwise have
- * sent — so the manifest entry ends up identical either way, while omitting also
- * keeps the field out of `model_fields_set`, so a `.md` header that independently
- * carries a `provides` this ticket's manifest entry does not is left alone instead of
- * being overwritten with an empty string by an unrelated edit (e.g. a title fix).
- * A non-empty value is always sent — see {@link toTicketUpdate} for why that case is
- * not further protected here.
- */
-function omitProvidesWhenNeverSet(
-	value: string,
-	loaded: readonly string[] | undefined
-): Partial<Pick<TicketUpdate, 'provides'>> {
-	const isEmpty = value.length === 0 && (loaded ?? []).length === 0;
-	return isEmpty ? {} : ({ provides: value } as Pick<TicketUpdate, 'provides'>);
 }
 
 /**
  * Build the POST body for one set of form values, in CREATE mode.
  *
- * The deliberate counterpart to {@link toTicketUpdate}, and pointedly SIMPLER: create
- * has NO "omit when never set" guard. That guard exists only to protect a value that
- * already lives on disk (the manifest entry versus the `.md` YAML header) from being
- * wiped by an edit that never meant to touch it — a new ticket has neither, so there
- * is nothing to preserve and every field is sent exactly as typed. A blank
- * `dependsOn` / `files` / `provides` here is a real "no deps / no files / no
- * capability" for the ticket being created, not a signal to leave something alone.
- *
- * Field handling matches the shared {@link TicketFormValues} contract: `dependsOn`
- * and `files` are {@link parseList}ed from their newline textareas into `string[]`;
- * `provides` is a trimmed SCALAR, never {@link parseList}ed (a multi-entry value would
- * collapse to one element on the next read); `id` and `title` are trimmed; and the
- * optional `body` becomes `bodyMarkdown`, defaulted to `''` on the client because the
- * server's `bodyMarkdown` is a REQUIRED field with no default of its own (unlike the
- * adjacent `provides`, which defaults to `""` server-side) — omitting it would 422, so a
- * string must always be sent. `track` / `milestone` are intentionally absent — `TicketForm` does not
- * collect them (see its header note), and both default server-side.
+ * Now identical in shape to {@link toTicketUpdate} plus the `id`, which is what the
+ * server's own DTOs look like since `TicketDraft` became `TicketEdit` plus an id. The
+ * two used to diverge because edit carried the header-protection guard create had no
+ * need for; with that gone, so is the divergence.
  */
 export function toTicketCreate(values: TicketFormValues): TicketCreate {
 	return {
@@ -190,10 +167,25 @@ export function toTicketCreate(values: TicketFormValues): TicketCreate {
 		title: values.title.trim(),
 		dependsOn: parseList(values.dependsOn),
 		provides: values.provides.trim(),
-		files: parseList(values.files),
-		bodyMarkdown: values.body ?? ''
-	};
+		...contentFields(values)
+	} as TicketCreate;
 }
+
+/** The required content fields and the message shown when each is blank. */
+const REQUIRED_TEXT_FIELDS: ReadonlyArray<[keyof TicketFormValues, string]> = [
+	['context', 'Context is required — why this ticket exists and what it delivers.'],
+	['approach', 'Staged approach is required — the ordered build steps.'],
+	['interfaceData', 'Interface & data is required — write N/A if there is none.']
+];
+
+/** The required LIST fields and the message shown when each parses to nothing. */
+const REQUIRED_LIST_FIELDS: ReadonlyArray<[keyof TicketFormValues, string]> = [
+	['criticalFiles', 'At least one critical file — the overlap filter reads this list.'],
+	[
+		'verificationCommands',
+		'At least one verification command — a check that cannot run is not a pass.'
+	]
+];
 
 /**
  * Validate a ticket form.
@@ -203,8 +195,15 @@ export function toTicketCreate(values: TicketFormValues): TicketCreate {
  * - `id` is required ONLY in `create` mode. In `edit` mode the id is fixed by the
  *   route, so a blank id is not a "required" error there.
  * - Whenever an `id` IS provided (either mode), it must match
- *   {@link TICKET_ID_PATTERN}; a non-matching id (spaces, slashes, etc.) is an
- *   error.
+ *   {@link TICKET_ID_PATTERN}; a non-matching id (spaces, slashes, etc.) is an error.
+ * - Every content field except `verificationNotes` is required, mirroring the schema.
+ *   The two list fields must parse to at least one entry — a textarea holding only
+ *   whitespace passes "did you type something?" and answers nothing, which is exactly
+ *   the shape `minItems: 1` exists to reject.
+ *
+ * The messages say WHY rather than restating the rule, because these two fields are
+ * the ones a user is most likely to leave thin, and "at least one entry" does not
+ * explain what breaks when they do.
  *
  * @returns a per-field error map; an empty map means valid.
  */
@@ -226,6 +225,17 @@ export function validateTicketForm(
 		}
 	} else if (!TICKET_ID_PATTERN.test(id)) {
 		errors.id = 'Ticket id may only contain letters, digits, and _ . - characters.';
+	}
+
+	for (const [field, message] of REQUIRED_TEXT_FIELDS) {
+		if ((values[field] as string).trim().length === 0) {
+			errors[field] = message;
+		}
+	}
+	for (const [field, message] of REQUIRED_LIST_FIELDS) {
+		if (parseList(values[field] as string).length === 0) {
+			errors[field] = message;
+		}
 	}
 
 	return errors;

@@ -1,0 +1,16 @@
+{
+  "id": "CAD-100",
+  "context": "Everything in Cadence derives from one immutable fact stream: this member checked in on this day. The schema and the append-only event store are the foundation every later ticket folds over. A correction is a compensating event, never an update.",
+  "approach": "1. Define the habit and event tables.\n2. Add the append-only writer.\n3. Cover ordering and idempotency.",
+  "critical_files": [
+    "server/cadence/data/schema.py",
+    "server/cadence/data/event_store.py",
+    "tests/unit/test_event_store.py"
+  ],
+  "interface_data": "Exposes `EventStore.append()` and `EventStore.stream(habit_id)`. Append-only: no update or delete path exists.",
+  "verification": {
+    "commands": [
+      "pytest tests/unit/test_event_store.py -q"
+    ]
+  }
+}

@@ -1,9 +1,9 @@
 import { test, expect } from '@playwright/test';
 import { start, type DedicatedConsole } from './lib/dedicated-console';
 
-// The v2 write path, end to end in a real browser: edit an existing ticket and
+// The v3 write path, end to end in a real browser: edit an existing ticket and
 // create a new one, each through form → dry-run → diff review → save. These are
-// REAL writes to the manifest and the ticket markdown, so they can never run
+// REAL writes to the manifest and the ticket's JSON content file, so they can never run
 // against the shared fixture (contractually read-only) or the shared console
 // booted by global-setup — every other spec reads that same project and would
 // see the mutations. So this boots a DEDICATED console over a private temp COPY
@@ -44,13 +44,14 @@ test('editing: changing CAD-140s body previews a diff and persists on save', asy
 	// `start()` resolved before this test ran, so the handle is present.
 	const handle = dedicated!;
 
-	// The one line the whole test is keyed on: it must show up as an ADDED diff
+	// The one sentence the whole test is keyed on: it must show up as an ADDED diff
 	// line in the review dialog, then as rendered prose on the detail page.
-	const newBody = [
-		'# Habit heatmap calendar view',
-		'',
-		'Rewritten by the editing e2e so the diff has something unmistakable in it.'
-	].join('\n');
+	//
+	// It goes in `context` rather than a body, because a v3 ticket has no body — the
+	// content file is five structured fields and the Markdown page is rendered FROM it.
+	// So this asserts the round trip the format actually has: typed into a field, written
+	// as JSON, read back, and rendered under `## Context`.
+	const newContext = 'Rewritten by the editing e2e so the diff has something unmistakable in it.';
 
 	await test.step('the session is authorized before anything loads', async () => {
 		// `addInitScript` runs before any page script, so the store hydrates from
@@ -76,18 +77,20 @@ test('editing: changing CAD-140s body previews a diff and persists on save', asy
 	const editDialog = page.getByRole('dialog', { name: 'Edit CAD-140' });
 	const reviewDialog = page.getByRole('dialog', { name: 'Review changes' });
 
-	await test.step('submitting the rewritten body opens the diff review', async () => {
+	await test.step('submitting the rewritten context opens the diff review', async () => {
 		await expect(editDialog).toBeVisible();
-		// The body field is CodeMirror's contenteditable surface, named by the
-		// `ariaLabel` MarkdownEditor lands on it.
-		await editDialog.getByRole('textbox', { name: 'Ticket body' }).fill(newBody);
+		// Seeded from `ticket.content`, so the other four fields already hold CAD-140's
+		// real values and only this one is rewritten — which is what makes the diff below
+		// a one-field change rather than a whole-file replacement.
+		await editDialog.getByRole('textbox', { name: 'Context' }).fill(newContext);
 		await editDialog.getByRole('button', { name: 'Save changes' }).click();
 	});
 
 	await test.step('the diff shows the rewrite before anything is written', async () => {
 		await expect(reviewDialog).toBeVisible();
-		// One span per diff line, so these regexes pin the +/- prefix: the new
-		// sentence is added and the old opening line is removed.
+		// One span per diff line, so these regexes pin the +/- prefix: the new sentence is
+		// added and the old context removed. The diff is of the ticket's JSON content
+		// file, so both lines are the `"context": ...` key — the field the user edited.
 		await expect(reviewDialog.getByText(/^\+.*Rewritten by the editing e2e/).first()).toBeVisible();
 		await expect(reviewDialog.getByText(/^-.*A year of a habit at a glance/).first()).toBeVisible();
 	});
@@ -98,8 +101,9 @@ test('editing: changing CAD-140s body previews a diff and persists on save', asy
 		// state and the route's `handleEditSaved` closes the form and `invalidateAll()`s.
 		await expect(reviewDialog).toBeHidden();
 		await expect(editDialog).toBeHidden();
-		// The re-run load re-fetches the ticket, so MarkdownBody now renders the body
-		// as it was actually written to disk.
+		// The re-run load re-fetches the ticket, so MarkdownBody now renders the ticket
+		// as it was actually written to disk — the JSON round-tripped back through the
+		// server's renderer, not the string the browser sent.
 		await expect(page.getByText('Rewritten by the editing e2e')).toBeVisible();
 	});
 });
@@ -126,7 +130,17 @@ test('editing: creating a ticket previews a diff and lands it in the list', asyn
 		await page.getByRole('textbox', { name: 'Title' }).fill('Streak recovery grace period');
 		await page.getByRole('textbox', { name: 'Depends on' }).fill('CAD-125');
 		await page.getByRole('textbox', { name: 'Provides' }).fill('A one-day grace window');
-		await page.getByRole('textbox', { name: 'Ticket body' }).fill('Created by the editing e2e.');
+		// All five content fields, because all five are required — the create button stays
+		// disabled until each is filled and both list fields parse to at least one entry.
+		// That is the point of driving it through the browser rather than the DTO: a form
+		// that could be submitted short of this would produce a ticket the factory refuses.
+		await page.getByRole('textbox', { name: 'Context' }).fill('Created by the editing e2e.');
+		await page
+			.getByRole('textbox', { name: 'Staged approach' })
+			.fill('1. Add the grace window.\n2. Test it.');
+		await page.getByRole('textbox', { name: 'Critical files' }).fill('frontend/src/lib/streaks.ts');
+		await page.getByRole('textbox', { name: 'Interface and data' }).fill('N/A');
+		await page.getByRole('textbox', { name: 'Verification commands' }).fill('pnpm test -- streaks');
 		await page.getByRole('button', { name: 'Create ticket' }).click();
 	});
 

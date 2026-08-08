@@ -105,8 +105,11 @@ def _draft_body(ticket_id: str = NEW_ID, **overrides: Any) -> dict[str, Any]:
         "milestone": "v2",
         "dependsOn": [DELETABLE_TODO_ID],
         "provides": "Participation and consistency across a team",
-        "files": ["frontend/src/routes/team/+page.svelte"],
-        "bodyMarkdown": "# Team analytics\n\nDashboard body.\n",
+        "context": "The team needs participation visible in one place.",
+        "approach": "1. Add the route.\n2. Render the chart.",
+        "criticalFiles": ["frontend/src/routes/team/+page.svelte"],
+        "interfaceData": "Reads GET /api/v1/team/analytics.",
+        "verificationCommands": ["pnpm test -- team"],
     }
     body.update(overrides)
     return body
@@ -120,8 +123,11 @@ def _edit_body(**overrides: Any) -> dict[str, Any]:
         "milestone": "v1",
         "dependsOn": [],
         "provides": "Monday-morning digest, rewritten",
-        "files": ["server/cadence/notifications/weekly_digest.py"],
-        "bodyMarkdown": "# Weekly digest\n\nRewritten body.\n",
+        "context": "The digest goes out Monday morning, rewritten.",
+        "approach": "1. Rework the template.\n2. Re-time the send.",
+        "criticalFiles": ["server/cadence/notifications/weekly_digest.py"],
+        "interfaceData": "N/A",
+        "verificationCommands": ["pytest tests/notifications -q"],
     }
     body.update(overrides)
     return body
@@ -214,7 +220,7 @@ async def test_edit_on_todo_ticket_applies_and_is_observable_via_get(tmp_path: P
 
         detail = (await client.get(f"/api/v1/tickets/{TODO_ID}")).json()
         assert detail["title"] == "Weekly digest email (revised)"
-        assert "Rewritten body." in detail["bodyMarkdown"]
+        assert "The digest goes out Monday morning, rewritten." in detail["bodyMarkdown"]
 
 
 async def test_delete_on_todo_ticket_applies_and_the_ticket_is_gone(tmp_path: Path) -> None:
@@ -617,7 +623,7 @@ async def test_a_created_ticket_can_be_deleted_but_not_edited_end_to_end(
 
         gone = await client.get(f"/api/v1/tickets/{NEW_ID}")
     assert gone.status_code == 404
-    assert not (root / "docs" / "planning" / "tickets" / f"{NEW_ID}.md").exists()
+    assert not (root / "docs" / "planning" / "tickets" / f"{NEW_ID}.json").exists()
 
 
 @pytest.mark.parametrize("ticket_id", NON_TODO_IDS)
@@ -774,7 +780,7 @@ async def _apply_write_verb(client: AsyncClient, verb: str) -> Any:
 
 def _ticket_file(ticket_id: str) -> str:
     """The root-relative ``_snapshot`` key of ``ticket_id``'s markdown file."""
-    return f"docs/planning/tickets/{ticket_id}.md"
+    return f"docs/planning/tickets/{ticket_id}.json"
 
 
 @pytest.mark.parametrize("verb", WRITE_VERBS)
@@ -924,7 +930,7 @@ async def test_two_concurrent_creates_both_land_in_the_manifest(
     real_apply_changes = atomic_write.apply_changes
 
     def _slow_apply_changes(project: Any, planned: Any) -> Any:
-        if any(change.relPath.endswith(f"{NEW_ID}.md") for change in planned):
+        if any(change.relPath.endswith(f"{NEW_ID}.json") for change in planned):
             time.sleep(SLOW_APPLY_SECONDS)
         return real_apply_changes(project, planned)
 

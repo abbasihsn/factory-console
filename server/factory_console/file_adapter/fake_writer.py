@@ -2,15 +2,15 @@
 
 The write-side counterpart of
 :class:`~factory_console.file_adapter.fake.FakeFileAdapter`: seeded with an
-in-memory manifest (the list of entry dicts), a ``{ticket_id: bodyMarkdown}`` map,
-an optional roadmap body, and an optional ``{ticket_id: RunState}`` map, it answers
+in-memory manifest (the list of entry dicts), a ``{ticket_id: TicketContentFields}``
+map, an optional roadmap body, and an optional ``{ticket_id: RunState}`` map, it answers
 every :class:`~factory_console.file_adapter.writer_protocol.FileWriter` method as a
 pure computation over that seeded state — no filesystem read, write, stat, or path
 resolution ever happens.
 
 Render semantics are NOT re-implemented here. The fake reuses the T57
 ``write_render`` PURE, module-level helpers (``_draft_to_entry`` / ``_merge_edit`` /
-``_serialize_manifest`` / ``_render_md`` / the ``_roadmap_*`` transforms) and the T58
+``_serialize_manifest`` / ``_render_ticket_json`` / the ``_roadmap_*`` transforms) and the T58
 ``write_diff.preview`` diff engine so a fake preview is computed by the identical
 code the real writer plans from — the single source of truth for what a create/edit/
 delete does, so the two can never drift. Only the *filesystem-touching* public
@@ -28,13 +28,15 @@ from typing import Any
 from factory_console.domain import Project, RunState, Ticket
 from factory_console.domain.write import (
     DiffPreview,
+    TicketContentFields,
     TicketDraft,
     TicketEdit,
     WriteResult,
 )
-from factory_console.file_adapter import write_diff, write_gate, write_render
+from factory_console.file_adapter import ticket_json, write_diff, write_gate, write_render
 from factory_console.file_adapter.manifest import manifest_entry_to_ticket_stub
 from factory_console.file_adapter.path_safety import PathTraversal
+from factory_console.file_adapter.ticket_json import render_ticket_markdown
 from factory_console.file_adapter.write_render import PlannedChange
 
 
@@ -50,35 +52,35 @@ class FakeFileWriter:
     def __init__(
         self,
         manifest: list[dict[str, Any]],
-        bodies: dict[str, str] | None = None,
+        contents: dict[str, TicketContentFields] | None = None,
         roadmap: str | None = None,
         run_states: dict[str, RunState] | None = None,
-        front_matter: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         """Seed the writer with pre-resolved, in-memory project state.
 
         ``manifest`` is the list of manifest ENTRIES (the ``tickets`` list);
-        ``bodies`` maps ``{ticket_id: bodyMarkdown}``; ``front_matter`` maps
-        ``{ticket_id: frontMatter}`` for tickets whose ``.md`` carries a YAML
-        fence (an unseeded id defaults to ``{}`` — a fence-less ``.md``);
-        ``roadmap`` is the roadmap body text (or ``None`` for a project without
-        one). ``run_states`` is normalized to ``{}`` when ``None`` (an unseeded id
-        then resolves to :attr:`RunState.unknown`), exactly like
-        :class:`FakeFileAdapter`. The seeded collections are copied so a caller's
-        dicts are never mutated in place by an apply.
+        ``contents`` maps ``{ticket_id: TicketContentFields}`` — the five structured
+        fields an App Factory v3 ticket's own file carries; ``roadmap`` is the roadmap
+        body text (or ``None`` for a project without one). ``run_states`` is normalized
+        to ``{}`` when ``None`` (an unseeded id then resolves to
+        :attr:`RunState.unknown`), exactly like :class:`FakeFileAdapter`. The seeded
+        collections are copied so a caller's dicts are never mutated in place by an apply.
 
-        ``front_matter`` is tracked separately from ``bodies`` because the ``.md``
-        diff's ``currentText`` must be the FULL rendered file (fence + body, via
-        :func:`write_render._render_md`), exactly what the real writer reads off
-        disk — while :meth:`_entry_to_ticket` needs the fence-less body. Storing
-        both keeps the fake's ``.md`` diff identical to the real writer's even for
-        a front-matter-bearing ticket.
+        ``contents`` REPLACED a ``bodies`` map of Markdown plus a parallel
+        ``front_matter`` map, and the pair is gone rather than renamed. They existed
+        because a ``.md`` diff's ``currentText`` had to be the full rendered file (fence
+        plus body) while the ticket model needed the fence-less body, so the fake had to
+        store the two halves separately to render both. A v3 content file has no such
+        split: one structured value renders the whole file AND the Markdown view, so one
+        map is the honest shape.
+
+        :class:`~factory_console.domain.write.TicketContentFields` rather than a plain
+        dict, deliberately — a seeded ticket is then constrained by the same model the
+        write DTOs are, so a fixture cannot seed a ticket the write path would refuse to
+        produce.
         """
         self._manifest = [dict(entry) for entry in manifest]
-        self._bodies = {} if bodies is None else dict(bodies)
-        self._front_matter = (
-            {} if front_matter is None else {tid: dict(fm) for tid, fm in front_matter.items()}
-        )
+        self._contents = {} if contents is None else dict(contents)
         self._roadmap = roadmap
         self._run_states = {} if run_states is None else dict(run_states)
 
@@ -112,14 +114,13 @@ class FakeFileWriter:
         planned = self._plan_create(project, draft)  # validates id + duplicate
         preview = write_diff.preview(draft.id, planned)
 
-        new_entry = write_render._draft_to_entry(draft)
+        new_entry = write_render._draft_to_entry(draft, self._content_relpath(draft.id))
         self._manifest.append(new_entry)
-        self._bodies[draft.id] = draft.bodyMarkdown
-        self._front_matter[draft.id] = write_render._client_front_matter(draft.frontMatter)
+        self._contents[draft.id] = draft
         self._apply_roadmap(project, planned)
 
         state = self._run_states.get(draft.id, RunState.unknown)
-        ticket = self._entry_to_ticket(project, new_entry, draft.bodyMarkdown, state)
+        ticket = self._entry_to_ticket(project, new_entry, draft, state)
         return self._applied_result(draft.id, preview, ticket)
 
     def edit_ticket(self, project: Project, ticket_id: str, edit: TicketEdit) -> WriteResult:
@@ -150,17 +151,15 @@ class FakeFileWriter:
         assert index is not None  # existence already validated by _plan_edit
         merged = write_render._merge_edit(self._manifest[index], edit)
         self._manifest[index] = merged
-        self._bodies[ticket_id] = edit.bodyMarkdown
-        # Overlay, not replace — the real writer preserves the on-disk header and
-        # refreshes the manifest-mirrored keys, so the seeded state must too or the
-        # fake's post-apply reads would diverge from production.
-        self._front_matter[ticket_id] = write_render._overlay_front_matter(
-            self._front_matter.get(ticket_id, {}), edit
-        )
+        # REPLACE, not overlay. The real writer replaces the content file for the reason
+        # its docstring gives — the schema forbids extra keys and requires every field,
+        # so there is nothing a merge could preserve — and the seeded state must follow
+        # or the fake's post-apply reads would diverge from production.
+        self._contents[ticket_id] = edit
         self._apply_roadmap(project, planned)
 
         state = self._run_states.get(ticket_id, RunState.unknown)
-        ticket = self._entry_to_ticket(project, merged, edit.bodyMarkdown, state)
+        ticket = self._entry_to_ticket(project, merged, edit, state)
         return self._applied_result(ticket_id, preview, ticket)
 
     def delete_ticket(self, project: Project, ticket_id: str) -> WriteResult:
@@ -187,14 +186,13 @@ class FakeFileWriter:
         # just-deleted ticket's final state — so the invariant stays satisfiable.
         state = self._run_states.get(ticket_id, RunState.unknown)
         snapshot_entry = self._manifest[index]
-        snapshot_body = self._bodies.get(ticket_id, "")
+        snapshot_content = self._contents.get(ticket_id)
 
         del self._manifest[index]
-        self._bodies.pop(ticket_id, None)
-        self._front_matter.pop(ticket_id, None)
+        self._contents.pop(ticket_id, None)
         self._apply_roadmap(project, planned)
 
-        ticket = self._entry_to_ticket(project, snapshot_entry, snapshot_body, state)
+        ticket = self._entry_to_ticket(project, snapshot_entry, snapshot_content, state)
         return self._applied_result(ticket_id, preview, ticket)
 
     # ------------------------------------------------------------------ #
@@ -209,16 +207,17 @@ class FakeFileWriter:
         self._require_safe_id(draft.id)
         if write_render._find_entry_index(self._manifest, draft.id) is not None:
             raise write_render.TicketAlreadyExists(draft.id)
-        new_entries = [*self._manifest, write_render._draft_to_entry(draft)]
+        new_entries = [
+            *self._manifest,
+            write_render._draft_to_entry(draft, self._content_relpath(draft.id)),
+        ]
         changes = [
             self._manifest_change(project, new_entries),
-            self._md_change(
+            self._content_change(
                 project,
                 draft.id,
-                current=self._current_md(draft.id),
-                new=write_render._render_md(
-                    write_render._client_front_matter(draft.frontMatter), draft.bodyMarkdown
-                ),
+                current=self._current_content(draft.id),
+                new=write_render._render_ticket_json(draft.id, draft),
             ),
         ]
         self._append_roadmap(
@@ -235,19 +234,28 @@ class FakeFileWriter:
         index = write_render._find_entry_index(self._manifest, ticket_id)
         if index is None:
             raise write_render.UnknownTicket(ticket_id)
+        # The seeded entry decides the format, exactly as the on-disk entry does for the
+        # real writer: an entry declaring a ``.md`` path is refused with the migration
+        # command. An entry declaring NO path defaults to writable, because that is what
+        # this fake's own creates produce and what every pre-v3 test fixture seeds — a
+        # test that wants the refusal seeds the ``.md`` path explicitly.
+        write_render._require_writable_format(
+            ticket_id,
+            Path(str(self._manifest[index].get("path") or self._content_relpath(ticket_id))),
+        )
         merged = write_render._merge_edit(self._manifest[index], edit)
         new_entries = list(self._manifest)
         new_entries[index] = merged
         changes = [
             self._manifest_change(project, new_entries),
-            self._md_change(
+            self._content_change(
                 project,
                 ticket_id,
-                current=(current_md := self._current_md(ticket_id)),
-                # Through the SAME renderer as the real writer, over the same
-                # (current text, edit) inputs — so the two implementations of this
-                # port cannot disagree about what an edit does to a YAML header.
-                new=write_render.render_edit_md(current_md, edit),
+                current=self._current_content(ticket_id),
+                # Through the SAME renderer as the real writer, over the same fields —
+                # so the two implementations of this port cannot disagree about what an
+                # edit writes to a content file.
+                new=write_render._render_ticket_json(ticket_id, edit),
             ),
         ]
         self._append_roadmap(
@@ -267,7 +275,9 @@ class FakeFileWriter:
         new_entries = self._manifest[:index] + self._manifest[index + 1 :]
         changes = [
             self._manifest_change(project, new_entries),
-            self._md_change(project, ticket_id, current=self._current_md(ticket_id), new=None),
+            self._content_change(
+                project, ticket_id, current=self._current_content(ticket_id), new=None
+            ),
         ]
         self._append_roadmap(
             changes,
@@ -296,28 +306,35 @@ class FakeFileWriter:
             newText=write_render._serialize_manifest({"tickets": new_entries}),
         )
 
-    def _current_md(self, ticket_id: str) -> str | None:
-        """Render the ticket's CURRENT ``.md`` file text, or ``None`` when absent.
+    def _current_content(self, ticket_id: str) -> str | None:
+        """Render the ticket's CURRENT content file text, or ``None`` when absent.
 
-        Mirrors the real writer's ``currentText=_read_text_or_none(md_path)``: an
-        unseeded ticket (no body) has no file yet (``None`` → a create-like diff),
-        while a seeded one renders the FULL file — YAML fence plus body — through the
-        SAME :func:`write_render._render_md` that produces ``newText``, so both sides
-        of the ``.md`` diff are rendered identically even when the ticket carries
-        front-matter. A fence-less ticket (empty/absent front-matter) renders to the
-        body verbatim, so this is a no-op for the common case.
+        Mirrors the real writer's ``currentText=_read_content_or_none(...)``: an unseeded
+        ticket has no file yet (``None`` → a create-like diff), while a seeded one renders
+        through the SAME :func:`write_render._render_ticket_json` that produces
+        ``newText``, so both sides of the diff are rendered identically and a diff never
+        shows churn that is only a difference in how the two sides were serialized.
         """
-        if ticket_id not in self._bodies:
+        content = self._contents.get(ticket_id)
+        if content is None:
             return None
-        return write_render._render_md(
-            self._front_matter.get(ticket_id, {}), self._bodies[ticket_id]
-        )
+        return write_render._render_ticket_json(ticket_id, content)
 
-    def _md_change(
+    @staticmethod
+    def _content_relpath(ticket_id: str) -> str:
+        """The project-relative path a fake-created ticket's content file takes.
+
+        Mirrors :func:`write_render._content_path_for_create` — flat, under the tickets
+        directory, ``.json`` — but computed LEXICALLY from the known layout, because this
+        fake resolves no paths and stats nothing.
+        """
+        return f"docs/planning/tickets/{ticket_id}{write_render._CONTENT_SUFFIX}"
+
+    def _content_change(
         self, project: Project, ticket_id: str, *, current: str | None, new: str | None
     ) -> PlannedChange:
-        """The ticket ``.md`` :class:`PlannedChange` from the seeded body (no FS read)."""
-        path = project.ticketsDir / f"{ticket_id}.md"
+        """The content-file :class:`PlannedChange` from the seeded fields (no FS read)."""
+        path = project.ticketsDir / f"{ticket_id}{write_render._CONTENT_SUFFIX}"
         return PlannedChange(
             path=path,
             relPath=self._rel_posix(path, project),
@@ -416,16 +433,48 @@ class FakeFileWriter:
             raise write_gate.TicketNotMutable(ticket_id, state)
 
     def _entry_to_ticket(
-        self, project: Project, entry: dict[str, Any], body_markdown: str, state: RunState
+        self,
+        project: Project,
+        entry: dict[str, Any],
+        content: TicketContentFields | None,
+        state: RunState,
     ) -> Ticket:
-        """Join a manifest entry with its body into a :class:`Ticket`.
+        """Join a manifest entry with its content fields into a :class:`Ticket`.
 
-        Reuses ``manifest_entry_to_ticket_stub`` — the canonical entry->Ticket
-        mapper (single source for the ``provides`` scalar->list coercion and the
-        ``filePath`` computation) — then overlays the seeded body and run-state.
+        Reuses ``manifest_entry_to_ticket_stub`` — the canonical entry->Ticket mapper
+        (single source for the ``provides`` scalar->list coercion and the ``filePath``
+        computation) — then overlays the rendered body, the content file's
+        ``criticalFiles`` and the run-state.
+
+        ``bodyMarkdown`` goes through the SAME
+        :func:`~factory_console.file_adapter.ticket_json.render_ticket_markdown` the read
+        path uses, so the ticket this fake hands back after an apply is the ticket a
+        subsequent read would produce. ``content`` and ``files`` are set the way
+        :func:`~factory_console.file_adapter.ticket_content.enrich_ticket` sets them — the
+        structured fields published as-is and ``files`` taken from their ``criticalFiles``
+        — because v3's index has no ``files`` key, so the content file is the only thing
+        that answers, and because a fake whose applied ticket lacked ``content`` would let
+        a test pass on a payload no real read ever returns.
+
+        ``content is None`` is a real state, not a defensive default — a manifest entry
+        seeded with no content fields, which the delete path also passes for a ticket
+        that never had any. It leaves all three fields at the stub's values rather than
+        inventing an empty body.
         """
         stub = manifest_entry_to_ticket_stub(entry, project.ticketsDir)
-        return stub.model_copy(update={"bodyMarkdown": body_markdown, "runState": state})
+        if content is None:
+            return stub.model_copy(update={"runState": state})
+        parsed = ticket_json.parse_ticket_content(
+            entry["id"], write_render._render_ticket_json(entry["id"], content)
+        )
+        return stub.model_copy(
+            update={
+                "bodyMarkdown": render_ticket_markdown(parsed, entry),
+                "content": content,
+                "files": list(content.criticalFiles),
+                "runState": state,
+            }
+        )
 
     @staticmethod
     def _applied_result(ticket_id: str, preview: DiffPreview, ticket: Ticket) -> WriteResult:

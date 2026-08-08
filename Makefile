@@ -1,4 +1,4 @@
-.PHONY: dev test lint build package smoke release clean
+.PHONY: dev test lint codegen build package smoke release clean
 
 # Override to run off-venv or on a python3-only host, e.g. `make test PYTHON=python3.13`.
 PYTHON ?= python
@@ -8,6 +8,24 @@ dev:
 
 test:
 	$(PYTHON) -m pytest -q && cd frontend && pnpm test
+
+# Regenerate frontend/src/lib/api/types.ts from THIS working tree's models.
+#
+# The schema is built in-process (scripts/openapi_schema.py) rather than fetched from a
+# running server, and that is a correctness fix, not a convenience one. The old default
+# fetched http://127.0.0.1:8000/api/v1/openapi.json — whatever process was listening on
+# that port. A dev server left running from an earlier checkout answers happily,
+# openapi-typescript reports success, and types.ts is regenerated against models that no
+# longer exist. Silent, and it bit exactly that way: a newly added response field was
+# simply absent from a codegen that had just succeeded.
+#
+# PYTHONPATH mirrors pyproject's `pythonpath = ["server", "tests"]` — this repo is
+# usually run un-installed, and pytest is the only other thing that needs the same seam.
+# The intermediate schema is written under frontend/ so pnpm resolves it relative to its
+# own cwd; it is gitignored, and regenerated every run rather than reused.
+codegen:
+	PYTHONPATH=server $(PYTHON) scripts/openapi_schema.py > frontend/.openapi.json
+	cd frontend && pnpm codegen
 
 # lint delegates to pre-commit instead of enumerating checks, because CI runs
 # `pre-commit run --all-files` and a Makefile that re-derives the hook set is a

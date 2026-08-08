@@ -34,6 +34,7 @@ from _write_support import (
     PINNED_TOKEN,
     WRONG_TOKEN,
     app_over,
+    seeded_contents,
 )
 from _write_support import (
     client as _client,
@@ -86,8 +87,11 @@ def _draft_body(ticket_id: str = NEW_ID, **overrides: Any) -> dict[str, Any]:
         "milestone": "v2",
         "dependsOn": [],
         "provides": "Weekly cohort retention across every tracked habit",
-        "files": ["server/cadence/analytics/cohorts.py"],
-        "bodyMarkdown": "# Retention cohorts\n\nCohort report body.\n",
+        "context": "Weekly cohort retention, per tracked habit.",
+        "approach": "1. Build the query.\n2. Shape the report.",
+        "criticalFiles": ["server/cadence/analytics/cohorts.py"],
+        "interfaceData": "Emits CohortReport rows.",
+        "verificationCommands": ["pytest tests/analytics -q"],
     }
     body.update(overrides)
     return body
@@ -101,8 +105,11 @@ def _edit_body(**overrides: Any) -> dict[str, Any]:
         "milestone": "v1",
         "dependsOn": [],
         "provides": "Monday-morning digest",
-        "files": ["server/cadence/notifications/weekly_digest.py"],
-        "bodyMarkdown": "# Weekly digest\n\nBoundary-edited body.\n",
+        "context": "The digest, edited at the boundary.",
+        "approach": "1. Adjust the template.",
+        "criticalFiles": ["server/cadence/notifications/weekly_digest.py"],
+        "interfaceData": "N/A",
+        "verificationCommands": ["pytest tests/notifications -q"],
     }
     body.update(overrides)
     return body
@@ -218,17 +225,17 @@ def _spied_app() -> tuple[FastAPI, _RecordingFileWriter]:
         discoveredAt=datetime(2026, 7, 26, 12, 0, 0),
     )
     entries = [_entry(TODO_ID), _entry(READY_ID, status="in_review")]
-    bodies = {entry["id"]: f"# {entry['title']}\n\nSeeded body.\n" for entry in entries}
+    contents = seeded_contents(*(entry["id"] for entry in entries))
     run_states = {TODO_ID: RunState.todo, READY_ID: RunState.ready}
     tickets = [
         manifest_entry_to_ticket_stub(entry, project.ticketsDir).model_copy(
-            update={"bodyMarkdown": bodies[entry["id"]]}
+            update={"bodyMarkdown": f"# {entry['title']}\n\nSeeded body.\n"}
         )
         for entry in entries
     ]
 
     writer = _RecordingFileWriter(
-        FakeFileWriter(manifest=entries, bodies=bodies, run_states=run_states)
+        FakeFileWriter(manifest=entries, contents=contents, run_states=run_states)
     )
     app = create_app(
         FakeFileAdapter(project=project, tickets=tickets, run_states=run_states),
@@ -551,8 +558,11 @@ async def test_an_applied_create_lands_on_disk_and_a_fresh_app_reads_it_back(
         resp = await client.post("/api/v1/tickets", json=_draft_body(), headers=AUTH)
     assert resp.status_code == 201
 
-    md_path = root / "docs" / "planning" / "tickets" / f"{NEW_ID}.md"
-    assert "Cohort report body." in md_path.read_text("utf-8")
+    # ``.json``, not ``.md``: the console writes App Factory v3 content files, and the
+    # manifest entry it appended DECLARES that path rather than leaving it to a reader's
+    # flat fallback.
+    content_path = root / "docs" / "planning" / "tickets" / f"{NEW_ID}.json"
+    assert "Weekly cohort retention" in content_path.read_text("utf-8")
     assert NEW_ID in _manifest_ids(root)
 
     async with _client(app_over(root)) as fresh:
@@ -565,10 +575,10 @@ async def test_an_applied_delete_removes_the_files_and_a_fresh_app_no_longer_ser
     tmp_path: Path,
 ) -> None:
     # The mirror claim, and the one a stale cache would hide in the opposite direction: a
-    # delete that only forgot the ticket in memory would still leave the ``.md`` and the
-    # manifest entry behind for the next process to resurrect.
+    # delete that only forgot the ticket in memory would still leave the content file
+    # and the manifest entry behind for the next process to resurrect.
     app, root = _real_app(tmp_path)
-    md_path = root / "docs" / "planning" / "tickets" / f"{TODO_ID}.md"
+    md_path = root / "docs" / "planning" / "tickets" / f"{TODO_ID}.json"
     assert md_path.exists()
 
     async with _client(app) as client:

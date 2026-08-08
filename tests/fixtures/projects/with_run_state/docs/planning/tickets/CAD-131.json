@@ -1,0 +1,16 @@
+{
+  "id": "CAD-131",
+  "context": "A gentle Monday-morning nudge: what you kept up last week, what slipped, and one thing to try. The first thing Cadence sends rather than shows.",
+  "approach": "1. Build the digest query.\n2. Render the template.\n3. Schedule the Monday send.",
+  "critical_files": [
+    "server/cadence/notifications/weekly_digest.py",
+    "server/cadence/notifications/render_digest.py",
+    "tests/unit/test_weekly_digest.py"
+  ],
+  "interface_data": "Renders to HTML and plain text. Reads the event store; writes nothing.",
+  "verification": {
+    "commands": [
+      "pytest tests/unit/test_weekly_digest.py -q"
+    ]
+  }
+}

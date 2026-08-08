@@ -1,0 +1,14 @@
+{
+  "id": "T02",
+  "context": "Builds on T01, in the same milestone, so both land together.",
+  "approach": "1. Extend the foundation module.\n2. Add the handler.",
+  "critical_files": [
+    "src/t02.py"
+  ],
+  "interface_data": "N/A",
+  "verification": {
+    "commands": [
+      "pytest -q"
+    ]
+  }
+}

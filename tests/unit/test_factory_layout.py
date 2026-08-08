@@ -57,7 +57,8 @@ def test_the_resolved_path_is_the_one_the_manifest_declared(project) -> None:
     ticket = RealFileAdapter().get_ticket(project, "T03")
     assert ticket is not None
     assert (
-        ticket.filePath == (FIXTURE / "docs/planning/tickets/v2/T03-a-later-milestone.md").resolve()
+        ticket.filePath
+        == (FIXTURE / "docs/planning/tickets/v2/T03-a-later-milestone.json").resolve()
     )
 
 
@@ -163,7 +164,7 @@ def test_a_symlinked_manifest_path_escaping_the_root_is_refused(tmp_path: Path) 
     shutil.copytree(FIXTURE, root)
     outside = tmp_path / "outside.md"
     outside.write_text("secret\n", encoding="utf-8")
-    link = root / "docs/planning/tickets/v1/T01-the-base-ticket.md"
+    link = root / "docs/planning/tickets/v1/T01-the-base-ticket.json"
     link.unlink()
     try:
         link.symlink_to(outside)
@@ -233,27 +234,34 @@ def test_search_matches_a_word_that_appears_only_in_a_nested_body(project) -> No
     """Full-text search read every body from the flat path, so it matched nothing."""
     hits = RealFileAdapter().search_tickets(project, "Base.")
     assert [hit.ticket.id for hit in hits] == ["T01"], (
-        "a body-only term must match the ticket whose nested .md contains it"
+        "a body-only term must match the ticket whose nested content file contains it"
     )
 
 
 def test_an_edit_rewrites_the_declared_file_and_creates_no_orphan(writable_project) -> None:
     """The edit lands in the manifest-declared file, not in a new flat one."""
-    declared = writable_project.rootPath / "docs/planning/tickets/v1/T01-the-base-ticket.md"
-    before = {path for path in writable_project.rootPath.rglob("*.md")}
+    declared = writable_project.rootPath / "docs/planning/tickets/v1/T01-the-base-ticket.json"
+    before = {path for path in writable_project.rootPath.rglob("*.json")}
 
     result = RealFileWriter().edit_ticket(
         writable_project,
         "T01",
-        TicketEdit(title="Retitled", bodyMarkdown="Rewritten body.\n"),
+        TicketEdit(
+            title="Retitled",
+            context="Why this exists.",
+            approach="1. Build it.",
+            criticalFiles=["src/x.py"],
+            interfaceData="N/A",
+            verificationCommands=["pytest -q"],
+        ),
     )
 
     assert result.applied is True
-    assert "Rewritten body." in declared.read_text(encoding="utf-8"), (
+    assert "Why this exists." in declared.read_text(encoding="utf-8"), (
         "the edit must land in the file the manifest declares"
     )
-    assert {path for path in writable_project.rootPath.rglob("*.md")} == before, (
-        "no orphan <ticketsDir>/<id>.md may be created beside the real file"
+    assert {path for path in writable_project.rootPath.rglob("*.json")} == before, (
+        "no orphan <ticketsDir>/<id>.json may be created beside the real file"
     )
 
 
@@ -262,7 +270,15 @@ def test_an_edit_that_clears_dependencies_is_actually_read_back_cleared(writable
     RealFileWriter().edit_ticket(
         writable_project,
         "T02",
-        TicketEdit(title="Depends on T01, in the same milestone", dependsOn=[], bodyMarkdown="x\n"),
+        TicketEdit(
+            title="Depends on T01, in the same milestone",
+            dependsOn=[],
+            context="Why this exists.",
+            approach="1. Build it.",
+            criticalFiles=["src/x.py"],
+            interfaceData="N/A",
+            verificationCommands=["pytest -q"],
+        ),
     )
 
     entry = _manifest_entry(writable_project, "T02")
@@ -279,7 +295,13 @@ def test_an_edit_that_sets_dependencies_is_read_back_set(writable_project) -> No
         writable_project,
         "T01",
         TicketEdit(
-            title="The base ticket everything depends on", dependsOn=["T02"], bodyMarkdown="x\n"
+            title="The base ticket everything depends on",
+            dependsOn=["T02"],
+            context="Why this exists.",
+            approach="1. Build it.",
+            criticalFiles=["src/x.py"],
+            interfaceData="N/A",
+            verificationCommands=["pytest -q"],
         ),
     )
     neighborhood = RealFileAdapter().get_deps(writable_project, "T01")
@@ -288,7 +310,7 @@ def test_an_edit_that_sets_dependencies_is_read_back_set(writable_project) -> No
 
 
 def test_a_delete_removes_the_declared_file(writable_project) -> None:
-    declared = writable_project.rootPath / "docs/planning/tickets/v2/T03-a-later-milestone.md"
+    declared = writable_project.rootPath / "docs/planning/tickets/v2/T03-a-later-milestone.json"
     assert declared.exists()
 
     RealFileWriter().delete_ticket(writable_project, "T03")
@@ -304,7 +326,16 @@ def test_a_created_ticket_uses_the_producers_dependency_key(writable_project) ->
     """A console-created ticket must read back the way a factory-created one does."""
     RealFileWriter().create_ticket(
         writable_project,
-        TicketDraft(id="T04", title="New", dependsOn=["T01"], bodyMarkdown="body\n"),
+        TicketDraft(
+            id="T04",
+            title="New",
+            dependsOn=["T01"],
+            context="Why this exists.",
+            approach="1. Build it.",
+            criticalFiles=["src/x.py"],
+            interfaceData="N/A",
+            verificationCommands=["pytest -q"],
+        ),
     )
     entry = _manifest_entry(writable_project, "T04")
     assert entry["depends_on"] == ["T01"]
@@ -316,7 +347,7 @@ def test_a_created_ticket_uses_the_producers_dependency_key(writable_project) ->
 
 def test_an_orphan_manifest_entry_can_still_be_deleted(writable_project) -> None:
     """The pre-delete re-read 404'd, leaving the entry with no way to remove it."""
-    (writable_project.rootPath / "docs/planning/tickets/v2/T03-a-later-milestone.md").unlink()
+    (writable_project.rootPath / "docs/planning/tickets/v2/T03-a-later-milestone.json").unlink()
     project = RealFileAdapter().load_project(writable_project.rootPath)
     service = WriteService(RealFileWriter(), RealFileAdapter())
 
@@ -331,13 +362,21 @@ def test_a_create_colliding_with_an_orphan_entry_is_a_conflict_not_a_404(
     writable_project,
 ) -> None:
     """`get_ticket` as an existence probe turned a 409 collision into a 404."""
-    (writable_project.rootPath / "docs/planning/tickets/v2/T03-a-later-milestone.md").unlink()
+    (writable_project.rootPath / "docs/planning/tickets/v2/T03-a-later-milestone.json").unlink()
     project = RealFileAdapter().load_project(writable_project.rootPath)
     service = WriteService(RealFileWriter(), RealFileAdapter())
 
     with pytest.raises(WriteConflict):
         service.create(
             project,
-            TicketDraft(id="T03", title="Colliding", bodyMarkdown="x\n"),
+            TicketDraft(
+                id="T03",
+                title="Colliding",
+                context="Why this exists.",
+                approach="1. Build it.",
+                criticalFiles=["src/x.py"],
+                interfaceData="N/A",
+                verificationCommands=["pytest -q"],
+            ),
             dry_run=False,
         )

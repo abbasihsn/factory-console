@@ -9,7 +9,7 @@
       "milestone": "v1",
       "depends_on": [],
       "provides": "A foundation.",
-      "path": "docs/planning/tickets/v1/T01-the-base-ticket.md",
+      "path": "docs/planning/tickets/v1/T01-the-base-ticket.json",
       "status": "todo"
     },
     {
@@ -17,9 +17,11 @@
       "title": "Depends on T01, in the same milestone",
       "track": "backend",
       "milestone": "v1",
-      "depends_on": ["T01"],
+      "depends_on": [
+        "T01"
+      ],
       "provides": "A thing built on the foundation.",
-      "path": "docs/planning/tickets/v1/T02-depends-on-t01.md",
+      "path": "docs/planning/tickets/v1/T02-depends-on-t01.json",
       "status": "todo"
     },
     {
@@ -27,9 +29,12 @@
       "title": "Depends on both, in a LATER milestone directory",
       "track": "frontend",
       "milestone": "v2",
-      "depends_on": ["T01", "T02"],
+      "depends_on": [
+        "T01",
+        "T02"
+      ],
       "provides": "The view.",
-      "path": "docs/planning/tickets/v2/T03-a-later-milestone.md",
+      "path": "docs/planning/tickets/v2/T03-a-later-milestone.json",
       "status": "todo"
     }
   ]

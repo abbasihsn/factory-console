@@ -62,7 +62,20 @@ const fullTicket: Ticket = {
 		'frontend/src/routes/tickets/[id]/+page.svelte',
 		'frontend/src/lib/components/ChipList.svelte'
 	],
-	filePath: '/docs/planning/tickets/mvp/T31-ticket-detail-route.md',
+	filePath: '/docs/planning/tickets/mvp/T31-ticket-detail-route.json',
+	// The structured source the edit form seeds from. `files` above is the same
+	// `criticalFiles` list read through the display projection — `enrich_ticket` assigns
+	// both from one value, so a fixture where they differ describes an impossible ticket.
+	content: {
+		context: 'Rendered body paragraph.',
+		approach: 'Build the route, then the detail view.',
+		criticalFiles: [
+			'frontend/src/routes/tickets/[id]/+page.svelte',
+			'frontend/src/lib/components/ChipList.svelte'
+		],
+		interfaceData: 'N/A',
+		verificationCommands: ['pnpm test']
+	},
 	bodyMarkdown: '## Rendered heading\n\nRendered body paragraph.',
 	bodyHtml: '<h2>Rendered heading</h2>\n<p>Rendered body paragraph.</p>',
 	raw: {}

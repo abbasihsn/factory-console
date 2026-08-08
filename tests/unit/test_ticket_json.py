@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 from factory_console.domain import Project
+from factory_console.domain.ticket import Ticket
 from factory_console.errors import to_error_response
 from factory_console.file_adapter.manifest import iter_ticket_stubs
 from factory_console.file_adapter.path_safety import PathTraversal
@@ -67,9 +68,7 @@ def _make_project(tmp_path: Path) -> Project:
 def _write(project: Project, ticket_id: str, payload: object) -> Path:
     """Write ``payload`` as ``<ticketsDir>/<id>.json`` and return the path."""
     path = project.ticketsDir / f"{ticket_id}.json"
-    path.write_text(
-        payload if isinstance(payload, str) else json.dumps(payload), encoding="utf-8"
-    )
+    path.write_text(payload if isinstance(payload, str) else json.dumps(payload), encoding="utf-8")
     return path
 
 
@@ -100,17 +99,37 @@ def test_a_valid_ticket_renders_the_five_sections_in_order(tmp_path: Path) -> No
 
 
 def test_critical_files_are_answered_by_the_content_file(tmp_path: Path) -> None:
-    # The distinction TicketBody.critical_files exists to carry: a JSON ticket ANSWERS
-    # the question, a Markdown one does not (None). Without it the v3 index — which has
-    # no `files` key at all — would leave every ticket showing an empty file list while
-    # the real one sat one file away, unread.
+    # The distinction TicketBody.content exists to carry: a JSON ticket ANSWERS the
+    # question, a Markdown one does not (None). Without it the v3 index — which has no
+    # `files` key at all — would leave every ticket showing an empty file list while the
+    # real one sat one file away, unread.
     project = _make_project(tmp_path)
     _write(project, "T09", VALID)
 
     body = _read(project, "T09")
 
-    assert body.critical_files == ["src/auth/routes.py", "src/auth/models.py"]
+    assert body.content is not None
+    assert body.content.criticalFiles == ["src/auth/routes.py", "src/auth/models.py"]
     assert body.front_matter == {}, "a v3 ticket carries no front-matter"
+
+
+def test_the_structured_content_survives_the_read_alongside_the_rendering(
+    tmp_path: Path,
+) -> None:
+    # bodyMarkdown is a RENDERED view; an edit form cannot seed five fields from a
+    # paragraph. Both come from one read of one file, so the page a human reviews and the
+    # form they then edit cannot disagree about what the ticket says.
+    project = _make_project(tmp_path)
+    _write(project, "T09", VALID)
+
+    content = _read(project, "T09").content
+
+    assert content is not None
+    assert content.context == VALID["context"]
+    assert content.approach == VALID["approach"]
+    assert content.interfaceData == VALID["interface_data"]
+    assert content.verificationCommands == VALID["verification"]["commands"]
+    assert content.verificationNotes == VALID["verification"].get("notes")
 
 
 def test_the_body_carries_the_prose_and_the_bulleted_lists(tmp_path: Path) -> None:
@@ -278,9 +297,9 @@ def test_the_two_formats_dispatch_per_ticket_in_one_project(tmp_path: Path) -> N
     md_body = read_ticket_body(project, "T10", project.ticketsDir / "T10.md")
 
     assert "## Context" in json_body.markdown
-    assert json_body.critical_files is not None
+    assert json_body.content is not None
     assert md_body.markdown == "\n# Body\n"
-    assert md_body.critical_files is None
+    assert md_body.content is None
 
 
 def test_a_suffix_with_no_reader_is_refused_not_guessed_at(tmp_path: Path) -> None:
@@ -393,6 +412,47 @@ def test_enrich_takes_files_from_critical_files_and_keeps_manifest_fields() -> N
     assert enriched.milestone == "v1.0"
     assert enriched.raw["frontMatter"] == {}
     assert enriched is not stub
+
+
+def test_enrich_publishes_the_structured_content_and_files_agrees_with_it() -> None:
+    # `files` is the format-agnostic DISPLAY projection and `content.criticalFiles` is the
+    # editable field; they are assigned from ONE value so they cannot drift into
+    # disagreeing about a list both of them show.
+    project = _fixture_project()
+    stub = next(stub for stub in iter_ticket_stubs(project) if stub.id == "T02")
+
+    enriched = enrich_ticket(project, stub)
+
+    assert enriched.content is not None
+    assert enriched.content.criticalFiles == enriched.files
+    # The rendered view is a DERIVATION of the structured source, not a second opinion.
+    assert enriched.content.context in enriched.bodyMarkdown
+    assert enriched.content.approach in enriched.bodyMarkdown
+
+
+def test_enrich_publishes_no_content_for_a_markdown_ticket(tmp_path: Path) -> None:
+    # The read-side twin of TicketFormatRetired: a ticket with no structured content is
+    # exactly a ticket whose edit the write path refuses, so `content is None` is what
+    # lets a client decline to open a form whose Save is guaranteed to 409. Its
+    # manifest-declared `files` must survive — a format that never had the field must not
+    # be able to erase one that answered.
+    project = _make_project(tmp_path)
+    (project.ticketsDir / "T10.md").write_text("# Old\n", "utf-8")
+    stub = Ticket(
+        id="T10",
+        title="A Markdown ticket",
+        status="todo",
+        files=["src/legacy.py"],
+        filePath=project.ticketsDir / "T10.md",
+        bodyMarkdown="",
+        bodyHtml="",
+        raw={"id": "T10", "path": "docs/planning/tickets/T10.md"},
+    )
+
+    enriched = enrich_ticket(project, stub)
+
+    assert enriched.content is None
+    assert enriched.files == ["src/legacy.py"]
 
 
 def test_two_fixture_tickets_share_a_critical_file() -> None:

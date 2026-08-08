@@ -28,6 +28,10 @@ frontend/tests/e2e/__screenshots__/
 # Packaging artifact drop (SPA copied here at package time, never checked in)
 server/factory_console/_static/
 
+# Intermediate OpenAPI schema `make codegen` writes for openapi-typescript to read.
+# Derived from the models on every run; types.ts is the checked-in output.
+frontend/.openapi.json
+
 # OS / editors
 .DS_Store
 .idea/

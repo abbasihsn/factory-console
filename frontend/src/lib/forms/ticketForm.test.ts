@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import type { Ticket } from '$lib/api';
 import {
 	TICKET_ID_PATTERN,
 	parseList,
@@ -17,7 +16,11 @@ function values(overrides: Partial<TicketFormValues> = {}): TicketFormValues {
 		title: 'A valid title',
 		dependsOn: '',
 		provides: '',
-		files: '',
+		context: 'Why this ticket exists.',
+		approach: 'Create the module, then wire it up.',
+		criticalFiles: 'src/a.ts',
+		interfaceData: 'N/A',
+		verificationCommands: 'pnpm test',
 		...overrides
 	};
 }
@@ -115,132 +118,135 @@ describe('validateTicketForm', () => {
 		expect(errors).toHaveProperty('id');
 		expect(errors).toHaveProperty('title');
 	});
+
+	// The five content fields mirror `schemas/ticket.schema.json`, where every one but
+	// `notes` is required. The mirror is defense in depth — the server is the real gate —
+	// but a form that let them through would send a request guaranteed to 422.
+	describe('the v3 content fields', () => {
+		it.each(['context', 'approach', 'interfaceData'] as const)(
+			'requires %s in both modes',
+			(field) => {
+				for (const mode of ['create', 'edit'] as const) {
+					expect(validateTicketForm(values({ [field]: '' }), { mode })).toHaveProperty(field);
+					expect(validateTicketForm(values({ [field]: '   ' }), { mode })).toHaveProperty(field);
+				}
+			}
+		);
+
+		// Whitespace specifically: a textarea holding only blank lines passes "did you type
+		// something?" and answers nothing, which is exactly the shape `minItems: 1` rejects.
+		it.each(['criticalFiles', 'verificationCommands'] as const)(
+			'requires %s to parse to at least one entry, not merely to be non-empty',
+			(field) => {
+				expect(validateTicketForm(values({ [field]: '' }), { mode: 'create' })).toHaveProperty(
+					field
+				);
+				expect(
+					validateTicketForm(values({ [field]: '\n  \n\n' }), { mode: 'create' })
+				).toHaveProperty(field);
+				expect(
+					validateTicketForm(values({ [field]: 'one' }), { mode: 'create' })
+				).not.toHaveProperty(field);
+			}
+		);
+
+		it('does NOT require verificationNotes — the one optional field in the schema', () => {
+			expect(validateTicketForm(values({ verificationNotes: '' }), { mode: 'create' })).toEqual({});
+			expect(validateTicketForm(values(), { mode: 'create' })).toEqual({});
+		});
+
+		// The messages say WHY, not what: these two are the fields a user is most likely to
+		// leave thin, and "at least one entry" does not explain what breaks when they do.
+		it('explains what an empty criticalFiles costs', () => {
+			const errors = validateTicketForm(values({ criticalFiles: '' }), { mode: 'create' });
+			expect(errors.criticalFiles).toContain('overlap filter');
+		});
+
+		it('explains what an empty verificationCommands costs', () => {
+			const errors = validateTicketForm(values({ verificationCommands: '' }), { mode: 'create' });
+			expect(errors.verificationCommands).toContain('not a pass');
+		});
+	});
 });
 
 describe('toTicketUpdate', () => {
-	/** A loaded ticket carrying both mirrored fields; tests override single fields. */
-	function ticket(overrides: Partial<Ticket> = {}): Ticket {
-		return {
-			id: 'T67',
-			title: 'As loaded',
-			status: 'todo',
-			track: 'frontend',
-			milestone: 'v2',
-			runState: 'todo',
-			dependsOn: [],
-			provides: [],
-			files: [],
-			filePath: '/docs/planning/tickets/v2/T67.md',
-			bodyMarkdown: '',
-			bodyHtml: '',
-			raw: {},
-			...overrides
-		};
-	}
-
-	it('echoes track/milestone the loaded ticket carries', () => {
-		const body = toTicketUpdate(values({ title: 'Renamed' }), ticket());
-		expect(body.track).toBe('frontend');
-		expect(body.milestone).toBe('v2');
-	});
-
-	// REGRESSION: `track: ticket.track ?? null` sent an explicit null, and the server
-	// treats an explicit null as "clear it" while an OMITTED key changes nothing. Since
-	// Ticket.track comes from the manifest entry alone, a ticket whose manifest lacks
-	// the field but whose .md header carries one had its header value destroyed on any
-	// ordinary edit. The key must be ABSENT, not null.
-	it('OMITS track entirely when the loaded ticket has none', () => {
-		const body = toTicketUpdate(values(), ticket({ track: null }));
-		expect(body).not.toHaveProperty('track');
-		expect(Object.keys(body)).not.toContain('track');
-	});
-
-	it('OMITS milestone entirely when the loaded ticket has none', () => {
-		const body = toTicketUpdate(values(), ticket({ milestone: null }));
-		expect(body).not.toHaveProperty('milestone');
-	});
-
-	it('OMITS both when the loaded ticket is missing the keys altogether', () => {
-		// `Ticket` declares both keys optional, so a manifest entry lacking them yields
-		// an object with no such properties — not merely null-valued ones.
-		const bare = { ...ticket() } as { track?: string | null; milestone?: string | null };
-		delete bare.track;
-		delete bare.milestone;
-		const body = toTicketUpdate(values(), bare as unknown as Ticket);
-		expect(body).not.toHaveProperty('track');
-		expect(body).not.toHaveProperty('milestone');
-	});
-
-	it('never sends null for either mirrored field', () => {
-		for (const t of [ticket({ track: null }), ticket({ milestone: null }), ticket()]) {
-			const body = toTicketUpdate(values(), t);
-			expect(body.track).not.toBeNull();
-			expect(body.milestone).not.toBeNull();
-		}
-	});
-
 	it('trims the title and provides, and parses the list fields', () => {
 		const body = toTicketUpdate(
 			values({
 				title: '  Spaced  ',
 				provides: '  a cap  ',
 				dependsOn: 'T1\n\n T2 ',
-				files: 'a\nb'
-			}),
-			ticket()
+				criticalFiles: 'a\nb'
+			})
 		);
+
 		expect(body.title).toBe('Spaced');
 		expect(body.provides).toBe('a cap');
 		expect(body.dependsOn).toEqual(['T1', 'T2']);
-		expect(body.files).toEqual(['a', 'b']);
+		expect(body.criticalFiles).toEqual(['a', 'b']);
 	});
 
-	it('sends an empty bodyMarkdown when the form has no body', () => {
-		expect(toTicketUpdate(values(), ticket()).bodyMarkdown).toBe('');
+	it('sends all five content fields', () => {
+		const body = toTicketUpdate(values());
+
+		expect(body.context).toBe('Why this ticket exists.');
+		expect(body.approach).toBe('Create the module, then wire it up.');
+		expect(body.criticalFiles).toEqual(['src/a.ts']);
+		expect(body.interfaceData).toBe('N/A');
+		expect(body.verificationCommands).toEqual(['pnpm test']);
 	});
 
-	// Same failure class as track/milestone above, for the three fields the form DOES
-	// edit. They are mirrored into the `.md` header, but `Ticket.dependsOn/provides/
-	// files` are read from the manifest entry alone — so a ticket whose manifest lacks
-	// one while its header carries a real value seeds the form empty, and sending the
-	// empty value would wipe the header's only copy.
-	describe('mirrored list fields the manifest may not carry', () => {
-		const EMPTY_FORM = { dependsOn: '', provides: '', files: '' };
+	// `track`/`milestone` are still omitted, and for a reason that SURVIVED the v3 change
+	// while the other omissions did not: this form does not collect them, so sending
+	// anything would be inventing a value. The server refreshes a field only where the
+	// request supplied it.
+	it.each(['track', 'milestone'] as const)('OMITS %s, which the form never collects', (key) => {
+		const body = toTicketUpdate(values());
+		expect(body).not.toHaveProperty(key);
+		expect(Object.keys(body)).not.toContain(key);
+	});
 
-		it.each(['dependsOn', 'files', 'provides'] as const)(
-			'OMITS %s when it is empty on both the form and the loaded ticket',
-			(key) => {
-				const body = toTicketUpdate(values(EMPTY_FORM), ticket());
-				expect(body).not.toHaveProperty(key);
-			}
+	// THE OMIT-WHEN-NEVER-SET GUARD IS GONE, and its absence is asserted rather than left
+	// to be inferred from a missing test. It protected a value that lived in TWO places —
+	// the manifest entry and the ticket .md's YAML header — from an edit meant to touch
+	// neither. A v3 ticket has no header: every field lives in exactly one file, so an
+	// empty form field is an ordinary edit and must reach the server like any other.
+	it('sends an emptied dependsOn rather than omitting it', () => {
+		const body = toTicketUpdate(values({ dependsOn: '' }));
+		expect(body).toHaveProperty('dependsOn');
+		expect(body.dependsOn).toEqual([]);
+	});
+
+	it('sends an emptied provides rather than omitting it', () => {
+		const body = toTicketUpdate(values({ provides: '' }));
+		expect(body).toHaveProperty('provides');
+		expect(body.provides).toBe('');
+	});
+
+	// The one optional content field: absent, not present-and-empty. A key
+	// present-and-empty is a different document — it shows as an added line in the diff of
+	// every ticket that has no notes, and claims the author answered a question they did not.
+	it('OMITS verificationNotes when blank and sends it when written', () => {
+		expect(toTicketUpdate(values({ verificationNotes: '   ' }))).not.toHaveProperty(
+			'verificationNotes'
 		);
-
-		it('still sends what the user actually entered', () => {
-			const body = toTicketUpdate(
-				values({ dependsOn: 'T1', provides: 'a cap', files: 'a.ts' }),
-				ticket()
-			);
-			expect(body.dependsOn).toEqual(['T1']);
-			expect(body.provides).toBe('a cap');
-			expect(body.files).toEqual(['a.ts']);
-		});
-
-		// The omission must never swallow a deliberate CLEAR: the loaded ticket has the
-		// value, so emptying the field is a real edit and has to reach the server.
-		it('sends the empty value when the loaded ticket really had one', () => {
-			const body = toTicketUpdate(
-				values(EMPTY_FORM),
-				ticket({ dependsOn: ['T1'], provides: ['a cap'], files: ['a.ts'] })
-			);
-			expect(body.dependsOn).toEqual([]);
-			expect(body.provides).toBe('');
-			expect(body.files).toEqual([]);
-		});
+		expect(toTicketUpdate(values({ verificationNotes: ' needs DATABASE_URL ' }))).toHaveProperty(
+			'verificationNotes',
+			'needs DATABASE_URL'
+		);
 	});
+
+	// The v2 write surface is gone from the wire, not merely unused by this function.
+	it.each(['bodyMarkdown', 'frontMatter', 'files'] as const)(
+		'never sends the retired v2 key %s',
+		(key) => {
+			expect(Object.keys(toTicketUpdate(values()))).not.toContain(key);
+		}
+	);
 });
 
 describe('toTicketCreate', () => {
-	it('trims id and title and defaults an absent body to an empty string', () => {
+	it('trims id and title and sends the whole v3 shape', () => {
 		const body = toTicketCreate(values({ id: '  T99  ', title: '  New ticket  ' }));
 
 		expect(body).toEqual({
@@ -248,16 +254,26 @@ describe('toTicketCreate', () => {
 			title: 'New ticket',
 			dependsOn: [],
 			provides: '',
-			files: [],
-			bodyMarkdown: ''
+			context: 'Why this ticket exists.',
+			approach: 'Create the module, then wire it up.',
+			criticalFiles: ['src/a.ts'],
+			interfaceData: 'N/A',
+			verificationCommands: ['pnpm test']
 		});
 	});
 
-	it('parses dependsOn and files from newline text, trimming and dropping blanks', () => {
-		const body = toTicketCreate(values({ dependsOn: 'T1\n  T2  \n\nT3', files: 'a.ts\n\n b.ts ' }));
+	it('parses the three list fields from newline text, trimming and dropping blanks', () => {
+		const body = toTicketCreate(
+			values({
+				dependsOn: 'T1\n  T2  \n\nT3',
+				criticalFiles: 'a.ts\n\n b.ts ',
+				verificationCommands: 'pnpm test\n  ruff check . '
+			})
+		);
 
 		expect(body.dependsOn).toEqual(['T1', 'T2', 'T3']);
-		expect(body.files).toEqual(['a.ts', 'b.ts']);
+		expect(body.criticalFiles).toEqual(['a.ts', 'b.ts']);
+		expect(body.verificationCommands).toEqual(['pnpm test', 'ruff check .']);
 	});
 
 	it('keeps provides as a trimmed SCALAR — a multi-line value is never split into a list', () => {
@@ -268,9 +284,15 @@ describe('toTicketCreate', () => {
 		expect(body.provides).toBe('edit affordances\nsecond line');
 	});
 
-	it('passes the markdown body through as bodyMarkdown', () => {
-		const body = toTicketCreate(values({ body: '## Context\n\nProse.' }));
+	// Create and edit are now the same shape plus an id, which is what the server's own
+	// DTOs look like (`TicketDraft` is `TicketEdit` plus an id). They used to diverge
+	// because edit carried the header-protection guard create had no need for.
+	it('differs from toTicketUpdate by exactly the id', () => {
+		const created = toTicketCreate(values());
+		const updated = toTicketUpdate(values());
 
-		expect(body.bodyMarkdown).toBe('## Context\n\nProse.');
+		const { id, ...withoutId } = created;
+		expect(id).toBe('T67');
+		expect(withoutId).toEqual(updated);
 	});
 });

@@ -15,12 +15,12 @@ from pathlib import Path
 
 import pytest
 from _read_only_guard import assert_module_is_read_only  # top-level test helper
+from _write_support import seeded_contents
 
 from factory_console.domain import Project, RunState
 from factory_console.domain.ticket import Ticket
 from factory_console.domain.write import DiffPreview, TicketDraft, TicketEdit, WriteResult
 from factory_console.file_adapter import fake_writer as fake_writer_module
-from factory_console.file_adapter import write_render
 from factory_console.file_adapter.fake_writer import FakeFileWriter
 from factory_console.file_adapter.write_gate import TicketNotMutable
 from factory_console.file_adapter.write_render import TicketAlreadyExists, UnknownTicket
@@ -88,8 +88,11 @@ def _draft(ticket_id: str = "TM-050", **overrides: object) -> TicketDraft:
         "milestone": "MVP",
         "dependsOn": ["TM-001"],
         "provides": "On-trail capture app",
-        "files": ["server/trailmark/mobile/capture.py"],
-        "bodyMarkdown": "# Capture\n\nBody text.\n",
+        "context": "Why the draft exists.",
+        "approach": "1. Build the draft.\n2. Verify it.",
+        "criticalFiles": ["server/trailmark/mobile/capture.py"],
+        "interfaceData": "N/A",
+        "verificationCommands": ["pytest -q"],
     }
     base.update(overrides)
     return TicketDraft(**base)  # type: ignore[arg-type]
@@ -102,8 +105,11 @@ def _edit(**overrides: object) -> TicketEdit:
         "milestone": "MVP",
         "dependsOn": [],
         "provides": "Nightly importer refreshed",
-        "files": ["server/trailmark/ingest/csv_dropbox.py"],
-        "bodyMarkdown": "# Ingest\n\nUpdated body.\n",
+        "context": "Why the edit exists.",
+        "approach": "1. Build the edit.\n2. Verify it.",
+        "criticalFiles": ["server/trailmark/ingest/csv_dropbox.py"],
+        "interfaceData": "N/A",
+        "verificationCommands": ["pytest -q"],
     }
     base.update(overrides)
     return TicketEdit(**base)  # type: ignore[arg-type]
@@ -118,7 +124,7 @@ def _seeded_writer(
             _entry("TM-001", title="Ingest trail reports", milestone="MVP"),
             _entry("TM-015", title="Public read API", milestone="v1"),
         ],
-        bodies={"TM-001": "# TM-001 body\n", "TM-015": "# TM-015 body\n"},
+        contents=seeded_contents("TM-001", "TM-015"),
         roadmap=roadmap,
         run_states=run_states,
     )
@@ -158,7 +164,7 @@ def test_create_adds_in_memory_ticket_with_three_coupled_files() -> None:
     # A matching ## MVP roadmap section is seeded, so all three coupled paths change.
     assert result.changedFiles == [
         _MANIFEST_REL,
-        "docs/planning/tickets/TM-050.md",
+        "docs/planning/tickets/TM-050.json",
         _ROADMAP_REL,
     ]
     # changedFiles always agrees with the diff it carries.
@@ -187,58 +193,20 @@ def test_create_duplicate_id_raises_already_exists() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# front-matter fidelity — the fake's .md diff must match the real writer's
+# content fidelity — the fake's content-file diff must match the real writer's
 # --------------------------------------------------------------------------- #
 
 
-def test_edit_of_front_matter_ticket_diffs_only_the_body_not_the_fence() -> None:
-    # Regression: the .md diff's currentText is the FULL rendered file (YAML fence +
-    # body) via the same write_render._render_md the real writer reads off disk — so
-    # editing only the body of a front-matter ticket diffs the body alone and never
-    # shows the fence spuriously re-added (which body-only currentText would).
-    front = {"status": "draft", "owner": "ranger"}
-    writer = FakeFileWriter(
-        manifest=[_entry("TM-001", milestone="MVP")],
-        bodies={"TM-001": "# Old body\n"},
-        front_matter={"TM-001": front},
-        roadmap=None,
-    )
-    project = _make_project(with_roadmap=False)
-
-    preview = writer.preview_edit(
-        project,
-        "TM-001",
-        _edit(
-            title="Ticket TM-001",
-            track="file-adapter",
-            milestone="MVP",
-            dependsOn=[],
-            provides="provides TM-001",
-            files=[],
-            frontMatter=front,
-            bodyMarkdown="# New body\n",
-        ),
-    )
-
-    md = next(f for f in preview.files if f.path == "docs/planning/tickets/TM-001.md")
-    assert md.changeKind == "modify"
-    # The fence + front-matter lines are unchanged context, never additions/removals.
-    assert "+status: draft" not in md.diff
-    assert "+---" not in md.diff
-    # Only the body line changed.
-    assert "-# Old body" in md.diff
-    assert "+# New body" in md.diff
-
-
-def test_create_then_preview_identical_edit_is_a_md_noop_for_front_matter_ticket() -> None:
-    # After a create "writes" front-matter into the fake, re-previewing the identical
-    # edit is a genuine .md no-op (omitted from the preview) — exactly what the real
-    # disk-backed writer computes. Before tracking front-matter, currentText was
-    # body-only and the fence would re-appear as an addition, so the .md would show.
+def test_create_then_preview_identical_edit_is_a_content_noop() -> None:
+    # After a create "writes" the content fields into the fake, re-previewing the
+    # IDENTICAL edit is a genuine no-op (the file is omitted from the preview) —
+    # exactly what the real disk-backed writer computes. It holds only because both
+    # sides of the diff are rendered by the same function: a fake that stored the
+    # fields but re-serialized them differently would show phantom churn on every
+    # edit that changed nothing.
     writer = _seeded_writer(roadmap=None)
     project = _make_project(with_roadmap=False)
-    front = {"status": "draft", "owner": "ranger"}
-    writer.create_ticket(project, _draft(frontMatter=front, milestone="MVP"))
+    writer.create_ticket(project, _draft(milestone="MVP"))
 
     preview = writer.preview_edit(
         project,
@@ -249,27 +217,29 @@ def test_create_then_preview_identical_edit_is_a_md_noop_for_front_matter_ticket
             milestone="MVP",
             dependsOn=["TM-001"],
             provides="On-trail capture app",
-            files=["server/trailmark/mobile/capture.py"],
-            frontMatter=front,
-            bodyMarkdown="# Capture\n\nBody text.\n",
+            context="Why the draft exists.",
+            approach="1. Build the draft.\n2. Verify it.",
+            criticalFiles=["server/trailmark/mobile/capture.py"],
+            interfaceData="N/A",
+            verificationCommands=["pytest -q"],
         ),
     )
 
-    md_paths = [f.path for f in preview.files if f.path == "docs/planning/tickets/TM-050.md"]
-    assert md_paths == []  # unchanged .md → omitted, no spurious fence diff
+    unchanged = [f.path for f in preview.files if f.path == "docs/planning/tickets/TM-050.json"]
+    assert unchanged == []  # byte-identical content → omitted, no phantom churn
 
 
 def test_create_without_matching_roadmap_section_changes_two_files() -> None:
     writer = _seeded_writer()
     result = writer.create_ticket(_make_project(), _draft(milestone="v99-nonexistent"))
-    assert result.changedFiles == [_MANIFEST_REL, "docs/planning/tickets/TM-050.md"]
+    assert result.changedFiles == [_MANIFEST_REL, "docs/planning/tickets/TM-050.json"]
 
 
 def test_create_with_no_roadmap_seeded_changes_two_files() -> None:
     writer = _seeded_writer(roadmap=None)
     project = _make_project(with_roadmap=False)
     result = writer.create_ticket(project, _draft())
-    assert result.changedFiles == [_MANIFEST_REL, "docs/planning/tickets/TM-050.md"]
+    assert result.changedFiles == [_MANIFEST_REL, "docs/planning/tickets/TM-050.json"]
 
 
 # --------------------------------------------------------------------------- #
@@ -286,13 +256,13 @@ def test_edit_on_todo_ticket_updates_and_returns_applied() -> None:
     assert result.applied is True
     assert result.ticket is not None
     assert result.ticket.title == "Ingest trail reports (v2)"
-    assert result.ticket.bodyMarkdown == "# Ingest\n\nUpdated body.\n"
-    # The entry was merged in place: a re-preview against a DIFFERENT body renders
-    # the now-current "Updated body" on the removed side of the .md diff.
-    reprev = writer.preview_edit(project, "TM-001", _edit(bodyMarkdown="# Ingest\n\nEven newer.\n"))
-    md = next(f for f in reprev.files if f.path.endswith("TM-001.md"))
-    assert "Updated body" in md.diff
-    assert "Even newer" in md.diff
+    assert "Why the edit exists." in result.ticket.bodyMarkdown
+    # The content was replaced in place: a re-preview against DIFFERENT fields renders
+    # the now-current context on the removed side of the content-file diff.
+    reprev = writer.preview_edit(project, "TM-001", _edit(context="Even newer context."))
+    content = next(f for f in reprev.files if f.path.endswith("TM-001.json"))
+    assert "Why the edit exists." in content.diff
+    assert "Even newer context." in content.diff
 
 
 def test_edit_on_unknown_run_state_is_allowed() -> None:
@@ -433,106 +403,3 @@ def test_ticket_carries_seeded_run_state_and_provides_list() -> None:
     assert result.ticket.runState is RunState.todo
     assert result.ticket.provides == ["Nightly importer refreshed"]
     assert isinstance(result, WriteResult)
-
-
-def test_edit_with_default_front_matter_matches_the_real_renderer() -> None:
-    """The fake must render an edit's ``.md`` through the SAME helper as the real writer.
-
-    The parity test above passes ``frontMatter`` explicitly, which is the one case
-    where replacing the header and overlaying it agree — so it stayed green while the
-    two implementations disagreed on the case that actually happens. ``TicketEdit.
-    frontMatter`` defaults to ``{}`` (nothing in the read model or the SPA form can
-    populate it), and there the real writer preserves the on-disk header while the
-    fake used to delete the whole fence. A fake that drifts from the port here makes
-    every fake-backed suite green for the wrong reason.
-    """
-    front = {"id": "TM-001", "status": "todo", "title": "Old title", "owner": "ranger"}
-    writer = FakeFileWriter(
-        manifest=[_entry("TM-001", milestone="MVP")],
-        bodies={"TM-001": "# Old body\n"},
-        front_matter={"TM-001": front},
-        roadmap=None,
-    )
-    project = _make_project(with_roadmap=False)
-    edit = _edit(
-        title="Brand new title",
-        track="file-adapter",
-        milestone="MVP",
-        dependsOn=[],
-        provides="provides TM-001",
-        files=[],
-        bodyMarkdown="# New body\n",
-    )  # frontMatter left at its {} default — the ordinary case
-
-    preview = writer.preview_edit(project, "TM-001", edit)
-
-    md = next(f for f in preview.files if f.path == "docs/planning/tickets/TM-001.md")
-    current = write_render._render_md(front, "# Old body\n")
-    assert md.changeKind == "modify"
-    # Byte-for-byte what the real writer's renderer produces from the same inputs.
-    assert write_render.render_edit_md(current, edit) == write_render._render_md(
-        {**front, "title": "Brand new title"}, "# New body\n"
-    )
-    # The header survives rather than being deleted, and tracks the edited title.
-    assert "-status: todo" not in md.diff
-    assert "-owner: ranger" not in md.diff
-    assert "+title: Brand new title" in md.diff
-    assert "-title: Old title" in md.diff
-
-
-def test_edit_of_unparseable_front_matter_does_not_double_the_header() -> None:
-    """A header that fails to parse must not be re-prepended by an edit.
-
-    ``read_ticket_md`` falls back to returning the WHOLE file (fences included) as
-    the body when the fenced YAML is malformed or parses to a non-mapping, rather
-    than lose bytes — so ``TicketEdit.bodyMarkdown`` for such a ticket already
-    contains that header verbatim. ``render_edit_md`` used to re-prepend the split-off
-    ``front_matter_yaml`` unconditionally whenever the merged header matched the
-    (always-empty) parsed one, doubling the fence on every edit.
-    """
-    malformed_header = "id: TM-001\nnotes: [unterminated\n"
-    current = f"---\n{malformed_header}---\n# Old body\n"
-    # The client's bodyMarkdown mirrors what read_ticket_md actually handed back for
-    # this ticket: the full original text, fences included, unedited.
-    edit = _edit(bodyMarkdown=current)
-
-    rendered = write_render.render_edit_md(current, edit)
-
-    assert rendered == current
-    assert rendered.count("---") == 2
-
-
-def test_applied_edit_keeps_front_matter_the_edit_did_not_send() -> None:
-    """Applying an edit must OVERLAY the seeded header, not replace it.
-
-    Replacing it made the fake's post-apply reads diverge from production, so a
-    follow-up preview against the same fake compared against the wrong base state.
-    """
-    writer = FakeFileWriter(
-        manifest=[_entry("TM-001", milestone="MVP")],
-        bodies={"TM-001": "# Old body\n"},
-        front_matter={"TM-001": {"id": "TM-001", "status": "todo", "owner": "ranger"}},
-        run_states={"TM-001": RunState.todo},
-        roadmap=None,
-    )
-    project = _make_project(with_roadmap=False)
-
-    writer.edit_ticket(
-        project,
-        "TM-001",
-        _edit(
-            title="Brand new title",
-            track="file-adapter",
-            milestone="MVP",
-            dependsOn=[],
-            provides="provides TM-001",
-            files=[],
-            bodyMarkdown="# New body\n",
-        ),
-    )
-
-    assert writer._front_matter["TM-001"] == {
-        "id": "TM-001",
-        "status": "todo",
-        "owner": "ranger",
-    }

@@ -1,0 +1,14 @@
+{
+  "id": "T01",
+  "context": "The foundation every other ticket depends on. Nothing ships before it. Base.",
+  "approach": "1. Create the base module.\n2. Export the entry point.",
+  "critical_files": [
+    "src/t01.py"
+  ],
+  "interface_data": "N/A",
+  "verification": {
+    "commands": [
+      "pytest -q"
+    ]
+  }
+}

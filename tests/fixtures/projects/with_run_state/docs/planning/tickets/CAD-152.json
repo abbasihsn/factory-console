@@ -1,0 +1,16 @@
+{
+  "id": "CAD-152",
+  "context": "Habits go further together. A ritual is a team-scoped habit a lead curates and members join, with roles deciding who may change it.",
+  "approach": "1. Model rituals and roles.\n2. Add the ritual endpoints.\n3. Gate mutations on role.",
+  "critical_files": [
+    "server/cadence/services/rituals.py",
+    "server/cadence/api/rituals.py",
+    "tests/unit/test_rituals.py"
+  ],
+  "interface_data": "`GET/POST /api/v1/rituals`. Role check happens at the service boundary, not in the route.",
+  "verification": {
+    "commands": [
+      "pytest tests/unit/test_rituals.py -q"
+    ]
+  }
+}

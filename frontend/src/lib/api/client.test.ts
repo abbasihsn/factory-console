@@ -248,15 +248,25 @@ describe('API client', () => {
 const TOKEN = 'tok-abc123';
 
 // A create body: `provides` is required by the generated schema (it has a server
-// default), so a valid draft always carries it — even as the empty string.
+// default), so a valid draft always carries it — even as the empty string. The five
+// content fields are required outright, and `criticalFiles`/`verificationCommands`
+// carry the schema's `minItems: 1`, so there is no shorter valid draft than this.
+const CONTENT = {
+	context: 'Why this ticket exists.',
+	approach: 'Create the module, then wire it up.',
+	criticalFiles: ['src/a.ts'],
+	interfaceData: 'N/A',
+	verificationCommands: ['pnpm test']
+};
+
 const DRAFT: TicketCreate = {
 	id: 'T01',
 	title: 'First',
 	provides: '',
-	bodyMarkdown: '# First'
+	...CONTENT
 };
 
-const EDIT: TicketUpdate = { title: 'Renamed', provides: '', bodyMarkdown: '# Renamed' };
+const EDIT: TicketUpdate = { title: 'Renamed', provides: '', ...CONTENT };
 
 // The uniform envelope every write verb answers with — apply or dry-run.
 function writeResult(overrides: Partial<WriteResult> = {}): WriteResult {

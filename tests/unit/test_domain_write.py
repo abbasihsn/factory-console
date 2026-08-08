@@ -40,6 +40,21 @@ def _make_ticket() -> Ticket:
     )
 
 
+CONTENT = {
+    "context": "Why this ticket exists.",
+    "approach": "1. Do it.",
+    "criticalFiles": ["server/factory_console/domain/write.py"],
+    "interfaceData": "N/A",
+    "verificationCommands": ["pytest tests/unit/test_domain_write.py -q"],
+}
+"""The five CONTENT fields, valid. Spread into every draft/edit built here.
+
+Named once because every constructor below needs all five — v3 requires them — and
+five keyword arguments repeated per case is how a fixture comes to differ from its
+siblings in a way no test is about.
+"""
+
+
 def _make_draft(ticket_id: str = "T55") -> TicketDraft:
     return TicketDraft(
         id=ticket_id,
@@ -48,9 +63,7 @@ def _make_draft(ticket_id: str = "T55") -> TicketDraft:
         milestone="v2",
         dependsOn=["T07"],
         provides="domain/write.py",
-        files=["server/factory_console/domain/write.py"],
-        bodyMarkdown="# Body",
-        frontMatter={"status": "todo"},
+        **CONTENT,
     )
 
 
@@ -61,9 +74,7 @@ def _make_edit() -> TicketEdit:
         milestone="v2",
         dependsOn=["T07"],
         provides="domain/write.py",
-        files=["server/factory_console/domain/write.py"],
-        bodyMarkdown="# Body",
-        frontMatter={"status": "todo"},
+        **CONTENT,
     )
 
 
@@ -111,17 +122,48 @@ def test_ticket_draft_rejects_invalid_id(invalid_id: str) -> None:
 
 def test_ticket_draft_requires_title() -> None:
     with pytest.raises(ValidationError):
-        TicketDraft(id="T55", bodyMarkdown="# Body")
+        TicketDraft(id="T55", **CONTENT)
 
 
-def test_ticket_draft_requires_body_markdown() -> None:
+@pytest.mark.parametrize("missing", sorted(CONTENT))
+def test_every_content_field_is_required(missing: str) -> None:
+    # v3's schema makes all five required, and the DTO enforces it HERE so a bad
+    # request is a 422 naming the field rather than a 500 from the console's own
+    # validation of text it just built.
     with pytest.raises(ValidationError):
-        TicketDraft(id="T55", title="t")
+        TicketDraft(id="T55", title="t", **{k: v for k, v in CONTENT.items() if k != missing})
 
 
-def test_ticket_edit_requires_body_markdown() -> None:
+@pytest.mark.parametrize("field", ["criticalFiles", "verificationCommands"])
+def test_the_two_list_fields_reject_an_empty_list(field: str) -> None:
+    # The schema's ``minItems: 1``, and it states the reasons: an empty
+    # ``critical_files`` silently weakens the overlap filter that keeps two lanes off
+    # one path, and under INV-42 a ticket declaring no verification command can never
+    # be verified, only assumed. An empty list is the shape that passes "did you send
+    # the field?" while answering nothing.
+    with pytest.raises(ValidationError):
+        TicketDraft(id="T55", title="t", **{**CONTENT, field: []})
+
+
+@pytest.mark.parametrize("field", ["context", "approach", "interfaceData"])
+def test_the_prose_fields_reject_an_empty_string(field: str) -> None:
+    with pytest.raises(ValidationError):
+        TicketDraft(id="T55", title="t", **{**CONTENT, field: ""})
+
+
+def test_ticket_edit_requires_the_content_fields() -> None:
     with pytest.raises(ValidationError):
         TicketEdit(title="t")
+
+
+@pytest.mark.parametrize("retired", ["bodyMarkdown", "frontMatter", "files"])
+def test_the_retired_write_fields_are_rejected_not_ignored(retired: str) -> None:
+    # ``extra="forbid"`` is what makes the surface change VISIBLE. A client still
+    # sending a Markdown body gets a 422 naming the field, instead of a silent accept
+    # that writes a ticket with the body dropped — the failure mode this whole PR
+    # exists to avoid one level up.
+    with pytest.raises(ValidationError):
+        TicketDraft(id="T55", title="t", **CONTENT, **{retired: "x"})
 
 
 # --------------------------------------------------------------------------- #
@@ -131,12 +173,12 @@ def test_ticket_edit_requires_body_markdown() -> None:
 
 def test_ticket_draft_forbids_unknown_field() -> None:
     with pytest.raises(ValidationError):
-        TicketDraft(id="T55", title="t", bodyMarkdown="# Body", bogusField=1)
+        TicketDraft(id="T55", title="t", **CONTENT, bogusField=1)
 
 
 def test_ticket_edit_forbids_unknown_field() -> None:
     with pytest.raises(ValidationError):
-        TicketEdit(title="t", bodyMarkdown="# Body", bogusField=1)
+        TicketEdit(title="t", **CONTENT, bogusField=1)
 
 
 def test_file_diff_forbids_unknown_field() -> None:
@@ -280,23 +322,24 @@ def test_model_dump_round_trips(model: BaseModel) -> None:
 
 
 def test_ticket_draft_optional_and_collection_fields_default_sensibly() -> None:
-    draft = TicketDraft(id="T55", title="t", bodyMarkdown="# Body")
+    draft = TicketDraft(id="T55", title="t", **CONTENT)
     assert draft.track is None
     assert draft.milestone is None
     assert draft.dependsOn == []
     assert draft.provides == ""
-    assert draft.files == []
-    assert draft.frontMatter == {}
+    # The one content field the schema makes optional, and the only one that may
+    # default: absent notes is a planner who did not answer, which is a different
+    # document from one who answered with nothing.
+    assert draft.verificationNotes is None
 
 
 def test_ticket_edit_optional_and_collection_fields_default_sensibly() -> None:
-    edit = TicketEdit(title="t", bodyMarkdown="# Body")
+    edit = TicketEdit(title="t", **CONTENT)
     assert edit.track is None
     assert edit.milestone is None
     assert edit.dependsOn == []
     assert edit.provides == ""
-    assert edit.files == []
-    assert edit.frontMatter == {}
+    assert edit.verificationNotes is None
 
 
 def test_diff_preview_files_default_empty() -> None:

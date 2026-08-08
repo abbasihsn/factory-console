@@ -1,22 +1,36 @@
 """Pure write-render: compute the DESIRED text of the three coupled files.
 
 Given a project's CURRENT on-disk state plus a validated create/edit/delete, this
-module computes exactly what each of ``docs/planning/tickets.json``, the ticket
-``<id>.md``, and ``ROADMAP.md`` should contain — as a set of
+module computes exactly what each of ``docs/planning/tickets.json``, the ticket's
+content file, and ``ROADMAP.md`` should contain — as a set of
 :class:`PlannedChange` — WITHOUT writing anything. Kept pure so the dry-run diff
 engine and the atomic co-writer consume the identical planned change-set and can
 never disagree about what would change.
 
-Forward-compatibility mirrors the read side: an edit MERGES onto the existing raw
-manifest entry, so unknown fields (e.g. ``estimate``) survive verbatim — the same
-tolerance the read path keeps on :attr:`Ticket.raw`. Path safety is
-defense-in-depth: every ticket id is re-validated against
-:data:`TICKET_ID_PATTERN` and resolved under ``project.rootPath`` via
-:func:`_safe_resolve` (mirroring :mod:`~factory_console.file_adapter.ticket_md`),
-so a slash/``..`` id can never escape the tickets directory.
+**The console writes App Factory v3 tickets, and only those.** A created ticket is a
+JSON content file whose path the manifest entry declares; an edit rewrites one. That is
+narrower than what it READS (:mod:`~factory_console.file_adapter.ticket_content` still
+accepts Markdown, so a project mid-migration stays viewable) and the asymmetry is the
+point: the write DTOs no longer carry a field that could express a Markdown body, so an
+edit landing on one is refused with ``factory-ticket migrate`` rather than converted in
+place. A refusal naming the command is recoverable in one step; a lossy conversion
+nobody asked for is not.
 
-Only the THREE known relative paths are ever emitted — the manifest, the ticket
-``.md``, and the roadmap — never a run-state path. Nothing here writes, makes
+Forward-compatibility now applies to ONE of the two files. An edit MERGES onto the
+existing raw manifest entry, so unknown index fields (``estimate``, a legacy ``files``)
+survive verbatim — the same tolerance the read path keeps on :attr:`Ticket.raw`. The
+content file is REPLACED, because its schema forbids extra keys and requires every
+field: there is nothing a merge could preserve that the supplied fields do not say, and
+what it might preserve is what the factory itself rejects.
+
+Path safety is defense-in-depth: every ticket id is re-validated and resolved under
+``project.rootPath`` through
+:func:`~factory_console.file_adapter.path_safety.resolve_ticket_path` — the same single
+resolver the read path uses — so a slash/``..`` id can never escape the tickets
+directory, and an edit can never write to a file the reader would not have read.
+
+Only the THREE known relative paths are ever emitted — the manifest, the ticket's
+content file, and the roadmap — never a run-state path. Nothing here writes, makes
 directories, or has any side effect; it only reads.
 """
 
@@ -28,47 +42,21 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-import yaml
 from pydantic import BaseModel, ConfigDict
 
 from factory_console.domain.project import Project
 from factory_console.domain.ticket import TICKET_ID_PATTERN
-from factory_console.domain.write import TicketDraft, TicketEdit
+from factory_console.domain.write import TicketContentFields, TicketDraft, TicketEdit
 from factory_console.errors import FactoryConsoleError
 from factory_console.file_adapter.manifest import DEPENDS_ON_KEYS, load_manifest_document
 from factory_console.file_adapter.path_safety import PathTraversal, resolve_ticket_path
 from factory_console.file_adapter.roadmap_parse import _LIST_ITEM_RE, _extract_ticket_id
-from factory_console.file_adapter.ticket_md import TicketFileUnreadable, _split_front_matter
+from factory_console.file_adapter.ticket_content import TicketFormatRetired, TicketFormatUnsupported
+from factory_console.file_adapter.ticket_json import parse_ticket_content
+from factory_console.file_adapter.ticket_md import TicketFileUnreadable
 
 _TICKET_ID_RE = re.compile(TICKET_ID_PATTERN)
 """The canonical ticket-id pattern compiled once at import for re-validation."""
-
-_FENCE = "---"
-"""A front-matter fence line — exactly three dashes on their own line."""
-
-_YAML_WIDTH = 10**6
-"""Effectively-infinite line width, so a long scalar is never folded.
-
-PyYAML defaults to ``width=80`` and folds any longer plain scalar onto a
-continuation line. Real ticket headers carry ``provides:`` values well past that,
-so the default would rewrite those lines on every edit — churn on text the user
-never touched, in the very diff the dry-run preview exists to show.
-"""
-
-
-class _BlockSequenceDumper(yaml.SafeDumper):
-    """A ``SafeDumper`` that INDENTS block sequences under their mapping key.
-
-    PyYAML emits ``dependsOn:`` items flush with the key (``- CAD-100``) while the
-    App Factory writes them indented (``  - CAD-100``). Without this the two styles
-    disagree and every list line in a preserved header shows as changed. Pairs with
-    :data:`_YAML_WIDTH` to keep a re-dumped header byte-identical to the on-disk one
-    wherever the values did not actually change.
-    """
-
-    def increase_indent(self, flow: bool = False, indentless: bool = False) -> None:
-        super().increase_indent(flow=flow, indentless=False)
-
 
 _DEFAULT_STATUS = "todo"
 """The status a freshly created ticket carries in the manifest."""
@@ -135,25 +123,14 @@ class PlannedChange(BaseModel):
 # --------------------------------------------------------------------------- #
 
 
-def _safe_resolve(project: Project, ticket_id: str) -> Path:
-    """Resolve ``<ticketsDir>/<ticket_id>.md``, refusing any unsafe id.
-
-    The CREATE path's resolver, and only that: a new ticket has no manifest entry
-    yet, so the flat form is the only thing there is to compute. Edit and delete
-    must go through :func:`_entry_md_path` instead, which reads the entry's
-    declared ``path``.
-    """
-    return resolve_ticket_path(project.rootPath, project.ticketsDir, ticket_id)
-
-
 def _require_safe_id(ticket_id: str) -> None:
     """Raise :class:`PathTraversal` unless ``ticket_id`` matches the canonical pattern."""
     if _TICKET_ID_RE.fullmatch(ticket_id) is None:
         raise PathTraversal.from_pattern_violation(ticket_id)
 
 
-def _entry_md_path(project: Project, entry: Mapping[str, Any], ticket_id: str) -> Path:
-    """Resolve the ``.md`` an EXISTING manifest entry declares.
+def _entry_content_path(project: Project, entry: Mapping[str, Any], ticket_id: str) -> Path:
+    """Resolve the content file an EXISTING manifest entry declares.
 
     The write path's half of the rule the read path already follows
     (:func:`~factory_console.file_adapter.manifest.ticket_file_path`): the entry
@@ -195,7 +172,7 @@ def _read_text_or_none(path: Path) -> str | None:
         return None
 
 
-def _read_ticket_md_or_none(ticket_id: str, path: Path) -> str | None:
+def _read_content_or_none(ticket_id: str, path: Path) -> str | None:
     """Return a ticket ``.md``'s text, or ``None`` only when it is genuinely ABSENT.
 
     Unlike :func:`_read_text_or_none`, an existing-but-UNREADABLE file (a directory,
@@ -244,13 +221,25 @@ def _serialize_manifest(manifest_obj: Mapping[str, Any]) -> str:
     return json.dumps(manifest_obj, indent=2, ensure_ascii=False) + "\n"
 
 
-def _draft_to_entry(draft: TicketDraft) -> dict[str, Any]:
-    """Build the camelCase manifest entry for a newly created ticket.
+def _draft_to_entry(draft: TicketDraft, content_relpath: str) -> dict[str, Any]:
+    """Build the manifest INDEX entry for a newly created ticket.
 
     ``provides`` is stored as the scalar string the manifest schema uses (not the
     model's ``list[str]`` read-side shape); ``status`` starts at ``todo``. The
     dependency list uses the PRODUCER's key (:data:`DEPENDS_ON_KEYS` [0]) so a
     console-created ticket reads back the way a factory-created one does.
+
+    ``path`` is written EXPLICITLY rather than left to the reader's flat fallback.
+    The fallback derives ``<ticketsDir>/<id>.md``, so a v3 ticket that relied on it
+    would be looked for under the wrong suffix — and more to the point, a manifest
+    that says where its content lives is a manifest nothing has to guess about. It
+    is also what makes the created ticket findable by the factory, whose reader takes
+    the declared path and has no fallback of this shape at all.
+
+    ``files`` is NOT written. v3's index has no such key: the same information lives
+    in the content file's ``critical_files``, which is where the overlap filter reads
+    it from. Writing both would create two answers to one question, and the console
+    would be the thing that disagreed with itself first.
     """
     return _write_depends_on(
         {
@@ -260,41 +249,32 @@ def _draft_to_entry(draft: TicketDraft) -> dict[str, Any]:
             "track": draft.track,
             "milestone": draft.milestone,
             "provides": draft.provides,
-            "files": list(draft.files),
+            "path": content_relpath,
         },
         list(draft.dependsOn),
     )
 
 
-_MANIFEST_MIRRORED_KEYS = ("title", "track", "milestone", "dependsOn", "provides", "files")
-"""The fields an edit OWNS — the ones it overwrites wherever they are stored.
+_MANIFEST_MIRRORED_KEYS = ("title", "track", "milestone", "dependsOn", "provides")
+"""The INDEX fields an edit OWNS — the ones it overwrites in ``tickets.json``.
 
-Named once because they are written in two coupled places: the manifest entry
-(:func:`_merge_edit`, always) and the ticket ``.md``'s YAML header
-(:func:`_overlay_front_matter`, where the header already carries them). Two
-independent copies of this list is exactly how the two files drift apart.
-"""
-
-_FACTORY_OWNED_FRONT_MATTER_KEYS = frozenset({"id", "status", *_MANIFEST_MIRRORED_KEYS})
-"""Front-matter keys a CLIENT may never set through ``frontMatter``.
-
-``id`` and ``status`` are the factory's alone (:func:`_merge_edit` keeps them out of
-an edit for the same reason); the mirrored keys are owned by the edit's own named
-fields. ``frontMatter`` is an open ``dict`` on a public write route, so without this
-filter a caller could set them there and desynchronize the ``.md`` header from the
-manifest entry rendered alongside it.
+``files`` left this list when the write path moved to v3 content files. An edit's
+``criticalFiles`` is now written to the ticket's own ``critical_files``, and a legacy
+``files`` key still sitting in an index entry is left untouched rather than updated:
+the reader already prefers the content file's answer, so rewriting a key v3 does not
+define would be maintaining a second copy for no reader.
 """
 
 
 def _edit_mirror(edit: TicketEdit) -> dict[str, Any]:
     """The edit's :data:`_MANIFEST_MIRRORED_KEYS` values, in their stored shapes.
 
-    ``provides`` stays the scalar-string manifest shape; ``dependsOn`` / ``files``
-    are copied to plain lists so no caller shares the model's sequence.
+    ``provides`` stays the scalar-string manifest shape; ``dependsOn`` is copied to a
+    plain list so no caller shares the model's sequence.
 
-    ``dependsOn`` is the ``.md`` FRONT-MATTER spelling, which is the header's own
-    and is not the manifest's — :func:`_write_depends_on` decides the manifest key
-    after this mapping is overlaid, and removes this one on the way through.
+    ``dependsOn`` is spelled camelCase here and is not necessarily the manifest's key —
+    :func:`_write_depends_on` decides that after this mapping is overlaid, and removes
+    this one on the way through.
     """
     return {
         "title": edit.title,
@@ -302,21 +282,6 @@ def _edit_mirror(edit: TicketEdit) -> dict[str, Any]:
         "milestone": edit.milestone,
         "dependsOn": list(edit.dependsOn),
         "provides": edit.provides,
-        "files": list(edit.files),
-    }
-
-
-def _client_front_matter(front_matter: Mapping[str, Any]) -> dict[str, Any]:
-    """Keep only the keys a client legitimately owns in ``frontMatter``.
-
-    Drops :data:`_FACTORY_OWNED_FRONT_MATTER_KEYS` so an arbitrary extra key (e.g.
-    ``owner``, ``estimate``) still round-trips while a factory-owned one cannot be
-    smuggled past the named fields that govern it.
-    """
-    return {
-        key: value
-        for key, value in front_matter.items()
-        if key not in _FACTORY_OWNED_FRONT_MATTER_KEYS
     }
 
 
@@ -350,158 +315,104 @@ def _write_depends_on(entry: dict[str, Any], depends_on: list[str]) -> dict[str,
 
 
 # --------------------------------------------------------------------------- #
-# Ticket .md rendering
+# Ticket CONTENT (App Factory v3 JSON) rendering
 # --------------------------------------------------------------------------- #
 
+_CONTENT_SUFFIX = ".json"
+"""The suffix every ticket this console CREATES is written under.
 
-def _overlay_front_matter(existing: Mapping[str, Any], edit: TicketEdit) -> dict[str, Any]:
-    """Overlay an edit onto an EXISTING ``.md`` front-matter mapping. Pure.
+The console writes v3 tickets and only v3 tickets. Reading still accepts Markdown
+(:mod:`~factory_console.file_adapter.ticket_content`), because a project mid-migration
+must stay viewable; writing does not, because the write DTOs no longer carry a field
+that could express a Markdown body. An edit that lands on one is refused with the
+migration command rather than converted in place — see :func:`_require_writable_format`.
+"""
 
-    The ``.md`` counterpart of :func:`_merge_edit`, and now for the same reason in
-    full. Starting from what is on disk means an edit never silently drops a key it
-    was never given — rendering from ``edit.frontMatter`` alone (which defaults to
-    ``{}``) deleted the whole YAML header on every ordinary edit. But the header
-    also MIRRORS the manifest fields the edit does own, so those are refreshed from
-    the edit too; leaving them at their on-disk values made the ``.md`` contradict
-    the ``tickets.json`` entry rewritten in the same change-set, permanently (every
-    later edit re-based off the same stale copy).
 
-    A mirrored key is refreshed only where the header ALREADY carries it, so a
-    ``.md`` that never had one does not gain it — AND only where the request actually
-    supplied it. ``track`` and ``milestone`` are ``str | None = None`` and the SPA's
-    edit form has no field for either, so on an ordinary edit they arrive as
-    not-sent defaults. Refreshing unconditionally stamped a real on-disk value with
-    ``None``, which did not merely let the header drift from the manifest — it
-    destroyed the header's last correct copy, permanently, since every later edit
-    re-based off the nulled value.
+def _render_ticket_json(ticket_id: str, fields: TicketContentFields) -> str:
+    """Render the five structured fields as a v3 ticket content file.
 
-    ``model_fields_set`` is what separates the two cases: a client that explicitly
-    sends ``"track": null`` MEANS clear it, and that still works, because the key is
-    in the supplied set. A client that omits the key changes nothing.
+    Key order is ``fac_ticket_md_to_json``'s (App Factory ``lib/ticket.sh``) and the
+    schema's: ``id``, ``context``, ``approach``, ``critical_files``, ``interface_data``,
+    ``verification``. Two producers writing the same document with different key orders
+    make every factory-written ticket diff against every console-written one on the next
+    edit, on bytes nobody changed — the same reason
+    :func:`_serialize_manifest` matches the factory's manifest formatting rather than
+    Python's defaults. ``indent=2`` and the trailing newline match ``jq``'s output for
+    the same reason, and ``ensure_ascii=False`` keeps non-ASCII prose verbatim.
 
-    ``frontMatter`` is applied last but filtered through
-    :func:`_client_front_matter`, so a client can add or override its own keys and
-    nothing else.
+    ``notes`` is OMITTED when empty rather than written as ``null`` or ``""``. The
+    schema makes it optional, and a key present-and-empty is a different document from
+    a key absent — it would show as an added line in the diff of every ticket that has
+    no notes, and it claims the planner answered a question they did not.
 
-    Kept pure and free of disk access so both :class:`FileWriter` implementations
-    can share it and cannot drift on what an edit does to a header.
+    **The result is validated before it is returned.** ``parse_ticket_content`` is the
+    reader's own validation, so a document this function builds is proven to be one the
+    console — and therefore the factory, whose schema it mirrors — will accept. The DTO
+    already constrains every field, which is what makes this a belt-and-braces check
+    rather than the primary gate: it catches a rendering bug, not bad input, and a
+    rendering bug is exactly the class of defect that would otherwise reach disk.
     """
-    supplied = edit.model_fields_set
-    merged = dict(existing)
-    merged.update(
-        {
-            key: value
-            for key, value in _edit_mirror(edit).items()
-            if key in existing and key in supplied
-        }
+    payload: dict[str, Any] = {
+        "id": ticket_id,
+        "context": fields.context,
+        "approach": fields.approach,
+        "critical_files": list(fields.criticalFiles),
+        "interface_data": fields.interfaceData,
+        "verification": {"commands": list(fields.verificationCommands)},
+    }
+    if fields.verificationNotes:
+        payload["verification"]["notes"] = fields.verificationNotes
+    text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+    parse_ticket_content(ticket_id, text)
+    return text
+
+
+def _require_writable_format(ticket_id: str, path: Path) -> None:
+    """Refuse to write a ticket whose content file is not a v3 JSON document.
+
+    Raises :class:`~factory_console.file_adapter.ticket_content.TicketFormatRetired`
+    for a ``.md`` ticket, naming ``factory-ticket migrate`` — the command that converts
+    it — and :class:`~factory_console.file_adapter.ticket_content.TicketFormatUnsupported`
+    for a suffix this console has no reader for at all.
+
+    **Refusing beats converting**, and the alternative was tempting: an edit arrives
+    with all five structured fields, so the console COULD write them as JSON and repoint
+    the manifest. That would silently change a file's format under a user who asked to
+    change its text, and it would drop whatever the Markdown carried that the five fields
+    do not — front-matter keys, prose belonging to no section. The factory's own migrator
+    refuses to guess for exactly this reason: it reports what it cannot parse and writes
+    nothing. A refusal naming the command is recoverable in one step; a lossy conversion
+    nobody asked for is not recoverable at all.
+
+    It also beats refusing at the DTO. A request for a ``.md`` ticket is well-formed —
+    the client sent five valid fields — so the problem is the STATE of the repository,
+    not the request, which is why this is a 409 and not a 422.
+    """
+    suffix = path.suffix.lower()
+    if suffix == _CONTENT_SUFFIX:
+        return
+    if suffix == ".md":
+        raise TicketFormatRetired(ticket_id)
+    raise TicketFormatUnsupported(ticket_id, path.suffix)
+
+
+def _content_path_for_create(project: Project, ticket_id: str) -> Path:
+    """Where a NEWLY created ticket's content file goes: ``<ticketsDir>/<id>.json``.
+
+    Flat, and deliberately not filed under a ``<milestone>/`` directory with a slug in
+    the name the way the factory's planner does. That layout is the PLANNER's, and its
+    slug rule is not stated anywhere this console can read — inventing one would produce
+    filenames that look like the factory's and are not, which is worse than an obviously
+    different shape. Nothing has to guess either way, because the manifest entry declares
+    the path (:func:`_draft_to_entry`).
+    """
+    return resolve_ticket_path(
+        project.rootPath,
+        project.ticketsDir,
+        ticket_id,
+        project.ticketsDir / f"{ticket_id}{_CONTENT_SUFFIX}",
     )
-    merged.update(_client_front_matter(edit.frontMatter))
-    return merged
-
-
-def _parse_front_matter(front_matter_yaml: str | None) -> dict[str, Any]:
-    """Parse a raw front-matter block with :func:`read_ticket_md_text`'s tolerance.
-
-    Malformed YAML, or YAML that parses to a non-mapping, yields ``{}`` rather than
-    raising — matching the read path, which never fails a ticket over a bad header.
-    """
-    if front_matter_yaml is None:
-        return {}
-    try:
-        parsed = yaml.safe_load(front_matter_yaml)
-    except yaml.YAMLError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
-
-
-def _dump_front_matter(front_matter: Mapping[str, Any]) -> str | None:
-    """Serialize front matter in the App Factory's on-disk style, or ``None`` if empty.
-
-    ``sort_keys=False`` keeps author order; ``allow_unicode=True`` keeps non-ASCII
-    values verbatim, matching the raw UTF-8 the body and manifest are rendered with
-    (see :func:`_serialize_manifest`) so no coupled file escapes characters the user
-    never touched. :class:`_BlockSequenceDumper` and :data:`_YAML_WIDTH` pin the
-    sequence indentation and line width to the same end, for the header's own lines.
-    """
-    if not front_matter:
-        return None
-    return yaml.dump(
-        dict(front_matter),
-        Dumper=_BlockSequenceDumper,
-        sort_keys=False,
-        allow_unicode=True,
-        default_flow_style=False,
-        width=_YAML_WIDTH,
-    )
-
-
-def _render_md_text(front_matter_yaml: str | None, body_markdown: str) -> str:
-    """Assemble a ``.md`` from an ALREADY-serialized header block plus the body.
-
-    ``None`` means no header, so emit just the body with no fence. Taking the block
-    as text is what lets an edit reuse the on-disk header verbatim (see
-    :func:`render_edit_md`) instead of round-tripping it through YAML.
-    """
-    if front_matter_yaml is None:
-        return body_markdown
-    return f"{_FENCE}\n{front_matter_yaml}{_FENCE}\n{body_markdown}"
-
-
-def _render_md(front_matter: Mapping[str, Any], body_markdown: str) -> str:
-    """Render a ticket ``.md`` from optional YAML front-matter plus the body.
-
-    Round-trip consistent with
-    :func:`~factory_console.file_adapter.ticket_md.read_ticket_md_text`.
-    """
-    return _render_md_text(_dump_front_matter(front_matter), body_markdown)
-
-
-def _front_matter_parsed_cleanly(front_matter_yaml: str) -> bool:
-    """Whether `front_matter_yaml` parses the way :func:`read_ticket_md_text` treats as
-    clean — to a mapping, or to nothing — so that function's BODY excludes the
-    header text.
-
-    Malformed YAML, or YAML that parses to a non-mapping, makes ``read_ticket_md_text``
-    fall back to returning the WHOLE file (fences included) as the body rather than
-    lose bytes over a header it cannot make sense of. :func:`render_edit_md` has to
-    know which case it is in: only here does the client's ``edit.bodyMarkdown``
-    already contain the fenced header verbatim.
-    """
-    try:
-        parsed = yaml.safe_load(front_matter_yaml)
-    except yaml.YAMLError:
-        return False
-    return parsed is None or isinstance(parsed, dict)
-
-
-def render_edit_md(current_text: str | None, edit: TicketEdit) -> str:
-    """Render an edited ticket ``.md`` from the ONE text already read for the diff.
-
-    Takes the current text rather than a project + id so the header folded into the
-    new text and the ``currentText`` shown in the diff come from a single read —
-    otherwise a concurrent factory write between two reads would make the preview
-    and the text about to be written describe different base states.
-
-    When the overlay leaves the header unchanged (the common body-only edit), the
-    on-disk block is reused BYTE-FOR-BYTE rather than re-dumped, so comments and any
-    formatting PyYAML cannot round-trip survive and the ``.md`` diff shows only the
-    body. Otherwise the merged header is re-dumped in the on-disk style.
-
-    A header that does not parse cleanly (see :func:`_front_matter_parsed_cleanly`)
-    is a THIRD case, handled before either of those: `read_ticket_md_text` already folded
-    the whole file, fences included, into the body it handed the client, so
-    re-prepending the header here would emit it twice.
-
-    Shared with :class:`FakeFileWriter` so both writers agree on what an edit does.
-    """
-    front_matter_yaml, _body = _split_front_matter(current_text) if current_text else (None, "")
-    if front_matter_yaml is not None and not _front_matter_parsed_cleanly(front_matter_yaml):
-        return _render_md_text(None, edit.bodyMarkdown)
-    existing = _parse_front_matter(front_matter_yaml)
-    merged = _overlay_front_matter(existing, edit)
-    if front_matter_yaml is not None and merged == existing:
-        return _render_md_text(front_matter_yaml, edit.bodyMarkdown)
-    return _render_md_text(_dump_front_matter(merged), edit.bodyMarkdown)
 
 
 # --------------------------------------------------------------------------- #
@@ -717,18 +628,20 @@ def render_create(project: Project, draft: TicketDraft) -> list[PlannedChange]:
 
     Raises :class:`PathTraversal` if the id is unsafe and
     :class:`TicketAlreadyExists` (409) if it is already in the manifest. Returns
-    the manifest change (new entry appended), the new ``.md`` change
-    (``currentText=None``), and — when a ``## <milestone>`` section matches — the
-    roadmap change with a new ``- [ ] **<id>** — <title>`` line.
+    the manifest change (new entry appended, DECLARING the content path), the new
+    ``.json`` content change (``currentText=None``), and — when a ``## <milestone>``
+    section matches — the roadmap change with a new ``- [ ] **<id>** — <title>`` line.
     """
-    md_path = _safe_resolve(project, draft.id)
+    content_path = _content_path_for_create(project, draft.id)
     manifest_path = project.ticketsManifestPath
     document = load_manifest_document(manifest_path)
     if _find_entry_index(document.tickets, draft.id) is not None:
         raise TicketAlreadyExists(draft.id)
 
     manifest_raw, manifest_obj = document.rawText, document.obj
-    manifest_obj["tickets"].append(_draft_to_entry(draft))
+    manifest_obj["tickets"].append(
+        _draft_to_entry(draft, _rel_posix(content_path, project.rootPath))
+    )
 
     changes = [
         PlannedChange(
@@ -738,17 +651,14 @@ def render_create(project: Project, draft: TicketDraft) -> list[PlannedChange]:
             newText=_serialize_manifest(manifest_obj),
         ),
         PlannedChange(
-            path=md_path,
-            relPath=_rel_posix(md_path, project.rootPath),
+            path=content_path,
+            relPath=_rel_posix(content_path, project.rootPath),
             # Read the current text (normally None — the id is new to the manifest)
-            # so an orphan <id>.md on disk that is absent from the manifest surfaces
+            # so an orphan <id>.json on disk that is absent from the manifest surfaces
             # in the diff as a modify instead of being silently clobbered, matching
             # the edit/delete siblings.
-            currentText=_read_text_or_none(md_path),
-            # Filtered for the same reason as an edit's: ``frontMatter`` is an open
-            # dict on a public route, and the factory-owned keys are set from the
-            # manifest entry rendered alongside this file, never by the caller.
-            newText=_render_md(_client_front_matter(draft.frontMatter), draft.bodyMarkdown),
+            currentText=_read_text_or_none(content_path),
+            newText=_render_ticket_json(draft.id, draft),
         ),
     ]
     roadmap_change = _roadmap_change(
@@ -764,13 +674,20 @@ def render_edit(project: Project, ticket_id: str, edit: TicketEdit) -> list[Plan
     """Compute the planned changes for editing ticket ``ticket_id``.
 
     Raises :class:`PathTraversal` if the id is unsafe, :class:`UnknownTicket` (404)
-    if it is absent, and :class:`TicketFileUnreadable` (500) if the ``.md`` exists
-    but cannot be read — an edit rebuilds that file from its current contents, so it
-    must not proceed on one it could not read. MERGES on both coupled files so
-    unknown fields survive — the edit onto the existing raw manifest entry
-    (:func:`_merge_edit`), and onto the ``.md``'s existing YAML header
-    (:func:`render_edit_md`) — replaces the ``.md`` body with ``edit.bodyMarkdown``,
-    and — when a roadmap item carries the id — relabels that item in place.
+    if it is absent, ``TicketFormatRetired`` (409) if its content file is a ``.md``
+    this console can no longer write, and :class:`TicketFileUnreadable` (500) if the
+    content file exists but cannot be read.
+
+    The two halves are treated DIFFERENTLY, and deliberately. The manifest entry is
+    MERGED (:func:`_merge_edit`), so unknown index fields — ``estimate``, a legacy
+    ``files`` — and the entry's ``id`` / ``status`` survive. The content file is
+    REPLACED: a v3 ticket's schema forbids extra keys, so there is nothing in it a
+    merge could preserve that the five supplied fields do not already say, and every
+    field is required, so a merge could not be partial either. Preserving unknown keys
+    there would mean preserving keys the factory itself rejects.
+
+    The current content text is still read — for the diff's ``currentText``, and so an
+    unreadable file fails closed rather than being overwritten sight unseen.
     """
     # Validate the id BEFORE the manifest is read. An unsafe id must raise
     # PathTraversal (400), not the UnknownTicket (404) a manifest miss yields — and
@@ -783,15 +700,15 @@ def render_edit(project: Project, ticket_id: str, edit: TicketEdit) -> list[Plan
     if index is None:
         raise UnknownTicket(ticket_id)
 
-    # The ENTRY says where the body file is, so it is read before the entry is
+    # The ENTRY says where the content file is, so it is read before the entry is
     # overwritten — and from the same document the index came from.
-    md_path = _entry_md_path(project, document.tickets[index], ticket_id)
+    content_path = _entry_content_path(project, document.tickets[index], ticket_id)
+    # Before anything is computed: a format this console cannot write is refused with
+    # the migration command, not converted in place. Checked here rather than at the
+    # DTO because the request is well-formed — it is the repository that is not v3 yet.
+    _require_writable_format(ticket_id, content_path)
     manifest_raw, manifest_obj = document.rawText, document.obj
     manifest_obj["tickets"][index] = _merge_edit(manifest_obj["tickets"][index], edit)
-
-    # One read backs both halves of the .md change, so the diff's "current" and the
-    # header folded into its "new" can never come from different versions of the file.
-    current_md = _read_ticket_md_or_none(ticket_id, md_path)
 
     changes = [
         PlannedChange(
@@ -801,10 +718,10 @@ def render_edit(project: Project, ticket_id: str, edit: TicketEdit) -> list[Plan
             newText=_serialize_manifest(manifest_obj),
         ),
         PlannedChange(
-            path=md_path,
-            relPath=_rel_posix(md_path, project.rootPath),
-            currentText=current_md,
-            newText=render_edit_md(current_md, edit),
+            path=content_path,
+            relPath=_rel_posix(content_path, project.rootPath),
+            currentText=_read_content_or_none(ticket_id, content_path),
+            newText=_render_ticket_json(ticket_id, edit),
         ),
     ]
     roadmap_change = _roadmap_change(
@@ -820,9 +737,14 @@ def render_delete(project: Project, ticket_id: str) -> list[PlannedChange]:
     """Compute the planned changes for deleting ticket ``ticket_id``.
 
     Raises :class:`PathTraversal` if the id is unsafe and :class:`UnknownTicket`
-    (404) if it is absent. Removes the manifest entry, marks the ``.md`` change
+    (404) if it is absent. Removes the manifest entry, marks the content-file change
     ``newText=None`` (delete the file), and — when a roadmap item carries the id —
     removes that item line.
+
+    Deleting is NOT gated on the content format, unlike editing. An edit has to produce
+    a document in a format this console can write; a delete removes the file whatever it
+    holds, and refusing would leave a ``.md`` ticket undeletable through the very UI that
+    lists it — a lockout with no remedy short of hand-editing the manifest.
     """
     _require_safe_id(ticket_id)  # PathTraversal (400) before the manifest's 404
     manifest_path = project.ticketsManifestPath
@@ -831,7 +753,7 @@ def render_delete(project: Project, ticket_id: str) -> list[PlannedChange]:
     if index is None:
         raise UnknownTicket(ticket_id)
 
-    md_path = _entry_md_path(project, document.tickets[index], ticket_id)
+    content_path = _entry_content_path(project, document.tickets[index], ticket_id)
     manifest_raw, manifest_obj = document.rawText, document.obj
     del manifest_obj["tickets"][index]
 
@@ -843,9 +765,9 @@ def render_delete(project: Project, ticket_id: str) -> list[PlannedChange]:
             newText=_serialize_manifest(manifest_obj),
         ),
         PlannedChange(
-            path=md_path,
-            relPath=_rel_posix(md_path, project.rootPath),
-            currentText=_read_text_or_none(md_path),
+            path=content_path,
+            relPath=_rel_posix(content_path, project.rootPath),
+            currentText=_read_text_or_none(content_path),
             newText=None,
         ),
     ]

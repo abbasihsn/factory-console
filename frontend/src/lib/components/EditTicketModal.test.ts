@@ -19,6 +19,21 @@ const updateTicketMock = vi.mocked(updateTicket);
 
 const TOKEN = 'test-write-token';
 
+/**
+ * The five structured fields an App Factory v3 ticket's content file carries.
+ *
+ * `files` on the ticket below is the same list read through the display projection, and
+ * the two must agree — `enrich_ticket` assigns both from this one value, so a fixture
+ * where they differ describes a ticket the server cannot produce.
+ */
+const CONTENT = {
+	context: 'The body as loaded.',
+	approach: 'Wire the modal, then the route.',
+	criticalFiles: ['frontend/src/routes/tickets/[id]/+page.svelte'],
+	interfaceData: 'N/A',
+	verificationCommands: ['pnpm test']
+};
+
 const ticket: Ticket = {
 	id: 'T70',
 	title: 'Wire gated edit + delete',
@@ -29,21 +44,25 @@ const ticket: Ticket = {
 	dependsOn: ['T68', 'T69'],
 	provides: ['Edit affordances'],
 	files: ['frontend/src/routes/tickets/[id]/+page.svelte'],
-	filePath: '/docs/planning/tickets/v2/T70-detail-edit-delete.md',
+	filePath: '/docs/planning/tickets/v2/T70-detail-edit-delete.json',
+	content: CONTENT,
 	bodyMarkdown: '## Context\n\nThe body as loaded.',
 	bodyHtml: '<h2>Context</h2>',
 	raw: {}
 };
 
-/** The PUT body the untouched form produces for `ticket`. */
+/**
+ * The PUT body the untouched form produces for `ticket`.
+ *
+ * `track` and `milestone` are ABSENT although the ticket carries both: this form does
+ * not collect them, so sending anything would invent a value, and the server refreshes a
+ * field only where the request supplied it.
+ */
 const UNCHANGED_BODY = {
 	title: 'Wire gated edit + delete',
-	track: 'frontend',
-	milestone: 'v2',
 	dependsOn: ['T68', 'T69'],
 	provides: 'Edit affordances',
-	files: ['frontend/src/routes/tickets/[id]/+page.svelte'],
-	bodyMarkdown: '## Context\n\nThe body as loaded.'
+	...CONTENT
 };
 
 const PREVIEW: WritePreview = {
@@ -104,6 +123,51 @@ describe('EditTicketModal', () => {
 		// `provides` is a scalar on the wire, so the single-element read list joins
 		// back to exactly the stored value.
 		expect((screen.getByLabelText('Provides') as HTMLInputElement).value).toBe('Edit affordances');
+		// The five content fields come from `ticket.content`, NOT from `bodyMarkdown`:
+		// that field is a rendered view, and five fields cannot be recovered from the
+		// paragraphs they were flattened into.
+		expect((screen.getByLabelText('Context') as HTMLTextAreaElement).value).toBe(
+			'The body as loaded.'
+		);
+		expect((screen.getByLabelText('Critical files') as HTMLTextAreaElement).value).toBe(
+			'frontend/src/routes/tickets/[id]/+page.svelte'
+		);
+		expect((screen.getByLabelText('Verification commands') as HTMLTextAreaElement).value).toBe(
+			'pnpm test'
+		);
+	});
+
+	// The read-side twin of the server's `ticket_format_retired` (409): a Markdown ticket
+	// has no structured content, and the write DTOs carry no field that could express a
+	// Markdown body. Refusing here is what turns that into something the user reads BEFORE
+	// typing, instead of a failure after a form they filled and a dry-run they waited for.
+	describe('a ticket still stored as Markdown', () => {
+		const markdownTicket: Ticket = {
+			...ticket,
+			filePath: '/docs/planning/tickets/v2/T70-detail-edit-delete.md',
+			content: null
+		};
+
+		it('refuses the edit and names the migration command instead of showing a form', () => {
+			setToken(TOKEN);
+			render(EditTicketModal, { props: { ...baseProps(), ticket: markdownTicket } });
+
+			expect(screen.queryByRole('button', { name: 'Save changes' })).toBeNull();
+			expect(screen.queryByLabelText('Context')).toBeNull();
+			expect(screen.getByRole('alert').textContent).toContain('factory-ticket migrate');
+		});
+
+		it('offers no way to convert it from here', async () => {
+			// `factory-ticket migrate` reports what it cannot parse and writes nothing rather
+			// than guessing which prose belongs to which field. A console that guessed instead
+			// would be the one place in this pipeline that silently invents ticket content.
+			setToken(TOKEN);
+			render(EditTicketModal, { props: { ...baseProps(), ticket: markdownTicket } });
+
+			await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
+			expect(previewWriteMock).not.toHaveBeenCalled();
+			expect(updateTicketMock).not.toHaveBeenCalled();
+		});
 	});
 
 	it('dry-runs the edit on submit and shows the returned diff', async () => {
@@ -124,7 +188,13 @@ describe('EditTicketModal', () => {
 		expect(await screen.findByText('+new title')).toBeTruthy();
 	});
 
-	it('echoes track and milestone so a PUT cannot null them out', async () => {
+	// REPLACES "echoes track and milestone so a PUT cannot null them out". That test
+	// guarded a v2 hazard that no longer exists: those two lived in BOTH the manifest
+	// entry and the ticket .md's YAML header, so an edit that omitted them wiped the
+	// header's only correct copy. A v3 ticket has no header — every field lives in exactly
+	// one file, and the server merges the manifest entry for the keys the request does not
+	// name. Echoing a value this form never collected would now be the invention.
+	it('sends neither track nor milestone, which the form does not collect', async () => {
 		setToken(TOKEN);
 		previewWriteMock.mockResolvedValue(PREVIEW);
 		render(EditTicketModal, { props: baseProps() });
@@ -133,7 +203,11 @@ describe('EditTicketModal', () => {
 
 		await waitFor(() => expect(previewWriteMock).toHaveBeenCalledTimes(1));
 		const [write] = previewWriteMock.mock.calls[0];
-		expect(write).toMatchObject({ body: { track: 'frontend', milestone: 'v2' } });
+		// Narrowed off the discriminant: `WriteRequest`'s delete arm carries no body.
+		expect(write.verb).toBe('update');
+		const body = (write as Extract<typeof write, { verb: 'update' }>).body;
+		expect(Object.keys(body)).not.toContain('track');
+		expect(Object.keys(body)).not.toContain('milestone');
 	});
 
 	it('applies the reviewed body with the token on confirm, then reports saved', async () => {

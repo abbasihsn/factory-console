@@ -85,18 +85,42 @@
 	// false.
 	let tokenRejected = $state(false);
 
-	// Seeded from the loaded ticket. `dependsOn` / `files` are the two list fields
-	// the form edits as newline text; `provides` is a SCALAR on the wire, and the
-	// read model wraps the stored scalar as a single-element list — so joining is an
-	// identity round-trip for it, while a manifest that stored a real list still
-	// shows every value here instead of silently dropping all but the first.
+	// The ticket's STRUCTURED content, or null for a Markdown one. This is the read
+	// model's own `content`, not something re-derived from `bodyMarkdown`: that field
+	// is a RENDERED VIEW, and five fields cannot be recovered from the paragraphs they
+	// were flattened into without re-parsing headings the user never typed.
+	const content = $derived(ticket.content ?? null);
+
+	// Whether this ticket can be edited AT ALL, which is a question about its storage
+	// format and not about its run state. A Markdown ticket has no structured content,
+	// and the write DTOs carry no field that could express a Markdown body — so the
+	// server answers `ticket_format_retired` (409) to any edit of one. Checking here is
+	// what turns that into a refusal the user reads BEFORE typing, instead of a failure
+	// after a form they filled in and a dry-run they waited for.
+	const formatRetired = $derived(content === null);
+
+	// Seeded from the loaded ticket. `dependsOn`, `criticalFiles` and
+	// `verificationCommands` are the three list fields the form edits as newline text;
+	// `provides` is a SCALAR on the wire, and the read model wraps the stored scalar as
+	// a single-element list — so joining is an identity round-trip for it, while a
+	// manifest that stored a real list still shows every value here instead of silently
+	// dropping all but the first.
+	//
+	// The empty-string fallbacks are unreachable through the UI — `formatRetired` renders
+	// the refusal instead of the form — and exist only because `$derived` must produce a
+	// value of the type regardless. They are NOT a "blank ticket" default: sending them
+	// would be a request the server refuses on all five required fields.
 	const initialValues = $derived<TicketFormValues>({
 		id: ticket.id,
 		title: ticket.title,
 		dependsOn: serializeList([...(ticket.dependsOn ?? [])]),
 		provides: (ticket.provides ?? []).join(', '),
-		files: serializeList([...(ticket.files ?? [])]),
-		body: ticket.bodyMarkdown
+		context: content?.context ?? '',
+		approach: content?.approach ?? '',
+		criticalFiles: serializeList([...(content?.criticalFiles ?? [])]),
+		interfaceData: content?.interfaceData ?? '',
+		verificationCommands: serializeList([...(content?.verificationCommands ?? [])]),
+		verificationNotes: content?.verificationNotes ?? ''
 	});
 
 	/**
@@ -149,7 +173,7 @@
 	});
 
 	function handleSubmit(values: TicketFormValues): void {
-		const body = toTicketUpdate(values, ticket);
+		const body = toTicketUpdate(values);
 		pendingBody = body;
 		withToken((token) => void runPreview(body, token));
 	}
@@ -273,7 +297,8 @@
 	}
 
 	// What the reviewed diff is BASED on — every field that feeds `toTicketUpdate`,
-	// plus the body. The reset below keys on this rather than on `ticket.id` alone.
+	// plus the rendered body. The reset below keys on this rather than on `ticket.id`
+	// alone.
 	//
 	// An id-only guard misses the more dangerous case: the root layout `invalidateAll()`s
 	// on every SSE bump, which re-runs the detail load and replaces `ticket` IN PLACE
@@ -290,7 +315,13 @@
 			ticket.milestone,
 			ticket.dependsOn ?? [],
 			ticket.provides ?? [],
-			ticket.files ?? [],
+			// `content` replaces the former `files` entry, which was `content.criticalFiles`
+			// read through the display projection — one of the five, standing in for all of
+			// them. `bodyMarkdown` stays beside it: for a v3 ticket it is RENDERED from
+			// `content` and so adds nothing this does not already catch, but it is the only
+			// thing that moves when a Markdown ticket changes underneath, and this guard must
+			// not go blind on the format it refuses to edit.
+			ticket.content ?? null,
 			ticket.bodyMarkdown
 		])
 	);
@@ -399,32 +430,57 @@
 	</div>
 
 	<div class="flex-1 overflow-y-auto px-4 py-3">
-		{#if tokenNeeded}
-			<!-- Rendered ABOVE the form rather than in place of it: the edit that
-			     triggered this is still held and resumes on save, so replacing the
-			     form would discard the values the user just submitted. -->
-			<section class="mb-4 rounded border border-slate-300 bg-bg p-3">
-				<h3 class="mb-2 text-sm font-semibold text-text">Write token required</h3>
-				{#if tokenRejected}
-					<!-- `alert`: this one IS a failure the user has to act on, and it
-					     replaces a prompt that would otherwise look identical to the
-					     plain "no token yet" case. -->
-					<p role="alert" class="mb-2 text-xs text-danger">
-						The server rejected the token that was held, so it has been discarded. Paste the current
-						one to continue — your edit is still here.
-					</p>
-				{/if}
-				<WriteTokenPrompt />
-			</section>
-		{/if}
+		{#if formatRetired}
+			<!-- REPLACES the form, unlike the token prompt above it, because there is no
+			     held edit to preserve and no value in collecting one: every submit would
+			     be answered `ticket_format_retired` (409). The remedy names the exact
+			     command, matching the server's own `details.remedy` — a refusal the
+			     operator cannot act on is only a slower failure.
 
-		<!-- Keyed on the ticket so a REPLACED one reseeds the fields. `TicketForm`
-		     snapshots `initial` exactly once (deliberately, so a later prop change
-		     cannot clobber in-progress typing), which without this key would leave
-		     ticket A's values in a dialog now headed and applied as ticket B. -->
-		{#key ticket.id}
-			<TicketForm mode="edit" initial={initialValues} disabled={busy} onSubmit={handleSubmit} />
-		{/key}
+			     Note what this does NOT offer: a "convert it for me" button. Rewriting a
+			     Markdown ticket into five fields means deciding which prose belongs to
+			     which, and `factory-ticket migrate` reports what it cannot parse and
+			     writes nothing rather than guessing. A console that guessed instead would
+			     be the one place in this pipeline that silently invents ticket content. -->
+			<section role="alert" class="rounded border border-slate-300 bg-bg p-3">
+				<h3 class="mb-2 text-sm font-semibold text-text">This ticket is not editable here</h3>
+				<p class="mb-2 text-xs text-muted">
+					<span class="font-mono">{ticket.id}</span> is stored as a Markdown file. The console can still
+					read and display it, but App Factory v3 tickets are structured JSON, and an edit has no field
+					to write a Markdown body into.
+				</p>
+				<p class="mb-1 text-xs text-muted">Convert the project's tickets first:</p>
+				<pre
+					class="overflow-x-auto rounded border border-slate-300 bg-surface px-2 py-1 text-xs text-text">factory-ticket migrate --repo &lt;project root&gt;</pre>
+			</section>
+		{:else}
+			{#if tokenNeeded}
+				<!-- Rendered ABOVE the form rather than in place of it: the edit that
+				     triggered this is still held and resumes on save, so replacing the
+				     form would discard the values the user just submitted. -->
+				<section class="mb-4 rounded border border-slate-300 bg-bg p-3">
+					<h3 class="mb-2 text-sm font-semibold text-text">Write token required</h3>
+					{#if tokenRejected}
+						<!-- `alert`: this one IS a failure the user has to act on, and it
+						     replaces a prompt that would otherwise look identical to the
+						     plain "no token yet" case. -->
+						<p role="alert" class="mb-2 text-xs text-danger">
+							The server rejected the token that was held, so it has been discarded. Paste the
+							current one to continue — your edit is still here.
+						</p>
+					{/if}
+					<WriteTokenPrompt />
+				</section>
+			{/if}
+
+			<!-- Keyed on the ticket so a REPLACED one reseeds the fields. `TicketForm`
+			     snapshots `initial` exactly once (deliberately, so a later prop change
+			     cannot clobber in-progress typing), which without this key would leave
+			     ticket A's values in a dialog now headed and applied as ticket B. -->
+			{#key ticket.id}
+				<TicketForm mode="edit" initial={initialValues} disabled={busy} onSubmit={handleSubmit} />
+			{/key}
+		{/if}
 	</div>
 </ModalShell>
 
