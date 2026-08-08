@@ -1,7 +1,8 @@
 import path from 'node:path';
+import { renameSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { test, expect } from '@playwright/test';
-import { startMulti, type DedicatedConsole } from './lib/dedicated-console';
+import { copyFixture, start, registerProjectDir, type DedicatedConsole } from './lib/dedicated-console';
 
 // Captures the README screenshots from the REAL UI served by the harness — a
 // real factory-console booted in global-setup on the `with_run_state` fixture
@@ -155,20 +156,42 @@ test('screenshots: capture the graph, roadmap, search, and live-update PNGs', as
 //
 // Scoped to its own describe so the second console is booted only for these
 // shots and disposed with them; the captures above keep using the shared one.
+//
+// `copyFixture`'s own temp dir is named `factory-console-e2e-<random>` — fine for
+// every other spec, which never shows the basename to a human, but here it IS
+// the row name a screenshot documents. Renaming the copy to the fixture's own
+// name (its parent stays the random mkdtemp dir; only the FINAL component,
+// which `default_project_name` reads, changes) makes the captions true and
+// stops every regen from rewriting both PNGs over a name nobody chose.
+function withStableName(dir: string, name: string): string {
+	const stable = path.join(path.dirname(dir), name);
+	renameSync(dir, stable);
+	return stable;
+}
+
 test.describe('screenshots: the multi-project console', () => {
-	// Assigned in beforeAll; left undefined if `startMulti` throws (it disposes its
-	// own partial handle), so afterAll guards before disposing.
+	// Assigned in beforeAll; left undefined if setup throws, so afterAll guards
+	// before disposing. Both dirs are caller-supplied (`start`'s `projectDir`
+	// option, `registerProjectDir` directly) specifically so THIS block can name
+	// them, which also means neither is reaped by `dedicated.dispose()` — this
+	// block owns and removes both itself.
 	let dedicated: DedicatedConsole | undefined;
+	let sessionDir: string | undefined;
+	let registeredDir: string | undefined;
 
 	test.beforeAll(async () => {
-		dedicated = await startMulti(['with_run_state', 'minimal']);
+		sessionDir = withStableName(copyFixture('with_run_state'), 'with_run_state');
+		registeredDir = withStableName(copyFixture('minimal'), 'minimal');
+		dedicated = await start('with_run_state', { projectDir: sessionDir });
+		await registerProjectDir(dedicated, registeredDir);
 	});
 
 	test.afterAll(async () => {
-		// `dispose` reaps the child plus every temp dir the handle created — both
-		// fixture copies and its private registry db. This block creates none of its
-		// own, so there is nothing else to clean up.
+		// `dispose` reaps the child and its private registry db, but neither fixture
+		// copy — both are caller-owned (see `beforeAll`) — so this block removes them.
 		await dedicated?.dispose();
+		if (sessionDir) rmSync(sessionDir, { recursive: true, force: true });
+		if (registeredDir) rmSync(registeredDir, { recursive: true, force: true });
 	});
 
 	test('screenshots: capture the project switcher and the /projects registry PNGs', async ({
@@ -191,8 +214,9 @@ test.describe('screenshots: the multi-project console', () => {
 			// the platform above the page, not into the page, so headless Chromium does
 			// not composite it into a screenshot at all — forcing it open would produce
 			// a PNG indistinguishable from this one while implying the docs show
-			// something they don't. The header element itself, so the shot documents the
-			// switcher in its place beside the served path and the Projects nav link.
+			// something they don't. Captured on the header element itself, so the shot
+			// documents the switcher in its place beside the served path and the
+			// Projects nav link.
 			await page.getByRole('banner').screenshot({ path: shot('switcher.png') });
 		});
 

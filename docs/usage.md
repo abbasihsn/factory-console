@@ -156,8 +156,9 @@ creates it by itself (`SqliteProjectRegistry()` construction is side-effect-free
 boot that never opens the browser UI and calls no registry endpoint at all — a CI job or
 script driving the API directly — leaves no `~/.factory-console/` behind.
 
-**Opening the browser UI now does create it.** The header's project dropdown (see
-["Projects"](#projects) below) reads the registry on every page, so the
+**Opening the browser UI now does create it.** The shell reads the registry on
+every page (see ["Projects"](#projects) below — that read is what feeds the
+header's project dropdown, whether or not it has two rows to render), so the
 first `GET /api/v1/projects` that load fires — same as the first `POST` from a
 headless caller — is what creates the store. A throwaway clone visited only through the
 API, never through the browser, still leaves no trace; a Playwright run or any other
@@ -204,7 +205,7 @@ exit codes, same startup line — and simply selects that project for the sessio
 project you launch on is a **session** project: it is served for as long as the process
 lives, it is the selection the session starts on regardless of what a previous session
 switched to, and it is deliberately **not** written to the console store on its own. But
-opening the browser UI over that clone is not trace-free either, because the dropdown's
+opening the browser UI over that clone is not trace-free either, because the shell's
 own registry read creates the store the first time it runs (see
 ["The console store"](#the-console-store) above) — only driving the API directly,
 without ever loading the browser UI, stays trace-free.

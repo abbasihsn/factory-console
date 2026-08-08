@@ -13,6 +13,8 @@ will be overwritten on the next regeneration.
 | `search.png` | Full-text search results for `idempotent` (`/search`). |
 | `graph.png` | The dependency graph (`/graph`). |
 | `roadmap.png` | The roadmap / milestone view (`/roadmap`). |
+| `switcher.png` | The header project switcher over a two-project console. |
+| `projects.png` | The `/projects` registry table, listing both tracked projects. |
 | `live.png` | The live-update indicator pill in its connected `Live` state. |
 
 ## Regenerate
@@ -26,5 +28,8 @@ pnpm --dir frontend screenshots
 That runs the `frontend/tests/e2e/screenshots.spec.ts` e2e (which boots a real
 `factory-console` on the `with_run_state` fixture and captures the PNGs above
 into the gitignored `frontend/tests/e2e/__screenshots__/`), then
-`frontend/scripts/copy-screenshots.mjs` copies them here. Commit the updated PNGs
-so the README images stay in sync with the UI.
+`frontend/scripts/copy-screenshots.mjs` copies them here. The two multi-project
+shots (`switcher.png`, `projects.png`) come from a second, dedicated console in
+the same run, tracking `with_run_state` plus the `minimal` fixture — the shared
+console stays single-project throughout. Commit the updated PNGs so the README
+images stay in sync with the UI.
