@@ -189,6 +189,16 @@ def render_ticket_markdown(content: TicketContent, entry: dict[str, Any]) -> str
     The ``—``/``none`` placeholders are the factory's, not this module's preference. Two
     renderers that agree on everything but the empty cases still disagree, and the diff a
     human reads is exactly where an empty case shows up.
+
+    ONE TOLERANCE IS THIS CONSOLE'S OWN and is not the factory's: ``dependsOn`` is read
+    beside ``depends_on``, matching
+    :data:`~factory_console.file_adapter.manifest.DEPENDS_ON_KEYS`, because a
+    hand-written manifest may use either and the console has always read both. The factory
+    reads only ``depends_on``, so against a camelCase manifest it renders ``none`` where
+    this renders the real list. That is a widening, never a disagreement about a value
+    either one can see — and it applies to manifests the factory did not write, which are
+    exactly the ones the byte-parity claim was never about. A factory-shaped manifest
+    renders identically, which is what ``test_cross_repo_contract.py`` pins.
     """
     depends_on = [str(dep) for dep in entry.get("depends_on") or entry.get("dependsOn") or []]
     lines = [

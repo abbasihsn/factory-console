@@ -265,7 +265,7 @@ or, for `no_factory_dir`, that nothing actually is wrong.
 ### Ticket list, detail, and deps
 
 The landing page (`/`) is a searchable, filterable list of every ticket. Open a
-ticket for its detail view — the rendered `.md` body, resolved
+ticket for its detail view — the rendered body, resolved
 `depends_on` / `provides`, and a factory run-state badge — and follow "View dep
 neighborhood" for that ticket's direct deps and dependents as clickable links.
 
@@ -306,12 +306,29 @@ Every write also needs the write token; both gates are covered in ["The write
 token"](#the-write-token) above.
 
 - **Create** — the **New ticket** link on the ticket list (`/`) opens `/tickets/new`
-  with a blank form (id, title, `depends_on`, `provides`, files, and the Markdown
-  body).
+  with a blank form: the index fields (id, title, `depends_on`, `provides`) and the five
+  content fields an App Factory v3 ticket carries — **Context**, **Staged approach**,
+  **Critical files**, **Interface & data** and **Verification commands**, plus optional
+  **Verification notes**. All but the notes are required, and both list fields need at
+  least one entry.
 - **Edit** — an eligible ticket's detail view opens the same form pre-filled with its
   current fields, except that the id is read-only: an edit never renames a ticket.
 - **Delete** — an eligible ticket's detail view offers a delete action guarded by a
   confirmation step.
+
+**There is no free-text body.** A v3 ticket is five structured fields stored as JSON, and
+the Markdown you read on the detail page is *rendered* from them — it is a view, not the
+storage. The factory's ticket schema sets `additionalProperties: false`, so there is
+nowhere to put prose that belongs to no field, which is why this is a change to what you
+write and not only to how it is kept. `critical_files` in particular is not paperwork: it
+feeds the filter that stops two lanes editing the same path from bases lacking each
+other's changes, so a short list weakens a concurrency guard rather than failing loudly.
+
+A project whose tickets are still Markdown can still be **read and deleted**, but an edit
+is refused with `409 ticket_format_retired` and the console shows the remedy instead of a
+form: `factory-ticket migrate --repo <project root>`. The console will not convert the
+file for you — deciding which prose belongs to which field is a judgement the migration
+tool makes explicitly, reporting what it cannot parse rather than guessing.
 
 Create and edit both save through a **preview → confirm** flow: submitting the form
 first sends a dry-run request and opens a diff-preview modal showing the exact unified

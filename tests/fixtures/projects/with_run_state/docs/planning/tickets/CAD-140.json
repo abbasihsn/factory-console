@@ -1,0 +1,16 @@
+{
+  "id": "CAD-140",
+  "context": "A year of a habit at a glance: 53 weeks of cells shaded by consistency. The view that makes a long streak feel like one.",
+  "approach": "1. Add the heatmap component.\n2. Add the route.\n3. Snapshot-test a full year.",
+  "critical_files": [
+    "frontend/src/routes/habits/[id]/heatmap/+page.svelte",
+    "frontend/src/lib/components/Heatmap.svelte",
+    "frontend/tests/unit/heatmap.test.ts"
+  ],
+  "interface_data": "Consumes `GET /api/v1/board`. Presentational only — no fetching inside the component.",
+  "verification": {
+    "commands": [
+      "pnpm test -- heatmap"
+    ]
+  }
+}

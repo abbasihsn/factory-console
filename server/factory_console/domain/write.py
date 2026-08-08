@@ -11,18 +11,30 @@ Ticket-id validation reuses :data:`TicketId` / :data:`TICKET_ID_PATTERN` from
 :mod:`factory_console.domain.ticket` verbatim — the regex is defined in exactly
 one place. Field names are camelCase per the REST v1 contract so these models
 serialize directly to the SPA's shared types.
+
+:class:`~factory_console.domain.ticket.TicketContentFields` is imported for the
+same reason and re-exported here because this is where write-path callers look for
+it. The five content fields are one shape read and written, not two that happen to
+match: the read model publishes them on ``Ticket.content`` and the edit form sends
+the same five back, so defining them twice is how a round-trip comes to lose one.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from factory_console.domain.ticket import TICKET_ID_PATTERN, Ticket, TicketId
+from factory_console.domain.ticket import (
+    TICKET_ID_PATTERN,
+    Ticket,
+    TicketContentFields,
+    TicketId,
+)
 
 __all__ = [
     "TICKET_ID_PATTERN",
+    "TicketContentFields",
     "TicketDraft",
     "TicketEdit",
     "FileDiff",
@@ -31,12 +43,19 @@ __all__ = [
 ]
 
 
-class TicketDraft(BaseModel):
+class TicketDraft(TicketContentFields):
     """Inbound request body to CREATE a ticket.
 
-    ``id`` is validated against :data:`TICKET_ID_PATTERN` at this boundary; the
-    rest mirror the manifest/body fields a new ticket carries. ``frontMatter``
-    holds arbitrary extra YAML front-matter keys not named explicitly.
+    ``id`` is validated against :data:`TICKET_ID_PATTERN` at this boundary; the rest
+    split cleanly in two, matching where v3 stores them. ``title`` / ``track`` /
+    ``milestone`` / ``dependsOn`` / ``provides`` are INDEX fields and land in
+    ``tickets.json``; the inherited five are CONTENT fields and land in the ticket's
+    own file. Nothing here is written to both, which is what keeps the two from
+    disagreeing.
+
+    ``files`` is gone from this surface: v3's index carries no such key, and the
+    content file's ``criticalFiles`` is the same information stored where the factory
+    reads it from.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -47,12 +66,9 @@ class TicketDraft(BaseModel):
     milestone: str | None = None
     dependsOn: list[str] = Field(default_factory=list)
     provides: str = ""
-    files: list[str] = Field(default_factory=list)
-    bodyMarkdown: str
-    frontMatter: dict[str, Any] = Field(default_factory=dict)
 
 
-class TicketEdit(BaseModel):
+class TicketEdit(TicketContentFields):
     """Inbound request body to EDIT a ticket.
 
     Identical to :class:`TicketDraft` minus ``id`` — the id of the ticket being
@@ -66,9 +82,6 @@ class TicketEdit(BaseModel):
     milestone: str | None = None
     dependsOn: list[str] = Field(default_factory=list)
     provides: str = ""
-    files: list[str] = Field(default_factory=list)
-    bodyMarkdown: str
-    frontMatter: dict[str, Any] = Field(default_factory=dict)
 
 
 class FileDiff(BaseModel):

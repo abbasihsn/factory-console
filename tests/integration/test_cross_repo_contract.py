@@ -32,6 +32,7 @@ import pytest
 
 from factory_console.file_adapter.ticket_json import (
     TicketContent,
+    TicketInvalid,
     TicketVerification,
     parse_ticket_content,
     render_ticket_markdown,
@@ -85,9 +86,7 @@ def test_the_model_names_exactly_the_schema_s_properties(schema: dict) -> None:
 
 @requires_app_factory
 def test_the_model_requires_exactly_what_the_schema_requires(schema: dict) -> None:
-    required = {
-        name for name, field in TicketContent.model_fields.items() if field.is_required()
-    }
+    required = {name for name, field in TicketContent.model_fields.items() if field.is_required()}
     assert required == set(schema["required"])
 
 
@@ -118,7 +117,9 @@ def test_every_min_items_and_min_length_the_schema_states_is_enforced(schema: di
     Written as a walk over the schema so a constraint added upstream fails here as an
     unmet expectation, instead of being silently absent from a hand-listed set of cases.
     """
-    valid = json.loads((FIXTURE / "docs/planning/tickets/v1.0/T01-the-base-ticket.json").read_text())
+    valid = json.loads(
+        (FIXTURE / "docs/planning/tickets/v1.0/T01-the-base-ticket.json").read_text()
+    )
 
     for name, subschema in schema["properties"].items():
         if subschema.get("minLength") == 1:
@@ -132,10 +133,11 @@ def test_every_min_items_and_min_length_the_schema_states_is_enforced(schema: di
 
     commands = schema["properties"]["verification"]["properties"]["commands"]
     assert commands["minItems"] == 1, "the schema's own INV-42 clause moved or was removed"
-    with pytest.raises(Exception):
-        parse_ticket_content(
-            "T01", json.dumps({**valid, "verification": {"commands": []}})
-        )
+    # The mapped error specifically, not a bare Exception: this must fail because the
+    # ticket is INVALID, and a typo in the payload above would satisfy a blind raises by
+    # failing for a completely different reason.
+    with pytest.raises(TicketInvalid, match=r"(?i)short|empty|least"):
+        parse_ticket_content("T01", json.dumps({**valid, "verification": {"commands": []}}))
 
 
 # --------------------------------------------------------------------------- #

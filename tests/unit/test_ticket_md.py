@@ -35,12 +35,13 @@ def read_ticket_md(project: Project, ticket_id: str) -> tuple[dict[str, Any], st
 
     The shape the old module-level ``read_ticket_md`` returned, preserved here so the
     assertions below still read as statements about Markdown tickets rather than about
-    a tuple-vs-NamedTuple change. ``TicketBody.critical_files`` is asserted separately —
-    it is ``None`` for this format, which is the fact that keeps a Markdown ticket's
-    manifest-declared ``files`` from being erased by a format that has no such field.
+    a tuple-vs-NamedTuple change. ``TicketBody.content`` is asserted separately — it is
+    ``None`` for this format, which is what keeps a Markdown ticket's manifest-declared
+    ``files`` from being erased by a format that has no such field, and what tells the
+    edit surface there are no structured fields here to offer.
     """
     body = read_ticket_body(project, ticket_id)
-    assert body.critical_files is None, "a Markdown ticket declares no critical_files"
+    assert body.content is None, "a Markdown ticket carries no structured content"
     return body.front_matter, body.markdown
 
 

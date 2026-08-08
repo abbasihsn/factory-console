@@ -38,6 +38,7 @@ from typing import Any
 from unittest import mock
 
 import pytest
+from _write_support import seeded_contents
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
@@ -109,8 +110,11 @@ def _mem_edit() -> TicketEdit:
         milestone="MVP",
         dependsOn=[],
         provides="Property revised",
-        files=[],
-        bodyMarkdown="# Property retitled\n\nNew body.\n",
+        context="Why this ticket exists.",
+        approach="1. Build it.\n2. Verify it.",
+        criticalFiles=["src/prop.py"],
+        interfaceData="N/A",
+        verificationCommands=["pytest -q"],
     )
 
 
@@ -123,7 +127,7 @@ def _seeded_fake(ticket_id: str, state: RunState) -> FakeFileWriter:
     """
     return FakeFileWriter(
         manifest=[_entry(ticket_id)],
-        bodies={ticket_id: f"# {ticket_id} body\n"},
+        contents=seeded_contents(ticket_id),
         roadmap=f"# Roadmap\n\n## MVP\n\n- [ ] Ticket {ticket_id} ({ticket_id})\n",
         run_states={ticket_id: state},
     )
@@ -131,7 +135,7 @@ def _seeded_fake(ticket_id: str, state: RunState) -> FakeFileWriter:
 
 def _internal_state(writer: FakeFileWriter) -> Any:
     """Deep-copy the writer's mutable seeded state for byte/value-identical compare."""
-    return copy.deepcopy((writer._manifest, writer._bodies, writer._front_matter, writer._roadmap))
+    return copy.deepcopy((writer._manifest, writer._contents, writer._roadmap))
 
 
 @settings(max_examples=75)
@@ -168,7 +172,7 @@ def test_gate_refuses_non_mutable_state_with_zero_mutation(
         assert isinstance(result, WriteResult)
         assert result.applied is True
         if kind == "edit":
-            assert writer._bodies[ticket_id] == "# Property retitled\n\nNew body.\n"
+            assert writer._contents[ticket_id].title == "Property retitled"
         else:
             assert ticket_id not in {entry["id"] for entry in writer._manifest}
 
@@ -217,8 +221,11 @@ def _fixture_edit() -> TicketEdit:
         milestone="v2",
         dependsOn=[],
         provides="Property-fuzzed provides",
-        files=["server/cadence/fuzz/prop.py"],
-        bodyMarkdown="# Property-fuzzed\n\nNew body.\n",
+        context="Why this ticket exists.",
+        approach="1. Build it.\n2. Verify it.",
+        criticalFiles=["server/cadence/fuzz/prop.py"],
+        interfaceData="N/A",
+        verificationCommands=["pytest -q"],
     )
 
 
@@ -306,8 +313,11 @@ def test_create_md_swap_failure_leaves_the_new_md_absent(tmp_path: Path, new_id:
         milestone="v2",
         dependsOn=["CAD-152"],
         provides="Property created ticket",
-        files=["server/cadence/fuzz/create.py"],
-        bodyMarkdown="# Property create\n\nBody.\n",
+        context="Why this ticket exists.",
+        approach="1. Build it.\n2. Verify it.",
+        criticalFiles=["server/cadence/fuzz/create.py"],
+        interfaceData="N/A",
+        verificationCommands=["pytest -q"],
     )
     md_path = project.ticketsDir / f"{new_id}.md"
     assert not md_path.exists()
@@ -315,7 +325,7 @@ def test_create_md_swap_failure_leaves_the_new_md_absent(tmp_path: Path, new_id:
     with _flaky_replace(2), pytest.raises(AtomicWriteError) as exc_info:
         writer.create_ticket(project, draft)
 
-    assert exc_info.value.details["relPath"] == f"docs/planning/tickets/{new_id}.md"
+    assert exc_info.value.details["relPath"] == f"docs/planning/tickets/{new_id}.json"
     assert not md_path.exists()  # never half-written
     assert _leftover_temps(project.rootPath) == []
 
@@ -336,5 +346,5 @@ def test_successful_edit_is_all_or_nothing_and_rereads(tmp_path: Path, ticket_id
     reread = adapter.get_ticket(project, ticket_id)
     assert reread is not None
     assert reread.title == "Property-fuzzed title"
-    assert reread.bodyMarkdown == "# Property-fuzzed\n\nNew body.\n"
+    assert "Why this ticket exists." in reread.bodyMarkdown
     assert _leftover_temps(project.rootPath) == []

@@ -59,7 +59,7 @@ def _hash_dir(root: Path) -> dict[str, str]:
 
 def _non_mutable_md_hashes(project: Project) -> dict[str, str]:
     return {
-        ticket_id: _hash_file(project.ticketsDir / f"{ticket_id}.md")
+        ticket_id: _hash_file(project.ticketsDir / f"{ticket_id}.json")
         for ticket_id in _NON_MUTABLE_IDS
     }
 
@@ -79,8 +79,11 @@ def test_create_then_read_deps_roundtrip(tmp_path: Path) -> None:
         milestone="v2",
         dependsOn=["CAD-152"],
         provides="Participation and consistency across a team",
-        files=["frontend/src/routes/team/+page.svelte"],
-        bodyMarkdown="# Team analytics\n\nDashboard body.\n",
+        context="Why this ticket exists.",
+        approach="1. Build it.\n2. Verify it.",
+        criticalFiles=["frontend/src/routes/team/+page.svelte"],
+        interfaceData="N/A",
+        verificationCommands=["pytest -q"],
     )
     result = writer.create_ticket(project, draft)
     assert result.applied is True
@@ -118,8 +121,11 @@ def _random_edit(rng: random.Random, ticket_id: str, step: int) -> TicketEdit:
         milestone=rng.choice(["MVP", "v1", "v2", None]),
         dependsOn=rng.sample(_TODO_IDS + _NON_MUTABLE_IDS, k=rng.randint(0, 2)),
         provides=f"provides after step {step}",
-        files=[f"server/cadence/fuzz/{ticket_id}_{step}.py"],
-        bodyMarkdown=f"# {ticket_id}\n\nFuzzed body {step}.\n",
+        context=f"Why {ticket_id} exists, at step {step}.",
+        approach=f"1. Build {ticket_id}.",
+        criticalFiles=[f"server/cadence/fuzz/{ticket_id}_{step}.py"],
+        interfaceData="N/A",
+        verificationCommands=["pytest -q"],
     )
 
 

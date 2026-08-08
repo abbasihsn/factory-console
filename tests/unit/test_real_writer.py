@@ -87,8 +87,11 @@ def _draft(ticket_id: str = "CAD-200", **overrides: object) -> TicketDraft:
         "milestone": "v2",
         "dependsOn": ["CAD-152"],
         "provides": "Check in to a habit straight from a Slack slash command",
-        "files": ["server/cadence/integrations/slack.py"],
-        "bodyMarkdown": "# Slack check-in\n\nBody text.\n",
+        "context": "Why the draft exists.",
+        "approach": "1. Build the draft.\n2. Verify it.",
+        "criticalFiles": ["server/cadence/integrations/slack.py"],
+        "interfaceData": "N/A",
+        "verificationCommands": ["pytest -q"],
     }
     base.update(overrides)
     return TicketDraft(**base)  # type: ignore[arg-type]
@@ -101,8 +104,11 @@ def _edit(**overrides: object) -> TicketEdit:
         "milestone": "v1",
         "dependsOn": ["CAD-125"],
         "provides": "Monday-morning per-member digest, revised",
-        "files": ["server/cadence/notifications/weekly_digest.py"],
-        "bodyMarkdown": "# Weekly digest email\n\nRevised body.\n",
+        "context": "Why the edit exists.",
+        "approach": "1. Build the edit.\n2. Verify it.",
+        "criticalFiles": ["server/cadence/notifications/weekly_digest.py"],
+        "interfaceData": "N/A",
+        "verificationCommands": ["pytest -q"],
     }
     base.update(overrides)
     return TicketEdit(**base)  # type: ignore[arg-type]
@@ -142,7 +148,7 @@ def test_create_writes_three_coupled_files_and_is_readable(tmp_path: Path) -> No
     # A matching ## v2 roadmap section exists, so all three coupled paths change.
     assert result.changedFiles == [
         _MANIFEST_REL,
-        "docs/planning/tickets/CAD-200.md",
+        "docs/planning/tickets/CAD-200.json",
         _ROADMAP_REL,
     ]
     # changedFiles always agrees with the diff it carries.
@@ -150,12 +156,12 @@ def test_create_writes_three_coupled_files_and_is_readable(tmp_path: Path) -> No
 
     # The files landed on disk and the real read adapter now lists and reads them.
     adapter = RealFileAdapter()
-    assert (project.ticketsDir / "CAD-200.md").is_file()
+    assert (project.ticketsDir / "CAD-200.json").is_file()
     assert "CAD-200" in {s.id for s in adapter.list_tickets(project)}
     reread = adapter.get_ticket(project, "CAD-200")
     assert reread is not None
     assert reread.title == "Slack check-in integration"
-    assert reread.bodyMarkdown == "# Slack check-in\n\nBody text.\n"
+    assert "Why the draft exists." in reread.bodyMarkdown
     # The new roadmap line was inserted under ## v2.
     assert "**CAD-200** — Slack check-in integration" in project.roadmapPath.read_text()
 
@@ -246,18 +252,20 @@ def test_edit_on_todo_ticket_mutates_and_rereads(tmp_path: Path, ticket_id: str)
     writer, project = _load(tmp_path)
 
     result = writer.edit_ticket(
-        project, ticket_id, _edit(title="Retitled", bodyMarkdown="# Retitled\n\nNew body.\n")
+        project, ticket_id, _edit(title="Retitled", context="Retitled context.")
     )
 
     assert result.applied is True
     assert result.ticket is not None
     assert result.ticket.title == "Retitled"
-    assert result.ticket.bodyMarkdown == "# Retitled\n\nNew body.\n"
+    # The rendered five sections, not the raw text sent: v3 stores structured fields
+    # and Markdown is a view of them.
+    assert "Retitled context." in result.ticket.bodyMarkdown
     # The real read adapter sees the mutation on disk.
     reread = RealFileAdapter().get_ticket(project, ticket_id)
     assert reread is not None
     assert reread.title == "Retitled"
-    assert reread.bodyMarkdown == "# Retitled\n\nNew body.\n"
+    assert "Retitled context." in reread.bodyMarkdown
 
 
 def test_edit_merges_unknown_manifest_fields(tmp_path: Path) -> None:
@@ -380,7 +388,7 @@ def test_delete_on_non_mutable_state_raises_and_leaves_bytes_identical(
         writer.delete_ticket(project, ticket_id)
 
     # The refused delete removed nothing and touched nothing.
-    assert (project.ticketsDir / f"{ticket_id}.md").is_file()
+    assert (project.ticketsDir / f"{ticket_id}.json").is_file()
     assert _hash_tree(project.rootPath) == before
 
 
@@ -430,6 +438,6 @@ def test_preview_delete_returns_diff_without_mutating_disk(tmp_path: Path) -> No
     preview = writer.preview_delete(project, "CAD-131")
 
     assert isinstance(preview, DiffPreview)
-    md_diff = next(f for f in preview.files if f.path.endswith("CAD-131.md"))
+    md_diff = next(f for f in preview.files if f.path.endswith("CAD-131.json"))
     assert md_diff.changeKind == "delete"
     assert _hash_tree(project.rootPath) == before

@@ -10,7 +10,12 @@ function initial(overrides: Partial<TicketFormValues> = {}): TicketFormValues {
 		title: 'A valid title',
 		dependsOn: '',
 		provides: '',
-		files: '',
+		context: 'Why this ticket exists.',
+		approach: 'Create the module, then wire it up.',
+		criticalFiles: 'src/a.ts',
+		interfaceData: 'N/A',
+		verificationCommands: 'pnpm test',
+		verificationNotes: '',
 		...overrides
 	};
 }
@@ -51,20 +56,18 @@ describe('TicketForm', () => {
 		expect(screen.getByText(ID_ERROR)).toBeTruthy();
 	});
 
-	it('a valid create fires onSubmit with the full TicketFormValues (incl. body and lists)', async () => {
+	it('a valid create fires onSubmit with the full TicketFormValues', async () => {
 		const onSubmit = vi.fn();
 		render(TicketForm, {
 			props: {
 				mode: 'create',
-				// Seed body + lists via `initial` so they round-trip into onSubmit
-				// without needing to drive CodeMirror under jsdom.
 				initial: initial({
 					id: 'T99',
 					title: 'Build it',
 					dependsOn: 'T67\nT29',
 					provides: 'the form',
-					files: 'src/lib/components/TicketForm.svelte',
-					body: '# Heading\n\nSome body text.'
+					criticalFiles: 'src/lib/components/TicketForm.svelte',
+					verificationCommands: 'pnpm test\npnpm check'
 				}),
 				onSubmit
 			}
@@ -78,8 +81,12 @@ describe('TicketForm', () => {
 			title: 'Build it',
 			dependsOn: 'T67\nT29',
 			provides: 'the form',
-			files: 'src/lib/components/TicketForm.svelte',
-			body: '# Heading\n\nSome body text.'
+			context: 'Why this ticket exists.',
+			approach: 'Create the module, then wire it up.',
+			criticalFiles: 'src/lib/components/TicketForm.svelte',
+			interfaceData: 'N/A',
+			verificationCommands: 'pnpm test\npnpm check',
+			verificationNotes: ''
 		});
 	});
 
@@ -91,16 +98,17 @@ describe('TicketForm', () => {
 
 		await fireEvent.input(screen.getByLabelText('Title'), { target: { value: 'New title' } });
 		await fireEvent.input(screen.getByLabelText('Depends on'), { target: { value: 'T67\nT29' } });
+		await fireEvent.input(screen.getByLabelText('Context'), { target: { value: 'Edited why.' } });
 		await fireEvent.click(screen.getByRole('button', { name: 'Create ticket' }));
 
-		expect(onSubmit).toHaveBeenCalledWith({
-			id: 'T99',
-			title: 'New title',
-			dependsOn: 'T67\nT29',
-			provides: '',
-			files: '',
-			body: ''
-		});
+		expect(onSubmit).toHaveBeenCalledWith(
+			expect.objectContaining({
+				id: 'T99',
+				title: 'New title',
+				dependsOn: 'T67\nT29',
+				context: 'Edited why.'
+			})
+		);
 	});
 
 	it('a valid edit fires onSubmit with the id fixed from initial', async () => {
@@ -108,7 +116,7 @@ describe('TicketForm', () => {
 		render(TicketForm, {
 			props: {
 				mode: 'edit',
-				initial: initial({ id: 'T68', title: 'Editable title', body: 'body text' }),
+				initial: initial({ id: 'T68', title: 'Editable title' }),
 				onSubmit
 			}
 		});
@@ -117,14 +125,45 @@ describe('TicketForm', () => {
 		await fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
 		expect(onSubmit).toHaveBeenCalledTimes(1);
-		expect(onSubmit).toHaveBeenCalledWith({
-			id: 'T68',
-			title: 'Updated title',
-			dependsOn: '',
-			provides: '',
-			files: '',
-			body: 'body text'
+		expect(onSubmit).toHaveBeenCalledWith(
+			expect.objectContaining({ id: 'T68', title: 'Updated title' })
+		);
+	});
+
+	// The v3 content surface, asserted as a SET: five fields plus the optional notes, and
+	// no free-text body. A ticket has no free-text body in v3, and the schema's
+	// `additionalProperties: false` leaves nowhere to put one — so an editor that offered
+	// it would collect prose the server must refuse or silently drop.
+	it('renders the five content fields and no markdown body editor', () => {
+		render(TicketForm, { props: { mode: 'create', initial: initial(), onSubmit: vi.fn() } });
+
+		for (const label of [
+			'Context',
+			'Staged approach',
+			'Critical files',
+			'Interface and data',
+			'Verification commands',
+			'Verification notes'
+		]) {
+			expect(screen.getByLabelText(label)).toBeTruthy();
+		}
+		expect(document.querySelector('[data-testid="markdown-editor"]')).toBeNull();
+		expect(screen.queryByLabelText('Ticket body')).toBeNull();
+	});
+
+	it('seeds the content fields from initial rather than starting them blank', () => {
+		render(TicketForm, {
+			props: {
+				mode: 'edit',
+				initial: initial({ context: 'Seeded context.', verificationNotes: 'needs DATABASE_URL' }),
+				onSubmit: vi.fn()
+			}
 		});
+
+		expect((screen.getByLabelText('Context') as HTMLTextAreaElement).value).toBe('Seeded context.');
+		expect((screen.getByLabelText('Verification notes') as HTMLTextAreaElement).value).toBe(
+			'needs DATABASE_URL'
+		);
 	});
 
 	it('edits provides in a single-line input, not a newline textarea', () => {
@@ -137,7 +176,8 @@ describe('TicketForm', () => {
 
 		expect(screen.getByLabelText('Provides').tagName).toBe('INPUT');
 		expect(screen.getByLabelText('Depends on').tagName).toBe('TEXTAREA');
-		expect(screen.getByLabelText('Files').tagName).toBe('TEXTAREA');
+		expect(screen.getByLabelText('Critical files').tagName).toBe('TEXTAREA');
+		expect(screen.getByLabelText('Verification commands').tagName).toBe('TEXTAREA');
 	});
 
 	it('disabled makes every field inert and the submit button disabled', () => {
@@ -146,11 +186,20 @@ describe('TicketForm', () => {
 			props: { mode: 'create', initial: initial(), disabled: true, onSubmit }
 		});
 
-		expect(screen.getByLabelText('Ticket id').hasAttribute('disabled')).toBe(true);
-		expect(screen.getByLabelText('Title').hasAttribute('disabled')).toBe(true);
-		expect(screen.getByLabelText('Depends on').hasAttribute('disabled')).toBe(true);
-		expect(screen.getByLabelText('Provides').hasAttribute('disabled')).toBe(true);
-		expect(screen.getByLabelText('Files').hasAttribute('disabled')).toBe(true);
+		for (const label of [
+			'Ticket id',
+			'Title',
+			'Depends on',
+			'Provides',
+			'Context',
+			'Staged approach',
+			'Critical files',
+			'Interface and data',
+			'Verification commands',
+			'Verification notes'
+		]) {
+			expect(screen.getByLabelText(label).hasAttribute('disabled')).toBe(true);
+		}
 		expect(screen.getByRole('button', { name: 'Create ticket' }).hasAttribute('disabled')).toBe(
 			true
 		);
@@ -170,21 +219,25 @@ describe('TicketForm', () => {
 		expect(onSubmit).not.toHaveBeenCalled();
 	});
 
-	it('makes the markdown body read-only when disabled', async () => {
+	// A blank required content field is not a silent no-op: it blocks submit, exactly as a
+	// malformed id does. Otherwise the first the user hears of it is a 422 after a dry-run.
+	it('blocks submit while a required content field is blank', async () => {
+		const onSubmit = vi.fn();
 		render(TicketForm, {
-			props: { mode: 'create', initial: initial(), disabled: true, onSubmit: vi.fn() }
+			props: { mode: 'create', initial: initial({ context: '' }), onSubmit }
 		});
 
-		await waitFor(() =>
-			expect(
-				document.querySelector('[data-testid="markdown-editor"] [contenteditable]')
-			).toBeTruthy()
+		expect(screen.getByRole('button', { name: 'Create ticket' }).hasAttribute('disabled')).toBe(
+			true
 		);
-		expect(
-			document
-				.querySelector('[data-testid="markdown-editor"] [contenteditable]')
-				?.getAttribute('contenteditable')
-		).toBe('false');
+
+		await fireEvent.input(screen.getByLabelText('Context'), { target: { value: 'Now filled.' } });
+
+		await waitFor(() =>
+			expect(screen.getByRole('button', { name: 'Create ticket' }).hasAttribute('disabled')).toBe(
+				false
+			)
+		);
 	});
 
 	it('calls onValidityChange with the initial validity on mount, then again when it flips', async () => {

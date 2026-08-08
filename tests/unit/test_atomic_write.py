@@ -115,8 +115,11 @@ def _draft(**overrides: object) -> TicketDraft:
         "milestone": "MVP",
         "dependsOn": ["TM-001"],
         "provides": "On-trail capture app",
-        "files": ["server/trailmark/mobile/capture.py"],
-        "bodyMarkdown": "# Capture\n\nBody text.\n",
+        "context": "Why the draft exists.",
+        "approach": "1. Build the draft.\n2. Verify it.",
+        "criticalFiles": ["server/trailmark/mobile/capture.py"],
+        "interfaceData": "N/A",
+        "verificationCommands": ["pytest -q"],
     }
     base.update(overrides)
     return TicketDraft(**base)  # type: ignore[arg-type]
@@ -130,7 +133,7 @@ def _draft(**overrides: object) -> TicketDraft:
 def test_apply_writes_all_three_files_and_returns_relpaths(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     _seed(project)
-    md_rel = "docs/planning/tickets/TM-050.md"
+    md_rel = "docs/planning/tickets/TM-050.json"
     changes = [
         _planned(project, _MANIFEST_REL, '{"tickets": []}\n'),
         _planned(project, md_rel, "# TM-050\n\nBody.\n"),
@@ -148,7 +151,7 @@ def test_apply_writes_all_three_files_and_returns_relpaths(tmp_path: Path) -> No
 def test_apply_returns_relpaths_in_manifest_md_roadmap_order(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     _seed(project)
-    md_rel = "docs/planning/tickets/TM-050.md"
+    md_rel = "docs/planning/tickets/TM-050.json"
     # Deliberately supply the changes OUT of apply order; apply must reorder them.
     changes = [
         _planned(project, _ROADMAP_REL, "# Roadmap\n"),
@@ -164,7 +167,7 @@ def test_apply_returns_relpaths_in_manifest_md_roadmap_order(tmp_path: Path) -> 
 def test_apply_delete_unlinks_md(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     _seed(project)
-    md_rel = "docs/planning/tickets/TM-050.md"
+    md_rel = "docs/planning/tickets/TM-050.json"
     md_path = project.rootPath / md_rel
     md_path.write_text("# to be removed\n", encoding="utf-8")
 
@@ -177,7 +180,7 @@ def test_apply_delete_unlinks_md(tmp_path: Path) -> None:
 def test_apply_delete_missing_md_is_a_noop(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     _seed(project)
-    md_rel = "docs/planning/tickets/TM-999.md"
+    md_rel = "docs/planning/tickets/TM-999.json"
 
     written = apply_changes(project, [_planned(project, md_rel, None)])
 
@@ -319,7 +322,7 @@ def test_replace_failure_on_second_file_surfaces_atomic_write_error_no_temps(
 ) -> None:
     project = _make_project(tmp_path)
     _seed(project)
-    md_rel = "docs/planning/tickets/TM-050.md"
+    md_rel = "docs/planning/tickets/TM-050.json"
     changes = [
         _planned(project, _MANIFEST_REL, '{"tickets": []}\n'),
         _planned(project, md_rel, "# md\n"),
@@ -354,7 +357,7 @@ def test_mid_apply_failure_logs_inconsistency_warning(
 ) -> None:
     project = _make_project(tmp_path)
     _seed(project)
-    md_rel = "docs/planning/tickets/TM-050.md"
+    md_rel = "docs/planning/tickets/TM-050.json"
     changes = [
         _planned(project, _MANIFEST_REL, '{"tickets": []}\n'),
         _planned(project, md_rel, "# md\n"),
@@ -420,7 +423,7 @@ def test_edit_preserves_nonstandard_existing_file_mode(tmp_path: Path) -> None:
 def test_create_new_file_uses_umask_default_not_0600(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     _seed(project)
-    md_rel = "docs/planning/tickets/TM-050.md"
+    md_rel = "docs/planning/tickets/TM-050.json"
 
     apply_changes(project, [_planned(project, md_rel, "# new\n")])
 
@@ -449,7 +452,8 @@ def test_real_adapter_rereads_project_after_apply(tmp_path: Path) -> None:
 
     ticket = adapter.get_ticket(project, "TM-050")
     assert ticket is not None
-    assert ticket.bodyMarkdown == "# Capture\n\nBody text.\n"
+    assert ticket.bodyMarkdown.startswith("# [TM-050] ")
+    assert "Why the draft exists." in ticket.bodyMarkdown
 
     roadmap = adapter.get_roadmap(project)
     assert roadmap is not None

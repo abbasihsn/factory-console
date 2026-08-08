@@ -65,8 +65,13 @@ export interface paths {
          *     ``response.status_code`` overrides the route's declared default, which stays ``201``
          *     so that remains the documented success code.
          *
-         *     Delegates to :meth:`~factory_console.services.write_service.WriteService.create`,
-         *     whose ``WriteConflict`` (409) propagates for an id that already exists.
+         *     Writes into the SELECTED project at the per-request ``root``; an unresolvable
+         *     selection refuses with the named 409 before any port is touched. Delegates to
+         *     :meth:`~factory_console.services.write_service.WriteService.create`, whose
+         *     ``WriteConflict`` (409) propagates for an id that already exists. Both blocking calls
+         *     are awaited off the event loop, under ``write_lock`` for their combined duration —
+         *     they are one read-modify-write of the manifest, and that guard is what makes the
+         *     duplicate-id ``WriteConflict`` above hold against a concurrent create of the same id.
          */
         readonly post: operations["create_ticket_api_v1_tickets_post"];
         readonly delete?: never;
@@ -98,10 +103,15 @@ export interface paths {
          * Edit Ticket
          * @description Apply ``payload`` to ``ticket_id``, or preview the edit when ``?dryRun=true``.
          *
-         *     Always ``200``: an edit creates no resource on either path. Delegates to
+         *     Always ``200``: an edit creates no resource on either path. Edits the ticket in the
+         *     SELECTED project at the per-request ``root``; an unresolvable selection refuses with
+         *     the named 409 before any port is touched. Delegates to
          *     :meth:`~factory_console.services.write_service.WriteService.edit`, whose
          *     ``TicketNotFound`` (404) and ``TicketNotMutable`` (409, for a run-state outside the
-         *     EDIT allowlist ``todo``/``unknown``) propagate to the registered handlers.
+         *     EDIT allowlist ``todo``/``unknown``) propagate to the registered handlers. Both
+         *     blocking calls are awaited off the event loop, under ``write_lock`` for their combined
+         *     duration — an edit rewrites the manifest from what the load observed, so it is the same
+         *     read-modify-write the module docstring's create case describes.
          */
         readonly put: operations["edit_ticket_api_v1_tickets__ticket_id__put"];
         readonly post?: never;
@@ -111,10 +121,14 @@ export interface paths {
          *
          *     Always ``200`` with the uniform :class:`WriteResult` body rather than a bodiless
          *     ``204``, because the SPA renders the delete's diff in the same confirmation view as
-         *     a create or an edit. Delegates to
-         *     :meth:`~factory_console.services.write_service.WriteService.delete`, whose
+         *     a create or an edit. Deletes from the SELECTED project at the per-request ``root``;
+         *     an unresolvable selection refuses with the named 409 before any port is touched —
+         *     the request whose fail-open would destroy a file in the wrong repository. Delegates
+         *     to :meth:`~factory_console.services.write_service.WriteService.delete`, whose
          *     ``TicketNotFound`` (404) and ``TicketNotMutable`` (409) propagate to the registered
-         *     handlers.
+         *     handlers. Both blocking calls are awaited off the event loop, under ``write_lock`` for
+         *     their combined duration — a delete rewrites the manifest from what the load observed,
+         *     so it is the same read-modify-write the module docstring's create case describes.
          */
         readonly delete: operations["delete_ticket_api_v1_tickets__ticket_id__delete"];
         readonly options?: never;
@@ -1325,7 +1339,7 @@ export interface components {
         };
         /**
          * Ticket
-         * @description A manifest entry joined with its rendered ``.md`` body.
+         * @description A manifest entry joined with the content file it points at.
          *
          *     ``raw`` preserves the unmodified manifest entry — including fields this model
          *     does not name — for forward-compatibility with future factory versions.
@@ -1333,6 +1347,27 @@ export interface components {
          *     contents of the ``raw`` mapping. ``runState`` defaults to
          *     :attr:`RunState.unknown` and is resolved per request by the service on the
          *     detail path (the manifest/enrichment build sites leave it at the default).
+         *
+         *     **``content`` and ``bodyMarkdown`` are the same ticket, and neither replaces the
+         *     other.** ``bodyMarkdown`` is the RENDERED view — what the detail page displays and
+         *     what full-text search indexes — and it exists for both storage formats, which is
+         *     the whole reason a reader can change format without a consumer noticing.
+         *     ``content`` is the structured SOURCE, and it is what an edit form seeds from: you
+         *     cannot offer to edit five fields you were only ever handed a paragraph of.
+         *
+         *     ``content`` is therefore ``None`` for a Markdown ticket, and that ``None`` is
+         *     load-bearing rather than a gap. It is the read-side twin of
+         *     :class:`~factory_console.file_adapter.ticket_content.TicketFormatRetired`: a
+         *     ticket with no structured content is exactly a ticket whose edit the write path
+         *     refuses with a 409, so a client that checks it declines to open the form instead
+         *     of presenting five blank boxes whose Save is guaranteed to fail.
+         *
+         *     ``files`` stays beside it and is not redundant with ``content.criticalFiles``.
+         *     ``files`` is the format-agnostic DISPLAY projection — a v2 ticket has one from its
+         *     manifest entry and no ``content`` at all — while ``criticalFiles`` is the editable
+         *     field of the content file. They agree for a v3 ticket by construction (see
+         *     :func:`~factory_console.file_adapter.ticket_content.enrich_ticket`), and the day
+         *     they would not is the day one of the two formats stopped answering.
          */
         readonly Ticket: {
             /** Id */
@@ -1358,6 +1393,7 @@ export interface components {
              * Format: path
              */
             readonly filePath: string;
+            readonly content?: components["schemas"]["TicketContentFields"] | null;
             /** Bodymarkdown */
             readonly bodyMarkdown: string;
             /** Bodyhtml */
@@ -1368,14 +1404,75 @@ export interface components {
             };
         };
         /**
+         * TicketContentFields
+         * @description The five structured fields an App Factory v3 ticket's CONTENT file carries.
+         *
+         *     **One definition, both directions.** This is the read projection published on
+         *     :attr:`Ticket.content` AND — by inheritance in
+         *     :mod:`~factory_console.domain.write` — the write surface a client sends. They are
+         *     the same five fields because they mirror the same ``schemas/ticket.schema.json``,
+         *     and a console whose edit form could not send back exactly what it was shown would
+         *     lose a field on every round-trip. It lives here, in the read module, because the
+         *     dependency already runs this way: ``write`` imports ``ticket``, never the reverse.
+         *
+         *     **This replaced a single free-text ``bodyMarkdown`` plus an open ``frontMatter``
+         *     dict, and the change is to what a user EDITS, not merely to how it is stored.**
+         *     A v3 ticket is structured, and the schema sets ``additionalProperties: false`` —
+         *     so there is nowhere left to put a paragraph that belongs to no field, and nowhere
+         *     to stash an arbitrary extra key. A console that kept accepting them would be
+         *     accepting input it could not write.
+         *
+         *     Constraints mirror that schema, and on the write path they are enforced HERE
+         *     rather than only at render time so a malformed request is a 422 naming the field —
+         *     the requester's error, answered at the boundary — instead of a 500 raised by the
+         *     console's own validation of text it just built. ``criticalFiles`` and
+         *     ``verificationCommands`` carry the schema's ``minItems: 1``, and the schema states
+         *     the reasons: an empty ``critical_files`` silently weakens the overlap filter that
+         *     keeps two lanes off one path, and under INV-42 a ticket declaring no verification
+         *     command can never be verified, only assumed.
+         */
+        readonly TicketContentFields: {
+            /** Context */
+            readonly context: string;
+            /** Approach */
+            readonly approach: string;
+            /** Criticalfiles */
+            readonly criticalFiles: readonly string[];
+            /** Interfacedata */
+            readonly interfaceData: string;
+            /** Verificationcommands */
+            readonly verificationCommands: readonly string[];
+            /** Verificationnotes */
+            readonly verificationNotes?: string | null;
+        };
+        /**
          * TicketDraft
          * @description Inbound request body to CREATE a ticket.
          *
-         *     ``id`` is validated against :data:`TICKET_ID_PATTERN` at this boundary; the
-         *     rest mirror the manifest/body fields a new ticket carries. ``frontMatter``
-         *     holds arbitrary extra YAML front-matter keys not named explicitly.
+         *     ``id`` is validated against :data:`TICKET_ID_PATTERN` at this boundary; the rest
+         *     split cleanly in two, matching where v3 stores them. ``title`` / ``track`` /
+         *     ``milestone`` / ``dependsOn`` / ``provides`` are INDEX fields and land in
+         *     ``tickets.json``; the inherited five are CONTENT fields and land in the ticket's
+         *     own file. Nothing here is written to both, which is what keeps the two from
+         *     disagreeing.
+         *
+         *     ``files`` is gone from this surface: v3's index carries no such key, and the
+         *     content file's ``criticalFiles`` is the same information stored where the factory
+         *     reads it from.
          */
         readonly TicketDraft: {
+            /** Context */
+            readonly context: string;
+            /** Approach */
+            readonly approach: string;
+            /** Criticalfiles */
+            readonly criticalFiles: readonly string[];
+            /** Interfacedata */
+            readonly interfaceData: string;
+            /** Verificationcommands */
+            readonly verificationCommands: readonly string[];
+            /** Verificationnotes */
+            readonly verificationNotes?: string | null;
             /** Id */
             readonly id: string;
             /** Title */
@@ -1391,14 +1488,6 @@ export interface components {
              * @default
              */
             readonly provides: string;
-            /** Files */
-            readonly files?: readonly string[];
-            /** Bodymarkdown */
-            readonly bodyMarkdown: string;
-            /** Frontmatter */
-            readonly frontMatter?: {
-                readonly [key: string]: unknown;
-            };
         };
         /**
          * TicketEdit
@@ -1408,6 +1497,18 @@ export interface components {
          *     edited comes from the path parameter, not the body.
          */
         readonly TicketEdit: {
+            /** Context */
+            readonly context: string;
+            /** Approach */
+            readonly approach: string;
+            /** Criticalfiles */
+            readonly criticalFiles: readonly string[];
+            /** Interfacedata */
+            readonly interfaceData: string;
+            /** Verificationcommands */
+            readonly verificationCommands: readonly string[];
+            /** Verificationnotes */
+            readonly verificationNotes?: string | null;
             /** Title */
             readonly title: string;
             /** Track */
@@ -1421,14 +1522,6 @@ export interface components {
              * @default
              */
             readonly provides: string;
-            /** Files */
-            readonly files?: readonly string[];
-            /** Bodymarkdown */
-            readonly bodyMarkdown: string;
-            /** Frontmatter */
-            readonly frontMatter?: {
-                readonly [key: string]: unknown;
-            };
         };
         /**
          * TicketGraph

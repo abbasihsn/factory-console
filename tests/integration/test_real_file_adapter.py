@@ -185,15 +185,18 @@ def test_get_ticket_returns_full_ticket_with_rendered_html() -> None:
     ticket = adapter.get_ticket(project, "CAD-131")
     assert isinstance(ticket, Ticket)
     assert ticket.id == "CAD-131"
-    # Body markdown is the on-disk body with the front-matter fence split off.
+    # Body markdown is the v3 content file RENDERED to the five sections — Markdown is
+    # a view of the structured fields now, not a stored blob.
     assert ticket.bodyMarkdown.strip()
-    assert "# Weekly digest email" in ticket.bodyMarkdown
-    # bodyHtml is real rendered, sanitized markup — a heading and the GFM table.
+    assert ticket.bodyMarkdown.startswith("# [CAD-131] Weekly digest email")
+    assert "## Verification" in ticket.bodyMarkdown
+    # bodyHtml is real rendered, sanitized markup over that rendered Markdown.
     assert "<h1>" in ticket.bodyHtml
-    assert "<table>" in ticket.bodyHtml
-    # Parsed YAML front-matter is namespaced under raw['frontMatter'].
-    assert ticket.raw["frontMatter"]
-    assert ticket.raw["frontMatter"]["id"] == "CAD-131"
+    assert "<code>" in ticket.bodyHtml  # the backticked critical-files / command bullets
+    # ``raw['frontMatter']`` survives as a key and is EMPTY: a v3 ticket carries no
+    # front-matter, and an empty answer is not a missing one. The console has always
+    # published this key as an object, so it stays an object.
+    assert ticket.raw["frontMatter"] == {}
 
 
 def test_get_ticket_returns_none_for_id_absent_from_manifest() -> None:
@@ -441,13 +444,13 @@ def test_search_tickets_limit_truncates_results() -> None:
     assert limited[0].ticket.id == all_hits[0].ticket.id
 
 
-def test_search_tickets_tolerates_a_missing_ticket_md(tmp_path: Path) -> None:
+def test_search_tickets_tolerates_a_missing_ticket_file(tmp_path: Path) -> None:
     # Copy the fixture to a tmp dir and delete ONE ticket's .md; search must still
     # return hits for the rest rather than failing the whole scan. 'streak' matches
     # tickets beyond the deleted CAD-100, so results survive.
     project_root = tmp_path / "project"
     shutil.copytree(WITH_RUN_STATE, project_root)
-    (project_root / "docs" / "planning" / "tickets" / "CAD-100.md").unlink()
+    (project_root / "docs" / "planning" / "tickets" / "CAD-100.json").unlink()
     adapter = RealFileAdapter()
     project = adapter.load_project(project_root)
     hits = adapter.search_tickets(project, "streak")
@@ -464,7 +467,7 @@ def test_search_tickets_matches_manifest_only_ticket_via_id_when_body_missing(
     # the manifest stub, independent of the tolerantly-emptied body).
     project_root = tmp_path / "project"
     shutil.copytree(WITH_RUN_STATE, project_root)
-    (project_root / "docs" / "planning" / "tickets" / "CAD-100.md").unlink()
+    (project_root / "docs" / "planning" / "tickets" / "CAD-100.json").unlink()
     adapter = RealFileAdapter()
     project = adapter.load_project(project_root)
     hits = adapter.search_tickets(project, "CAD-100")
@@ -480,7 +483,7 @@ def test_search_tickets_tolerates_an_unreadable_md_and_logs_a_warning(
     # absent .md — it leaves a WARNING trace so the corruption is observable.
     project_root = tmp_path / "project"
     shutil.copytree(WITH_RUN_STATE, project_root)
-    (project_root / "docs" / "planning" / "tickets" / "CAD-100.md").write_bytes(
+    (project_root / "docs" / "planning" / "tickets" / "CAD-100.json").write_bytes(
         b"\xff\xfe not valid utf-8"
     )
     adapter = RealFileAdapter()

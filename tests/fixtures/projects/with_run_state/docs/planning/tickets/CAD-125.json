@@ -1,0 +1,16 @@
+{
+  "id": "CAD-125",
+  "context": "The ticket that makes Cadence usable: a member can mark a habit done and see the board. Everything before this is invisible from outside the process.",
+  "approach": "1. Add the check-in POST endpoint.\n2. Add the board GET endpoint.\n3. Wire both to the streak service.",
+  "critical_files": [
+    "server/cadence/api/checkins.py",
+    "server/cadence/api/board.py",
+    "tests/integration/test_checkins_endpoint.py"
+  ],
+  "interface_data": "`POST /api/v1/checkins` and `GET /api/v1/board`. Idempotent on (habit_id, occurred_on).",
+  "verification": {
+    "commands": [
+      "pytest tests/integration/test_checkins_endpoint.py -q"
+    ]
+  }
+}

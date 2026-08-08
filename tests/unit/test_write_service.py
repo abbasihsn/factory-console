@@ -24,12 +24,15 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+from _write_support import seeded_contents
 
 from factory_console.domain import Project, RunState, Ticket
 from factory_console.domain.write import DiffPreview, TicketDraft, TicketEdit, WriteResult
 from factory_console.errors import to_error_response
+from factory_console.file_adapter import write_render
 from factory_console.file_adapter.fake_writer import FakeFileWriter
 from factory_console.file_adapter.manifest import manifest_entry_to_ticket_stub
+from factory_console.file_adapter.ticket_json import parse_ticket_content, render_ticket_markdown
 from factory_console.file_adapter.write_gate import TicketNotMutable
 from factory_console.services.ticket_service import TicketNotFound
 from factory_console.services.write_service import (
@@ -73,8 +76,21 @@ class _StatefulAdapter:
         for entry in self._writer._manifest:
             if entry.get("id") == ticket_id:
                 stub = manifest_entry_to_ticket_stub(entry, project.ticketsDir)
-                body = self._writer._bodies.get(ticket_id, "")
+                content = self._writer._contents.get(ticket_id)
                 run_state = self._writer._run_states.get(ticket_id, RunState.unknown)
+                # The rendered five sections, exactly as the read path produces them —
+                # this stand-in adapter exists to prove a re-read reflects the write, so
+                # it must render the same way or it proves something else.
+                body = (
+                    ""
+                    if content is None
+                    else render_ticket_markdown(
+                        parse_ticket_content(
+                            ticket_id, write_render._render_ticket_json(ticket_id, content)
+                        ),
+                        entry,
+                    )
+                )
                 return stub.model_copy(update={"bodyMarkdown": body, "runState": run_state})
         return None
 
@@ -119,8 +135,11 @@ def _draft(ticket_id: str = "TM-050", **overrides: object) -> TicketDraft:
         "milestone": "MVP",
         "dependsOn": ["TM-001"],
         "provides": "On-trail capture app",
-        "files": ["server/trailmark/mobile/capture.py"],
-        "bodyMarkdown": "# Capture\n\nBody text.\n",
+        "context": "Why the draft exists.",
+        "approach": "1. Build the draft.\n2. Verify it.",
+        "criticalFiles": ["server/trailmark/mobile/capture.py"],
+        "interfaceData": "N/A",
+        "verificationCommands": ["pytest -q"],
     }
     base.update(overrides)
     return TicketDraft(**base)  # type: ignore[arg-type]
@@ -133,8 +152,11 @@ def _edit(**overrides: object) -> TicketEdit:
         "milestone": "MVP",
         "dependsOn": [],
         "provides": "Nightly importer refreshed",
-        "files": ["server/trailmark/ingest/csv_dropbox.py"],
-        "bodyMarkdown": "# Ingest\n\nUpdated body.\n",
+        "context": "Why the edit exists.",
+        "approach": "1. Build the edit.\n2. Verify it.",
+        "criticalFiles": ["server/trailmark/ingest/csv_dropbox.py"],
+        "interfaceData": "N/A",
+        "verificationCommands": ["pytest -q"],
     }
     base.update(overrides)
     return TicketEdit(**base)  # type: ignore[arg-type]
@@ -157,7 +179,7 @@ def _service(
             _entry("TM-001", title="Ingest trail reports", milestone="MVP"),
             _entry("TM-015", title="Public read API", milestone="v1"),
         ],
-        bodies={"TM-001": "# TM-001 body\n", "TM-015": "# TM-015 body\n"},
+        contents=seeded_contents("TM-001", "TM-015"),
         roadmap=("# Roadmap\n" if with_roadmap else None),
         run_states=run_states,
     )
@@ -211,16 +233,18 @@ def test_create_dry_run_returns_preview_and_commits_nothing() -> None:
 def test_create_apply_commits_and_reread_reflects_created_state() -> None:
     service, project, writer = _service()
 
-    result = service.create(
-        project, _draft(bodyMarkdown="# Capture\n\nFresh body.\n"), dry_run=False
-    )
+    result = service.create(project, _draft(context="Fresh context."), dry_run=False)
 
     assert result.applied is True
     assert result.ticket is not None
     # The ticket carried is the re-read (via the adapter over the writer's live state).
     assert result.ticket.id == "TM-050"
     assert result.ticket.title == "Ranger mobile capture"
-    assert result.ticket.bodyMarkdown == "# Capture\n\nFresh body.\n"
+    # The rendered five sections, not a stored blob: v3 keeps ticket prose as structured
+    # fields and Markdown is a VIEW of them, so the re-read carries what the renderer
+    # produces from what was written.
+    assert result.ticket.bodyMarkdown.startswith("# [TM-050] Ranger mobile capture")
+    assert "Fresh context." in result.ticket.bodyMarkdown
     # It was actually committed to the writer's manifest.
     assert "TM-050" in _ids(writer)
 
@@ -244,7 +268,7 @@ def test_edit_apply_on_non_mutable_state_raises_not_mutable_and_writes_nothing(
     state: RunState,
 ) -> None:
     service, project, writer = _service(run_states={"TM-001": state})
-    before_body = writer._bodies["TM-001"]
+    before_body = writer._contents["TM-001"]
 
     with pytest.raises(TicketNotMutable) as exc_info:
         service.edit(project, "TM-001", _edit(), dry_run=False)
@@ -252,12 +276,12 @@ def test_edit_apply_on_non_mutable_state_raises_not_mutable_and_writes_nothing(
     assert exc_info.value.code == "ticket_not_mutable"
     assert exc_info.value.status == 409
     # Gate fires before any mutation.
-    assert writer._bodies["TM-001"] == before_body
+    assert writer._contents["TM-001"] == before_body
 
 
 def test_edit_dry_run_on_todo_returns_diff_and_commits_nothing() -> None:
     service, project, writer = _service(run_states={"TM-001": RunState.todo})
-    before_body = writer._bodies["TM-001"]
+    before_body = writer._contents["TM-001"]
 
     result = service.edit(project, "TM-001", _edit(title="Ingest trail reports (v2)"), dry_run=True)
 
@@ -265,7 +289,7 @@ def test_edit_dry_run_on_todo_returns_diff_and_commits_nothing() -> None:
     assert result.ticket is None
     assert result.ticketId == "TM-001"
     assert isinstance(result.diff, DiffPreview)
-    assert writer._bodies["TM-001"] == before_body
+    assert writer._contents["TM-001"] == before_body
 
 
 def test_edit_apply_on_todo_commits_and_reread_reflects_edit() -> None:
@@ -274,16 +298,16 @@ def test_edit_apply_on_todo_commits_and_reread_reflects_edit() -> None:
     result = service.edit(
         project,
         "TM-001",
-        _edit(title="Ingest trail reports (v2)", bodyMarkdown="# Ingest\n\nCommitted body.\n"),
+        _edit(title="Ingest trail reports (v2)", context="Committed context."),
         dry_run=False,
     )
 
     assert result.applied is True
     assert result.ticket is not None
     assert result.ticket.title == "Ingest trail reports (v2)"
-    assert result.ticket.bodyMarkdown == "# Ingest\n\nCommitted body.\n"
-    # The write landed in the writer's live state.
-    assert writer._bodies["TM-001"] == "# Ingest\n\nCommitted body.\n"
+    assert "Committed context." in result.ticket.bodyMarkdown
+    # The write landed in the writer's live state, as the structured fields themselves.
+    assert writer._contents["TM-001"].context == "Committed context."
 
 
 # --------------------------------------------------------------------------- #

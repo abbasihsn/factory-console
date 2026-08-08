@@ -29,6 +29,7 @@ from httpx import ASGITransport, AsyncClient
 
 from factory_console.app import create_app
 from factory_console.config import WRITE_TOKEN_HEADER
+from factory_console.domain.write import TicketContentFields
 from factory_console.file_adapter.real import RealFileAdapter
 from factory_console.file_adapter.real_writer import RealFileWriter
 from factory_console.store.registry_protocol import ProjectRegistry
@@ -103,3 +104,31 @@ def real_app(tmp_path: Path, *, registry: ProjectRegistry | None = None) -> tupl
 def client(app: FastAPI) -> AsyncClient:
     """An ``httpx.AsyncClient`` speaking ASGI directly to ``app`` (no socket)."""
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1")
+
+
+def content_fields(ticket_id: str, **overrides: object) -> TicketContentFields:
+    """A valid set of the five App Factory v3 CONTENT fields, for seeding a write test.
+
+    Every field is required and two carry ``minItems: 1``, so there is no such thing as a
+    partially-seeded v3 ticket — which is why this exists rather than each suite spelling
+    five keyword arguments per fixture. ``ticket_id`` is woven into the prose so a test
+    asserting on rendered output can tell two seeded tickets apart.
+
+    Shared across the write suites the way the app wiring above is, and for the same
+    reason: this is scaffolding, not the fixture under test. A suite that cares about a
+    particular field overrides it by name.
+    """
+    fields: dict[str, object] = {
+        "context": f"Why {ticket_id} exists.",
+        "approach": f"1. Build {ticket_id}.\n2. Verify it.",
+        "criticalFiles": [f"src/{ticket_id}.py"],
+        "interfaceData": "N/A",
+        "verificationCommands": [f"pytest tests/{ticket_id} -q"],
+    }
+    fields.update(overrides)
+    return TicketContentFields(**fields)  # type: ignore[arg-type]
+
+
+def seeded_contents(*ticket_ids: str) -> dict[str, TicketContentFields]:
+    """``{id: content_fields(id)}`` for each id — the ``contents=`` seed a fake writer takes."""
+    return {ticket_id: content_fields(ticket_id) for ticket_id in ticket_ids}

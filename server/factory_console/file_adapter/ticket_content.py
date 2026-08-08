@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from factory_console.domain.project import Project
-from factory_console.domain.ticket import Ticket
+from factory_console.domain.ticket import Ticket, TicketContentFields
 from factory_console.errors import FactoryConsoleError
 from factory_console.file_adapter.path_safety import resolve_ticket_path
 from factory_console.file_adapter.ticket_json import read_ticket_json, render_ticket_markdown
@@ -56,17 +56,22 @@ class TicketBody(NamedTuple):
     ``raw['frontMatter']`` as an object, and a v3 ticket genuinely carries no front-matter
     — that is an empty answer, not a missing one.
 
-    ``critical_files`` is ``None`` for a format that does not carry the field, and a
-    non-empty list for one that does. The distinction is load-bearing: ``None`` means
-    "this file says nothing about which files the ticket touches", so the manifest entry's
-    own ``files`` still answers, while a list means the content file answered and its
-    answer wins. Collapsing ``None`` into ``[]`` would let a v2 ticket's declared files
-    be erased by a format that never had the field.
+    ``content`` is the STRUCTURED source in the console's own camelCase, present only for
+    a format that has one — ``None`` for Markdown. The distinction is load-bearing twice
+    over. It decides whether the content file answered the question "which files does this
+    ticket touch?", so a v2 ticket's manifest-declared ``files`` is left alone rather than
+    erased by a format that never had the field; and it is what
+    :attr:`~factory_console.domain.ticket.Ticket.content` publishes, which is how a client
+    knows whether there are five fields to edit or a Markdown body it must refuse.
+
+    It carries ``content`` rather than the five fields flattened beside ``markdown``
+    because the two are not peers: ``markdown`` is rendered FROM ``content`` for a v3
+    ticket, and flattening would present a derivation as a sibling.
     """
 
     markdown: str
     front_matter: dict[str, Any]
-    critical_files: list[str] | None
+    content: TicketContentFields | None
 
 
 class TicketFormatUnsupported(FactoryConsoleError):
@@ -93,13 +98,64 @@ class TicketFormatUnsupported(FactoryConsoleError):
         )
 
 
+class TicketFormatRetired(FactoryConsoleError):
+    """A ticket is still in the Markdown format, and the operation needs a v3 one.
+
+    Raised by the WRITE path only. Reading a ``.md`` ticket still works — a project
+    mid-migration must stay viewable — but the write DTOs carry no field that could
+    express a Markdown body, so an edit has nothing to write there.
+
+    **409, not 422 and not 500.** The request is well-formed; what is not v3 yet is the
+    REPOSITORY, which is a conflict between the caller's intent and the current state —
+    the same class as :class:`~factory_console.file_adapter.write_render.TicketAlreadyExists`.
+    A 422 would send the caller to fix their payload, which is correct, and a 500 would
+    say the server was at fault, which it is not.
+
+    The message names the exact command, because a refusal an operator cannot act on is
+    only a slower failure. ``details`` carries the ``ticketId`` and the ``remedy`` as a
+    field of its own, so a client can surface it as an action rather than by scraping
+    prose out of the message.
+    """
+
+    def __init__(self, ticket_id: str) -> None:
+        remedy = "factory-ticket migrate --repo <project root>"
+        super().__init__(
+            code="ticket_format_retired",
+            message=(
+                f"Ticket '{ticket_id}' is a Markdown content file, which this console can "
+                f"read but no longer write. Convert the project's tickets to App Factory "
+                f"v3 JSON first: {remedy}"
+            ),
+            status=409,
+            details={"ticketId": ticket_id, "remedy": remedy},
+        )
+
+
 def _read_json_body(resolved: Path, ticket_id: str, entry: dict[str, Any]) -> TicketBody:
-    """Read a v3 JSON ticket and render it to the five sections."""
+    """Read a v3 JSON ticket, render it to the five sections, and keep the structure.
+
+    The rendered Markdown and the structured fields come from ONE read of ONE file, so
+    the page a human reviews and the form they then edit cannot disagree about what the
+    ticket says. Re-reading the file for the second of them would be two answers to one
+    question, separated by however long the request took.
+
+    The rename to camelCase happens here, at the file-adapter boundary where every other
+    wire-shape translation in this codebase happens — ``ticket_json.TicketContent`` keeps
+    the schema's ``snake_case`` verbatim because it exists to accept the factory's
+    contract, not to restate it.
+    """
     content = read_ticket_json(resolved, ticket_id)
     return TicketBody(
         markdown=render_ticket_markdown(content, entry),
         front_matter={},
-        critical_files=list(content.critical_files),
+        content=TicketContentFields(
+            context=content.context,
+            approach=content.approach,
+            criticalFiles=list(content.critical_files),
+            interfaceData=content.interface_data,
+            verificationCommands=list(content.verification.commands),
+            verificationNotes=content.verification.notes,
+        ),
     )
 
 
@@ -112,7 +168,7 @@ def _read_md_body(resolved: Path, ticket_id: str, _entry: dict[str, Any]) -> Tic
     Markdown file carries its own heading already.
     """
     front_matter, body = read_ticket_md_text(resolved, ticket_id)
-    return TicketBody(markdown=body, front_matter=front_matter, critical_files=None)
+    return TicketBody(markdown=body, front_matter=front_matter, content=None)
 
 
 _READERS: dict[str, Callable[[Path, str, dict[str, Any]], TicketBody]] = {
@@ -167,13 +223,19 @@ def enrich_ticket(project: Project, stub: Ticket) -> Ticket:
     :class:`~factory_console.domain.ticket.Ticket` is a distinct frozen instance produced
     via ``model_copy``; the stub's id already validated, so no re-validation runs.
 
-    **``files`` may now come from the content file.** A v3 ticket declares
-    ``critical_files``, and that field is not decoration — it feeds the factory's overlap
-    filter, which serializes two lanes that would otherwise edit the same path off bases
-    lacking each other's changes. The v3 manifest INDEX carries no ``files`` key at all, so
-    without this the console would show an empty file list for every ticket in a v3
-    project while the real list sat one file away, unread. A format that does not carry the
-    field (``critical_files is None``) leaves the stub's manifest-derived value alone.
+    **``content`` and ``files`` both come from the content file when it has them.** A v3
+    ticket declares ``critical_files``, and that field is not decoration — it feeds the
+    factory's overlap filter, which serializes two lanes that would otherwise edit the same
+    path off bases lacking each other's changes. The v3 manifest INDEX carries no ``files``
+    key at all, so without this the console would show an empty file list for every ticket
+    in a v3 project while the real list sat one file away, unread. A format with no
+    structured content (``body.content is None``) leaves the stub's manifest-derived
+    ``files`` alone and publishes ``content=None``, which is how the edit surface learns
+    there is nothing here it can edit.
+
+    ``files`` is assigned FROM ``content.criticalFiles`` rather than read a second time, so
+    the display projection and the editable field are one value and cannot drift into
+    disagreeing about a list both of them show.
 
     ``filePath`` is the stub's, CONTAINED — not a re-derivation. Recomputing it here is
     what once made an enriched ticket disagree with the stub it came from about where its
@@ -186,7 +248,8 @@ def enrich_ticket(project: Project, stub: Ticket) -> Ticket:
             project.rootPath, project.ticketsDir, stub.id, stub.filePath
         ),
         "raw": {**stub.raw, "frontMatter": body.front_matter},
+        "content": body.content,
     }
-    if body.critical_files is not None:
-        update["files"] = body.critical_files
+    if body.content is not None:
+        update["files"] = list(body.content.criticalFiles)
     return stub.model_copy(update=update)
