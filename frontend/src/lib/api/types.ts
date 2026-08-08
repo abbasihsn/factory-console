@@ -20,7 +20,7 @@ export interface paths {
         };
         /**
          * Get Project
-         * @description Return the SELECTED target :class:`Project` for the running console.
+         * @description Return the SELECTED target project, with the open sub-version if there is one.
          *
          *     ``root`` is resolved per request by
          *     :func:`~factory_console.api.deps.get_current_project_root`, so the project
@@ -28,6 +28,15 @@ export interface paths {
          *     ``ProjectNotFound`` from the adapter maps to the 404 envelope and a selection
          *     failure to its ``409`` — both through the registered domain-error handler, so
          *     there is no error handling in this endpoint.
+         *
+         *     ``subversion`` is v3's one recurring human gate — the factory accumulates a
+         *     sub-version's tickets onto one branch and then HOLDS at that branch's PR, waiting.
+         *     ``None`` is the normal state between cuts and must render as nothing at all.
+         *
+         *     Both reads happen in ONE ``run_sync``. They describe the same project at the same
+         *     moment, and splitting them would let the second observe a run-state the first did
+         *     not — a page naming a sub-version for a project the first call had already resolved
+         *     differently.
          */
         readonly get: operations["get_project_api_v1_project_get"];
         readonly put?: never;
@@ -839,22 +848,38 @@ export interface components {
             readonly tokens: components["schemas"]["SpendTokens"];
         };
         /**
-         * Project
-         * @description Resolved paths for one App Factory project, discovered per request.
+         * ProjectListResponse
+         * @description Envelope for the projects list: the switcher rows and their count.
          *
-         *     ``roadmapPath``, ``runStateDir`` and ``runStateSource`` are ``None`` when the
-         *     corresponding file or directory is absent from the target project (all are
-         *     optional in the project layout).
-         *
-         *     ``runStateSource`` is the resolved run-state artifact — the factory's
-         *     ``.factory/run-state.json`` OR a legacy marker directory — and is what
-         *     run-state reads dispatch on. ``runStateDir`` keeps its original meaning
-         *     exactly: a path ONLY when the resolved source is a directory, so a
-         *     JSON-sourced project has ``runStateDir is None``. Read run-state through
-         *     ``runStateSource``; ``runStateDir`` answers only "which directory, if any, is
-         *     off-limits to the writer".
+         *     The ``{items, total}`` shape ``/tickets``, ``/search`` and ``/runs`` already use, so
+         *     a client that unwraps ``items`` for three lists does not special-case a fourth.
+         *     ``total`` is ``len(items)`` — there is no filtering and no pagination, and the count
+         *     INCLUDES the session row when one is present, because that row is a row of the
+         *     dropdown like any other.
          */
-        readonly Project: {
+        readonly ProjectListResponse: {
+            /** Items */
+            readonly items: readonly components["schemas"]["RegisteredProjectOut"][];
+            /** Total */
+            readonly total: number;
+        };
+        /**
+         * ProjectView
+         * @description The resolved :class:`Project`, plus the factory state a human watches for.
+         *
+         *     **Subclassing rather than composing, for two reasons.** On the wire it keeps every
+         *     existing key exactly where it was and adds one — so this endpoint gains a field
+         *     instead of changing shape, and nothing reading ``project.rootPath`` has to move.
+         *     In the code it keeps :class:`Project` itself honest: that model documents itself as
+         *     carrying "only resolved paths — never file contents", and it is constructed once per
+         *     request and passed to every adapter method. ``subversion`` is CONTENT, read out of
+         *     ``run-state.json``, so putting it there would make a request-scoped path bundle
+         *     depend on a file's contents and quietly invalidate that promise for every caller.
+         *
+         *     The addition lives at the API layer because that is the only layer that wants it: no
+         *     adapter method takes a ``ProjectView``, and none should.
+         */
+        readonly ProjectView: {
             /**
              * Rootpath
              * Format: path
@@ -880,22 +905,7 @@ export interface components {
              * Format: date-time
              */
             readonly discoveredAt: string;
-        };
-        /**
-         * ProjectListResponse
-         * @description Envelope for the projects list: the switcher rows and their count.
-         *
-         *     The ``{items, total}`` shape ``/tickets``, ``/search`` and ``/runs`` already use, so
-         *     a client that unwraps ``items`` for three lists does not special-case a fourth.
-         *     ``total`` is ``len(items)`` — there is no filtering and no pagination, and the count
-         *     INCLUDES the session row when one is present, because that row is a row of the
-         *     dropdown like any other.
-         */
-        readonly ProjectListResponse: {
-            /** Items */
-            readonly items: readonly components["schemas"]["RegisteredProjectOut"][];
-            /** Total */
-            readonly total: number;
+            readonly subversion?: components["schemas"]["Subversion"] | null;
         };
         /**
          * ProjectedArtifactRead
@@ -1357,6 +1367,36 @@ export interface components {
             readonly tokens: components["schemas"]["SpendTokens"];
         };
         /**
+         * Subversion
+         * @description The open sub-version branch the factory is accumulating tickets onto.
+         *
+         *     Field names are the console's camelCase; the factory writes ``branch``,
+         *     ``base_sha``, ``name`` and ``pr_url``, and the translation happens at the
+         *     file-adapter boundary like every other wire-shape translation here.
+         *
+         *     ``prUrl`` is ``None`` until the PR is actually opened, and that gap is meaningful
+         *     rather than a loading state: the factory records the branch when it CUTS the
+         *     sub-version and the url only once ``ai-gh-open-pr`` has run. A record with a branch
+         *     and no url is a sub-version being built; one with a url is a sub-version waiting on
+         *     a human. Those are the two things an operator most wants to tell apart, so a view
+         *     must not render them the same way.
+         *
+         *     The factory keeps ``pr_url`` in run-state rather than re-deriving it from ``gh``
+         *     precisely because it cannot be recomputed — a second ``ai-gh-open-pr`` would open a
+         *     DUPLICATE PR rather than find the first — which is also why this console only ever
+         *     reads it. Nothing here writes to the run-state source, in any of its forms.
+         */
+        readonly Subversion: {
+            /** Branch */
+            readonly branch: string;
+            /** Basesha */
+            readonly baseSha?: string | null;
+            /** Name */
+            readonly name?: string | null;
+            /** Prurl */
+            readonly prUrl?: string | null;
+        };
+        /**
          * Ticket
          * @description A manifest entry joined with the content file it points at.
          *
@@ -1381,6 +1421,33 @@ export interface components {
          *     refuses with a 409, so a client that checks it declines to open the form instead
          *     of presenting five blank boxes whose Save is guaranteed to fail.
          *
+         *     ``phase`` is WHERE a running lane has got to — ``building``, ``accepting``,
+         *     ``reviewing``, ``fixing``, ``verifying`` — and it QUALIFIES ``runState`` rather than
+         *     extending it. A lane holds its worktree for up to 90 minutes, and ``in_progress``
+         *     alone is a 90-minute black box in the one place an operator most wants a reading:
+         *     still building, or stuck in review for an hour? The factory keeps it as a field for
+         *     the same reason it is one here — the state machine is what the frontier and the
+         *     merge eligibility walk, and widening that enum to carry a fact is how v2's
+         *     ``in_part`` became a state nothing could move out of.
+         *
+         *     It is a free ``str``, deliberately unvalidated, and that is the OPPOSITE of how an
+         *     unrecognised run-state STATUS is treated (which resolves ``unreadable`` and refuses
+         *     every write). A phase is displayed and never branched on, so an unrecognised one
+         *     costs an odd label — while rejecting it would blank a field the operator is watching,
+         *     and escalating it would deny writes on a ticket whose status read perfectly. A
+         *     cosmetic field must never become a write lockout.
+         *
+         *     ``None`` means no phase was recorded, and its several causes are NOT told apart the
+         *     way the run-state answers are: no source, a marker directory (which has nowhere to
+         *     record one), an unreadable file, or — the common case — a ticket that is simply not
+         *     mid-lane, which the factory writes as an explicit ``null`` on every status
+         *     transition. Nothing gates on a phase, so no caller needs the distinction.
+         *
+         *     A phase is carried whatever the status says. The factory clears it on every
+         *     transition, so a phase beside a non-``in_progress`` status is only reachable by a
+         *     hand-edit — and dropping it here would destroy the evidence of exactly that. Where a
+         *     phase is worth SHOWING is the view's decision, not this model's.
+         *
          *     ``files`` stays beside it and is not redundant with ``content.criticalFiles``.
          *     ``files`` is the format-agnostic DISPLAY projection — a v2 ticket has one from its
          *     manifest entry and no ``content`` at all — while ``criticalFiles`` is the editable
@@ -1401,6 +1468,8 @@ export interface components {
             readonly milestone?: string | null;
             /** @default unknown */
             readonly runState: components["schemas"]["RunState"];
+            /** Phase */
+            readonly phase?: string | null;
             /** Dependson */
             readonly dependsOn?: readonly string[];
             /** Provides */
@@ -1599,9 +1668,11 @@ export interface components {
          * TicketSummary
          * @description List-projection of a ticket for the tickets index view.
          *
-         *     ``runState`` is resolved per request by probing the factory run-state
-         *     directory; ``depCount`` / ``dependentCount`` come from reverse-indexing
+         *     ``runState`` and ``phase`` are resolved per request from the factory's run-state
+         *     source; ``depCount`` / ``dependentCount`` come from reverse-indexing
          *     ``dependsOn`` across the manifest.
+         *
+         *     See :attr:`Ticket.phase` for what ``phase`` is and why it is a free ``str``.
          */
         readonly TicketSummary: {
             /** Id */
@@ -1615,6 +1686,8 @@ export interface components {
             /** Milestone */
             readonly milestone?: string | null;
             readonly runState: components["schemas"]["RunState"];
+            /** Phase */
+            readonly phase?: string | null;
             /** Depcount */
             readonly depCount: number;
             /** Dependentcount */
@@ -1679,7 +1752,7 @@ export interface operations {
                     readonly [name: string]: unknown;
                 };
                 content: {
-                    readonly "application/json": components["schemas"]["Project"];
+                    readonly "application/json": components["schemas"]["ProjectView"];
                 };
             };
         };

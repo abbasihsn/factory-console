@@ -70,6 +70,7 @@ from factory_console.domain.run_state_source import (
     JsonRunState,
     RunStateSource,
 )
+from factory_console.domain.subversion import Subversion
 from factory_console.file_adapter.path_safety import (
     # Re-exported, not used here: this module stopped RAISING :class:`PathTraversal`
     # directly when the segment rule moved to
@@ -1275,6 +1276,7 @@ def read_json_run_state(path: Path) -> JsonRunState:
         return JsonRunState(readable=False)
 
     states: dict[str, RunState] = {}
+    phases: dict[str, str] = {}
     unrecognised: list[str] = []
     known_ticket_ids: set[str] = set()
     # Per id, WHAT could not be classified — the phrase the refusal names (T80
@@ -1328,6 +1330,23 @@ def read_json_run_state(path: Path) -> JsonRunState:
             unclassifiable[ticket_id] = f"status {status!r}"
             continue
         states[ticket_id] = state
+        # Read AFTER the status is classified, so a ticket this console could not read a
+        # status for contributes no phase either — ``phases`` never describes a ticket
+        # ``states`` could not. Deliberately NOT validated against
+        # ``FAC_LANE_PHASES``: a phase is displayed, never branched on, so an
+        # unrecognised one costs an odd label, while refusing it would blank a field the
+        # operator is watching and escalating it (the way an unrecognised STATUS is
+        # escalated to ``unreadable``) would refuse every write on a ticket whose status
+        # read perfectly. A cosmetic field must not become a write lockout.
+        #
+        # ``null`` is the factory's own way of saying "this ticket is not mid-lane" —
+        # every status transition writes it, deliberately, rather than deleting the key
+        # — so a non-string value is the NORMAL case here and is simply skipped, not
+        # collected as a malformed entry. Blank strings are skipped too: an empty phase
+        # answers nothing and would render as a qualifier with no word in it.
+        phase = entry.get("phase")
+        if isinstance(phase, str) and phase.strip():
+            phases[ticket_id] = phase
     # ``%r`` (like every other externally sourced value logged in this module), never
     # ``%s``: these ids are arbitrary text from a file the console does not own, and
     # the log formatter is one record per line — an unescaped newline in one would
@@ -1348,6 +1367,7 @@ def read_json_run_state(path: Path) -> JsonRunState:
         )
     return JsonRunState(
         states=states,
+        phases=phases,
         unrecognised=unrecognised,
         known_ticket_ids=frozenset(known_ticket_ids),
         unclassifiable=unclassifiable,
@@ -1544,6 +1564,120 @@ def run_state_resolver(source: RunStateSource | None) -> Callable[[str], RunStat
     """
     resolve = _run_state_resolver_with_reason(source)
     return lambda ticket_id: resolve(ticket_id)[0]
+
+
+def run_state_and_phase_resolvers(
+    source: RunStateSource | None,
+) -> tuple[Callable[[str], RunState], Callable[[str], str | None]]:
+    """A state resolver AND a phase resolver, over ONE read of ``source``.
+
+    For a caller that needs both for every ticket — the list/deps/graph projection,
+    which badges a state and qualifies it with the lane's phase — building
+    :func:`run_state_resolver` and a phase resolver separately would parse
+    ``run-state.json`` twice per request. This parses once and closes over that parse
+    for both answers.
+
+    The JSON leg is not a reimplementation: the state closure is
+    :func:`_resolve_json_state` over a :func:`read_json_run_state` parse, which is
+    exactly what :func:`_run_state_resolver_with_reason`'s JSON leg is, so the two
+    provably agree rather than agreeing by intention. Only the phase closure is new, and
+    it is a dict lookup.
+
+    Every OTHER kind of source delegates its state answer to :func:`run_state_resolver`
+    verbatim — the directory form's vacuity scan, its unrecognised-name handling and its
+    log-once discipline are intricate and must have exactly one implementation — and
+    answers ``None`` for every phase. That is not a degradation: a marker directory
+    records a ticket's state as a FILE'S EXISTENCE and has nowhere to put a phase, so
+    "no phase" is the complete and correct reading of a v2-shaped source, not a gap in
+    this console's ability to read one.
+    """
+    if source is not None and source.kind == "json":
+        parsed = read_json_run_state(source.path)
+        return (
+            lambda ticket_id: _resolve_json_state(parsed, ticket_id),
+            lambda ticket_id: parsed.phases.get(ticket_id),
+        )
+    return run_state_resolver(source), lambda _ticket_id: None
+
+
+def probe_lane_phase_from_source(source: RunStateSource | None, ticket_id: str) -> str | None:
+    """The phase ``source`` records for ``ticket_id``, or ``None``.
+
+    The single-ticket face of :func:`run_state_and_phase_resolvers`, for the detail path
+    — which resolves one ticket and has no manifest-wide parse to share.
+
+    ``None`` covers every way there is no phase to report, and they need not be told
+    apart the way the run-state answers do: no source at all, a directory source (which
+    has nowhere to record one), a file that could not be read, an id the file does not
+    name, and — the common case by far — a ticket that is simply not mid-lane, which the
+    factory writes as an explicit ``null`` on every status transition. None of those is a
+    claim about the ticket that a gate could act on, because nothing gates on a phase.
+    That is why this returns a bare ``str | None`` while the state answer needs three
+    distinct unnamed values.
+    """
+    _state, phase = run_state_and_phase_resolvers(source)
+    return phase(ticket_id)
+
+
+def read_subversion(source: RunStateSource | None) -> Subversion | None:
+    """The open sub-version recorded in ``source``, or ``None`` when none is.
+
+    Reads the TOP-LEVEL ``subversion`` key of ``.factory/run-state.json`` — a sibling of
+    ``tickets``, not an entry in it — which the factory writes when it cuts a
+    sub-version branch and deletes when that branch lands (``lib/subversion.sh``).
+
+    ``None`` for a directory source, because the legacy marker layout has no such
+    record: v2 had no sub-version to hold at. ``None`` too for a file that could not be
+    read, and here that is a considered answer rather than a shrug. Everywhere else in
+    this module an unreadable source fails CLOSED, because the question being asked
+    ("may this ticket be written?") has a dangerous wrong answer. This question is
+    "is a sub-version open?", and its only consumer is a header strip: the failure mode
+    of a wrong ``None`` is that an operator does not see a link they could have seen,
+    while a wrong non-``None`` would name a branch nobody cut. There is nothing to fail
+    closed INTO — a refusing sentinel would have to be rendered as something, and every
+    rendering of it is a claim about a sub-version this console could not read.
+
+    A ``subversion`` that is present but not an object, or that carries no usable
+    ``branch``, is also ``None``. The branch is the one field the record is useless
+    without: it names the thing being held, and a strip with no branch would be an empty
+    box announcing a gate it cannot identify.
+    """
+    if source is None or source.kind != "json":
+        return None
+    try:
+        raw = source.path.read_text(encoding="utf-8")
+        document = json.loads(raw)
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError, MemoryError):
+        # Silent, unlike the run-state parse next door, and deliberately: every one of
+        # these failures is ALREADY logged — loudly and with the same path — by
+        # ``read_json_run_state``, which every request also calls. Logging here would
+        # double every degradation record for a field nothing gates on.
+        return None
+    if not isinstance(document, dict):
+        return None
+    record = document.get("subversion")
+    if not isinstance(record, dict):
+        return None
+    branch = record.get("branch")
+    if not isinstance(branch, str) or not branch.strip():
+        return None
+
+    def _text(key: str) -> str | None:
+        """A string field of the record, or ``None`` when it is absent or not a string.
+
+        The factory writes ``pr_url: null`` at cut time and fills it in when the PR is
+        opened, so a non-string here is the ordinary mid-life shape of the record and
+        not a defect to report.
+        """
+        value = record.get(key)
+        return value if isinstance(value, str) and value.strip() else None
+
+    return Subversion(
+        branch=branch,
+        baseSha=_text("base_sha"),
+        name=_text("name"),
+        prUrl=_text("pr_url"),
+    )
 
 
 def _run_state_resolver_with_reason(

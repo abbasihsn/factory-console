@@ -42,9 +42,7 @@ def _roadmap(*milestones: RoadmapMilestone) -> Roadmap:
 
 
 def _service(roadmap: Roadmap | None, run_states: dict[str, RunState] | None = None):
-    adapter = FakeFileAdapter(
-        project=PROJECT, tickets=[], roadmap=roadmap, run_states=run_states
-    )
+    adapter = FakeFileAdapter(project=PROJECT, tickets=[], roadmap=roadmap, run_states=run_states)
     return RoadmapService(adapter)
 
 
@@ -179,9 +177,7 @@ class _CountingAdapter:
         self.single_calls += 1
         return self._inner.read_run_state(project, ticket_id)
 
-    def read_run_states(
-        self, project: Project, ticket_ids: Iterable[str]
-    ) -> dict[str, RunState]:
+    def read_run_states(self, project: Project, ticket_ids: Iterable[str]) -> dict[str, RunState]:
         materialized = list(ticket_ids)
         self.batch_calls += 1
         self.ids_asked.extend(materialized)
@@ -254,9 +250,13 @@ def test_an_adapter_that_drops_an_id_fails_loudly_rather_than_answering_null() -
         ) -> dict[str, RunState]:
             return {}
 
-    inner = FakeFileAdapter(project=PROJECT, tickets=[], roadmap=_roadmap(
-        RoadmapMilestone(name="v1.0", items=[RoadmapItem(text="Ship", ticketId="T01")])
-    ))
+    inner = FakeFileAdapter(
+        project=PROJECT,
+        tickets=[],
+        roadmap=_roadmap(
+            RoadmapMilestone(name="v1.0", items=[RoadmapItem(text="Ship", ticketId="T01")])
+        ),
+    )
     service = RoadmapService(_Forgetful(inner))  # type: ignore[arg-type]
 
     with pytest.raises(KeyError):

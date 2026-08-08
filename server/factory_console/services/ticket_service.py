@@ -82,16 +82,28 @@ class TicketService:
         """Return the full :class:`Ticket` for ``ticket_id`` with run-state joined in.
 
         Raises :class:`TicketNotFound` when the adapter has no ticket for the id.
-        The adapter leaves the returned ticket's ``runState`` at its default on
-        this path, so we resolve it here via ``read_run_state`` and copy it in.
+        The adapter leaves the returned ticket's ``runState`` and ``phase`` at their
+        defaults on this path, so we resolve both here and copy them in.
         This is a deliberate asymmetry with :meth:`list_tickets`, whose summaries
         arrive already run-state-resolved: run-state is joined on BOTH paths, but
         only the detail path probes (do not "fix" this into a redundant re-probe
         on the list path).
+
+        ``phase`` is read through its own call rather than folded into the run-state
+        one, and the extra read is affordable HERE for the reason it would not be on the
+        list path: this resolves ONE ticket. The list path shares a single parse between
+        the two answers precisely because it asks about every ticket in the manifest.
+
+        The two reads are independent on purpose. A phase makes no claim about a status
+        and is gated on by nothing, so a phase that could not be read must not disturb
+        the state that could — the state answer is the one the write gate acts on.
         """
         ticket = self._adapter.get_ticket(project, ticket_id)
         if ticket is None:
             raise TicketNotFound(ticket_id)
         return ticket.model_copy(
-            update={"runState": self._adapter.read_run_state(project, ticket_id)}
+            update={
+                "runState": self._adapter.read_run_state(project, ticket_id),
+                "phase": self._adapter.read_lane_phase(project, ticket_id),
+            }
         )

@@ -44,6 +44,7 @@ from factory_console.domain import (
 )
 from factory_console.domain.graph import TicketGraph
 from factory_console.domain.search import SearchHit
+from factory_console.domain.subversion import Subversion
 from factory_console.errors import FactoryConsoleError
 from factory_console.file_adapter.discovery import MANIFEST_RELPATH, find_project_root
 from factory_console.file_adapter.graph import build_graph
@@ -54,9 +55,16 @@ from factory_console.file_adapter.projection import TicketProjection
 from factory_console.file_adapter.roadmap_parse import parse_milestones
 from factory_console.file_adapter.run_state import (
     find_run_state_source,
+    probe_lane_phase_from_source,
     probe_ticket_state_from_source,
+    run_state_and_phase_resolvers,
     run_state_resolver,
 )
+
+# Aliased because this class has a method of the same name. Inside that method a bare
+# `read_subversion(...)` would resolve to the module-level import and work — but a
+# reader has to know Python's scoping rules to be sure it is not infinite recursion.
+from factory_console.file_adapter.run_state import read_subversion as read_subversion_from_source
 from factory_console.file_adapter.search import rank_tickets, to_search_hits
 from factory_console.file_adapter.ticket_content import (
     TicketFormatUnsupported,
@@ -264,6 +272,21 @@ class RealFileAdapter:
             ticket_id: RealFileAdapter._safe_run_state(resolve, ticket_id) for ticket_id in unique
         }
 
+    def read_lane_phase(self, project: Project, ticket_id: str) -> str | None:
+        """Return the phase ``ticket_id``'s running lane recorded, or ``None``.
+
+        Delegates to
+        :func:`~factory_console.file_adapter.run_state.probe_lane_phase_from_source`,
+        which reads the JSON source and answers ``None`` for every other kind. Unlike
+        :meth:`read_run_state` this raises nothing for a path-unsafe id: the JSON form
+        joins no path, so an id is a dict key here and an unsafe one simply is not found.
+        """
+        return probe_lane_phase_from_source(project.runStateSource, ticket_id)
+
+    def read_subversion(self, project: Project) -> Subversion | None:
+        """Return the open sub-version recorded in the run-state source, or ``None``."""
+        return read_subversion_from_source(project.runStateSource)
+
     def get_roadmap(self, project: Project) -> Roadmap | None:
         """Return the project :class:`Roadmap`, or ``None`` when it has no roadmap.
 
@@ -461,12 +484,21 @@ class RealFileAdapter:
         stubs it already read (one manifest read per request); ``_project_manifest``
         materializes them itself.
 
-        The resolver is built ONCE per projection from ``project.runStateSource``,
+        The resolvers are built ONCE per projection from ``project.runStateSource``,
         so a JSON run-state file is read and parsed once per request instead of
-        once per ticket.
+        once per ticket. BOTH of them come from that single parse
+        (:func:`~factory_console.file_adapter.run_state.run_state_and_phase_resolvers`):
+        the list view badges a state and qualifies it with the lane's phase, and building
+        the two separately would read the file twice for one request.
+
+        ``phase_for`` needs no ``_safe_run_state``-style degradation. That guard exists
+        because the DIRECTORY prober turns an id into a path segment and can raise on a
+        malformed one; a phase is only ever a key in a parsed JSON object, so an unsafe
+        id is simply an id the document does not name.
         """
-        resolve = run_state_resolver(project.runStateSource)
+        resolve, phase = run_state_and_phase_resolvers(project.runStateSource)
         return TicketProjection(
             stubs,
             run_state_for=lambda ticket_id: RealFileAdapter._safe_run_state(resolve, ticket_id),
+            phase_for=phase,
         )

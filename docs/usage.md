@@ -269,6 +269,29 @@ ticket for its detail view — the rendered body, resolved
 `depends_on` / `provides`, and a factory run-state badge — and follow "View dep
 neighborhood" for that ticket's direct deps and dependents as clickable links.
 
+**The badge says where a running lane has got to**, not just that one is running. A
+factory lane holds its worktree for up to 90 minutes, so `In progress` on its own is a
+90-minute black box in the one place you most want a reading. When the factory has
+recorded a phase the badge reads `In progress · reviewing` — the lane's own steps are
+`building`, `accepting`, `reviewing`, `fixing`, `verifying`, and the last three repeat
+once per review round. No phase means the ticket is not mid-lane; the factory clears it
+on every status change.
+
+### The sub-version strip
+
+Under App Factory v3 the factory merges each finished ticket onto a single
+`factory/<sub-version>` branch and then **holds at that branch's pull request, waiting
+for you**. It is the only recurring human gate in a run, so the console shows it as a
+strip across the top of every page whenever one is open:
+
+- **Sub-version in progress** — the branch is cut and lanes are still merging into it.
+  Nothing is being asked of you.
+- **Sub-version waiting to merge** (highlighted, with a link to the PR) — the factory
+  has stopped. Reviewing and merging that PR is what lets the run continue.
+
+No strip means no sub-version is open, which is the normal state between cuts. Only one
+is ever open at a time.
+
 ### Editing tickets
 
 Editability is decided by the ticket's factory run-state, read from the project's

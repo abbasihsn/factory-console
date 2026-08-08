@@ -25,6 +25,7 @@ from factory_console.domain import (
 )
 from factory_console.domain.graph import TicketGraph
 from factory_console.domain.search import SearchHit
+from factory_console.domain.subversion import Subversion
 
 
 @runtime_checkable
@@ -126,6 +127,49 @@ class FileAdapter(Protocol):
           not run, which is "unavailable", not "nothing was said".
 
         An empty ``ticket_ids`` returns ``{}`` without touching the source at all.
+        """
+        ...
+
+    def read_lane_phase(self, project: Project, ticket_id: str) -> str | None:
+        """Return WHERE ``ticket_id``'s running lane has got to, or ``None``.
+
+        One of ``building``, ``accepting``, ``reviewing``, ``fixing``, ``verifying`` —
+        the factory's own lane steps, in order. A lane holds its worktree for up to 90
+        minutes, and ``in_progress`` alone is a 90-minute black box in the one place an
+        operator most wants a reading: still building, or stuck in review for an hour?
+
+        **A conforming implementation returns the string it read, unvalidated.** This is
+        the deliberate opposite of how an unrecognised STATUS is handled — that resolves
+        the refusing ``unreadable`` and every write is denied. A phase is displayed and
+        never branched on, so an unrecognised one costs an odd label; refusing it would
+        blank a field the operator is watching, and escalating it would deny writes on a
+        ticket whose status read perfectly. A cosmetic field must not become a write
+        lockout, and an implementation that made one would be wrong.
+
+        ``None`` is every way there is no phase, and unlike the run-state answers those
+        ways are NOT told apart: no source, a directory source (the marker layout has
+        nowhere to record one), an unreadable file, an id the source does not name, and —
+        the common case — a ticket that is not mid-lane, which the factory writes as an
+        explicit ``null`` on every status transition. Nothing gates on a phase, so no
+        caller needs to distinguish them.
+
+        Reading a phase makes no claim about the STATUS. An implementation must not let
+        this read alter, refuse, or be refused by :meth:`read_run_state`.
+        """
+        ...
+
+    def read_subversion(self, project: Project) -> Subversion | None:
+        """Return the open sub-version, or ``None`` when none is open.
+
+        v3's one recurring human gate: tickets auto-merge onto a single
+        ``factory/<sub-version>`` branch and the factory HOLDS at that branch's PR
+        waiting for a human. Only one is ever open.
+
+        ``None`` is the NORMAL state between cuts, not a failure — a conforming
+        implementation returns it for a project with no source, a directory source (v2
+        had no sub-version to hold at), a source it could not read, and a document with
+        no ``subversion`` record. A caller must render ``None`` as nothing at all rather
+        than as an empty or broken strip.
         """
         ...
 

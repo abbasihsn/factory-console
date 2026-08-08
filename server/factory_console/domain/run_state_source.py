@@ -104,11 +104,35 @@ class JsonRunState(BaseModel):
     merely documented: the two flags describe three outcomes, not four, and the fourth
     combination is the one a resolver would read inconsistently depending on which flag
     it happened to check first.
+
+    ``phases`` maps ticket id -> the raw ``phase`` string for every entry that carries a
+    non-empty one. It is WHERE an ``in_progress`` lane has got to
+    (``building``/``accepting``/``reviewing``/``fixing``/``verifying``), and it is
+    deliberately kept OUT of ``states``: the factory models it as a field ON
+    ``in_progress`` rather than as new states, because the state machine is what the
+    frontier and the merge eligibility walk, and widening that enum to carry a fact is
+    how v2's ``in_part`` became a state nothing could move out of. Every reader here
+    sees a plain ``in_progress``.
+
+    The value is carried as a RAW ``str``, unvalidated against any vocabulary, and that
+    is the one place this model is deliberately permissive. A phase is displayed, never
+    branched on — nothing in this console decides anything from it — so an unrecognised
+    phase costs a slightly odd label, while rejecting one would blank a field the
+    operator is watching, and escalating one (as an unrecognised *status* is escalated
+    to ``unreadable``) would refuse every write on a ticket whose status read perfectly.
+    A cosmetic field must never become a write lockout. Same reasoning as
+    ``LevelSpend.level``, which is a free ``str`` so an unrecognised level appears
+    rather than vanishing.
+
+    An entry whose status could not be classified contributes no phase either: the id is
+    skipped before the phase is read, so ``phases`` never describes a ticket that
+    ``states`` could not.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     states: dict[str, RunState] = {}
+    phases: dict[str, str] = {}
     unrecognised: list[str] = []
     known_ticket_ids: frozenset[str] = frozenset()
     unclassifiable: dict[str, str] = {}

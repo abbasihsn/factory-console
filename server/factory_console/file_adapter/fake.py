@@ -38,6 +38,7 @@ from factory_console.domain import (
 )
 from factory_console.domain.graph import TicketGraph
 from factory_console.domain.search import SearchHit
+from factory_console.domain.subversion import Subversion
 from factory_console.file_adapter.graph import build_graph
 from factory_console.file_adapter.projection import TicketProjection
 from factory_console.file_adapter.search import rank_tickets, to_search_hits
@@ -57,6 +58,8 @@ class FakeFileAdapter:
         tickets: list[Ticket],
         run_states: dict[str, RunState] | None = None,
         roadmap: Roadmap | None = None,
+        phases: dict[str, str] | None = None,
+        subversion: Subversion | None = None,
     ) -> None:
         """Seed the fake with pre-resolved project data.
 
@@ -67,14 +70,23 @@ class FakeFileAdapter:
         the ``{id: Ticket}`` lookup and the reverse dependents index and backs
         both the list and dependency views, with run-state resolved from the
         seeded map.
+
+        ``phases`` maps ``{ticket_id: phase}`` for the lane steps an ``in_progress``
+        ticket has reached; an unseeded id answers ``None``, which is what the real
+        adapter answers for a ticket that is not mid-lane. ``subversion`` is the open
+        sub-version record, defaulting to ``None`` — the normal state between cuts, and
+        the one every test that does not care about the gate wants.
         """
         self._project = project
         self._tickets = tickets
         self._run_states = {} if run_states is None else run_states
         self._roadmap = roadmap
+        self._phases = {} if phases is None else phases
+        self._subversion = subversion
         self._projection = TicketProjection(
             tickets,
             run_state_for=lambda ticket_id: self._run_states.get(ticket_id, RunState.unknown),
+            phase_for=lambda ticket_id: self._phases.get(ticket_id),
         )
 
     def load_project(self, root: Path) -> Project:
@@ -143,6 +155,20 @@ class FakeFileAdapter:
             ticket_id: self.read_run_state(project, ticket_id)
             for ticket_id in dict.fromkeys(ticket_ids)
         }
+
+    def read_lane_phase(self, project: Project, ticket_id: str) -> str | None:
+        """Return the seeded lane phase for ``ticket_id``, else ``None``.
+
+        Seeded through ``phases`` and defaulting to ``None`` for every unseeded id —
+        which is what the real adapter answers for a ticket that is not mid-lane, the
+        overwhelmingly common case. Unlike ``run_states`` there is no divergence to warn
+        about: a phase has no third answer and no gate reads it.
+        """
+        return self._phases.get(ticket_id)
+
+    def read_subversion(self, project: Project) -> Subversion | None:
+        """Return the seeded open :class:`Subversion`, or ``None`` when seeded without one."""
+        return self._subversion
 
     def get_roadmap(self, project: Project) -> Roadmap | None:
         """Return the seeded :class:`Roadmap`, or ``None`` when seeded without one."""

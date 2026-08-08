@@ -4,6 +4,7 @@
 	import TopBar from '$lib/components/TopBar.svelte';
 	import LiveIndicator from '$lib/components/LiveIndicator.svelte';
 	import ProjectStatusBanner from '$lib/components/ProjectStatusBanner.svelte';
+	import SubversionBar from '$lib/components/SubversionBar.svelte';
 	import { createLiveStore } from '$lib/stores/live';
 	import { createCoalescer } from '$lib/stores/coalesce';
 	import { onMount, type Snippet } from 'svelte';
@@ -86,6 +87,11 @@
 		onReload={invalidateAll}
 	/>
 	<ProjectStatusBanner project={selectedProject} />
+	<!-- Below the condition banner, above everything else: a sub-version hold is a fact
+	     about the factory's progress, while the banner above reports a project the
+	     console cannot serve properly — that one has to come first, because when it
+	     fires nothing beneath it can be trusted. -->
+	<SubversionBar subversion={data.project.subversion} />
 	<div class="mx-auto flex max-w-5xl justify-end px-4 pt-3">
 		<LiveIndicator status={$status} lastEvent={$lastEvent} />
 	</div>

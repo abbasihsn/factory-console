@@ -12,7 +12,20 @@
 	// (underscored). These maps are `Record<RunState, …>`, so a state added to the
 	// backend enum and regenerated into the type fails the build here rather than
 	// rendering an unstyled, untitled, empty pill.
-	let { runState }: { runState: RunState } = $props();
+	//
+	// `phase` QUALIFIES the state — "In progress · reviewing" — and is a free `string`
+	// rather than a union, matching the backend. It is displayed and never branched on,
+	// so a phase this console has not heard of shows as itself; the alternative is
+	// blanking a field the operator is watching because the factory added a word.
+	// Nothing is looked up by it, so there is no map to fall off.
+	let { runState, phase = null }: { runState: RunState; phase?: string | null } = $props();
+
+	// Rendered WHENEVER present, not only on `in_progress`. The factory clears the phase
+	// on every status transition, so a phase beside a finished state is reachable only by
+	// a hand-edit of run-state.json — exactly the inconsistency an operator needs to see.
+	// Gating the display on the state would make this view the one place that quietly
+	// drops what the file says. It looks odd because it IS odd.
+	const qualifier = $derived(phase?.trim() ? phase.trim() : null);
 
 	// Full literal Tailwind class strings: the JIT scanner only sees complete
 	// class strings, so these must never be built dynamically (e.g. `bg-${c}-100`)
@@ -87,13 +100,22 @@
 		unreadable:
 			'The run-state source could not be read, or says something about this ticket this console does not understand — writes are refused'
 	};
+
+	// ONE string rather than a nested `{#if}` span, so a badge with no phase renders
+	// byte-identically to the badge that shipped before this field existed. That is what
+	// lets the per-variant DOM snapshots keep pinning the colour map and the tooltips,
+	// instead of being churned by a field they do not test. Declared after the maps it
+	// reads, so nothing here depends on `$derived` being lazy.
+	const label = $derived(
+		qualifier ? `${STATE_LABELS[runState]} · ${qualifier}` : STATE_LABELS[runState]
+	);
 </script>
 
 <span
 	class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {STATE_CLASSES[
 		runState
 	]}"
-	title={STATE_TITLES[runState]}
+	title={qualifier ? `${STATE_TITLES[runState]} — currently ${qualifier}` : STATE_TITLES[runState]}
 >
-	{STATE_LABELS[runState]}
+	{label}
 </span>

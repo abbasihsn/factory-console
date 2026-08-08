@@ -94,6 +94,33 @@ class Ticket(BaseModel):
     refuses with a 409, so a client that checks it declines to open the form instead
     of presenting five blank boxes whose Save is guaranteed to fail.
 
+    ``phase`` is WHERE a running lane has got to — ``building``, ``accepting``,
+    ``reviewing``, ``fixing``, ``verifying`` — and it QUALIFIES ``runState`` rather than
+    extending it. A lane holds its worktree for up to 90 minutes, and ``in_progress``
+    alone is a 90-minute black box in the one place an operator most wants a reading:
+    still building, or stuck in review for an hour? The factory keeps it as a field for
+    the same reason it is one here — the state machine is what the frontier and the
+    merge eligibility walk, and widening that enum to carry a fact is how v2's
+    ``in_part`` became a state nothing could move out of.
+
+    It is a free ``str``, deliberately unvalidated, and that is the OPPOSITE of how an
+    unrecognised run-state STATUS is treated (which resolves ``unreadable`` and refuses
+    every write). A phase is displayed and never branched on, so an unrecognised one
+    costs an odd label — while rejecting it would blank a field the operator is watching,
+    and escalating it would deny writes on a ticket whose status read perfectly. A
+    cosmetic field must never become a write lockout.
+
+    ``None`` means no phase was recorded, and its several causes are NOT told apart the
+    way the run-state answers are: no source, a marker directory (which has nowhere to
+    record one), an unreadable file, or — the common case — a ticket that is simply not
+    mid-lane, which the factory writes as an explicit ``null`` on every status
+    transition. Nothing gates on a phase, so no caller needs the distinction.
+
+    A phase is carried whatever the status says. The factory clears it on every
+    transition, so a phase beside a non-``in_progress`` status is only reachable by a
+    hand-edit — and dropping it here would destroy the evidence of exactly that. Where a
+    phase is worth SHOWING is the view's decision, not this model's.
+
     ``files`` stays beside it and is not redundant with ``content.criticalFiles``.
     ``files`` is the format-agnostic DISPLAY projection — a v2 ticket has one from its
     manifest entry and no ``content`` at all — while ``criticalFiles`` is the editable
@@ -110,6 +137,7 @@ class Ticket(BaseModel):
     track: str | None = None
     milestone: str | None = None
     runState: RunState = RunState.unknown
+    phase: str | None = None
     dependsOn: list[str] = Field(default_factory=list)
     provides: list[str] = Field(default_factory=list)
     files: list[str] = Field(default_factory=list)
@@ -123,9 +151,11 @@ class Ticket(BaseModel):
 class TicketSummary(BaseModel):
     """List-projection of a ticket for the tickets index view.
 
-    ``runState`` is resolved per request by probing the factory run-state
-    directory; ``depCount`` / ``dependentCount`` come from reverse-indexing
+    ``runState`` and ``phase`` are resolved per request from the factory's run-state
+    source; ``depCount`` / ``dependentCount`` come from reverse-indexing
     ``dependsOn`` across the manifest.
+
+    See :attr:`Ticket.phase` for what ``phase`` is and why it is a free ``str``.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -136,5 +166,6 @@ class TicketSummary(BaseModel):
     track: str | None = None
     milestone: str | None = None
     runState: RunState
+    phase: str | None = None
     depCount: int
     dependentCount: int
