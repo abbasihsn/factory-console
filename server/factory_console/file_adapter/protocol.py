@@ -46,6 +46,16 @@ class FileAdapter(Protocol):
         """Project every ticket to a :class:`TicketSummary` with run-state and edge counts."""
         ...
 
+    def has_ticket(self, project: Project, ticket_id: str) -> bool:
+        """Whether the MANIFEST carries ``ticket_id``, without reading its ``.md``.
+
+        The existence question on its own. :meth:`get_ticket` cannot answer it:
+        it enriches from disk, so a manifest entry whose body file is missing
+        raises ``TicketFileMissing`` instead of returning a ticket — and a caller
+        using it as an existence probe gets a 404 where the entry plainly exists.
+        """
+        ...
+
     def get_ticket(self, project: Project, ticket_id: str) -> Ticket | None:
         """Return the full :class:`Ticket` for ``ticket_id``, or ``None`` if absent."""
         ...

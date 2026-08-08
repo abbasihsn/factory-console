@@ -68,17 +68,18 @@ from pathlib import Path
 import anyio.to_thread
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import Headers
 from starlette.exceptions import HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
-from starlette.responses import Response
-from starlette.types import Scope
+from starlette.responses import PlainTextResponse, Response
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from factory_console.api.error_handlers import register_error_handlers
 from factory_console.api.v1 import API_V1_PREFIX
 from factory_console.api.v1 import router as v1_router
 from factory_console.api.write_token import publish_write_token_scheme
-from factory_console.config import WRITE_TOKEN_HEADER
+from factory_console.config import LOOPBACK_HOSTS, WRITE_TOKEN_HEADER
 from factory_console.file_adapter.protocol import FileAdapter
 from factory_console.file_adapter.run_artifacts import RunArtifactReader
 from factory_console.file_adapter.watcher import FileWatcher
@@ -160,6 +161,64 @@ class _SpaStaticFiles(StaticFiles):
             if exc.status_code == 404 and not is_api_path:
                 return await super().get_response("index.html", scope)
             raise
+
+
+def _host_without_port(header_value: str) -> str:
+    """The hostname in a ``Host`` header, with any ``:port`` removed.
+
+    Handles the IPv6 literal form, which is why this is not
+    ``header_value.split(":")[0]`` — Starlette's own ``TrustedHostMiddleware`` does
+    exactly that, so ``[::1]:8000`` reduces to ``"["`` there and no allowlist entry
+    can ever match it. ``::1`` is a host this console SUPPORTS binding to
+    (:data:`~factory_console.config.LOOPBACK_HOSTS`), so a browser at
+    ``http://[::1]:8000`` must be served, not refused.
+
+    The bracketed form is normalized to the bare address so the allowlist holds one
+    spelling per host. A value with no port is returned unchanged.
+    """
+    value = header_value.strip()
+    if value.startswith("["):
+        closing = value.find("]")
+        if closing != -1:
+            return value[1:closing]
+        return value
+    return value.split(":")[0]
+
+
+class LoopbackHostMiddleware:
+    """Refuse any request whose ``Host`` is not a loopback name.
+
+    Binding the socket to 127.0.0.1 stops a REMOTE PACKET reaching the port. It does
+    not stop a browser: a page on ``evil.example`` whose DNS is re-pointed at
+    127.0.0.1 reaches this server same-origin and can read every response. Since
+    ``config.py`` states that reads are authenticated by the loopback boundary
+    ALONE, that exposed ticket bodies, ``/spend`` cost data, and the absolute host
+    filesystem paths in ``/health`` and ``/project``.
+
+    Writes were never exposed: :data:`~factory_console.config.WRITE_TOKEN_HEADER` is
+    a non-simple header, so a cross-origin write triggers a preflight, and with no
+    CORS middleware mounted that preflight fails. This closes the read half at the
+    same boundary the bind check already draws — the allowlist is derived from the
+    same :data:`~factory_console.config.LOOPBACK_HOSTS`, so the two cannot drift.
+
+    A request with NO ``Host`` header is allowed: HTTP/1.0 and some local probes
+    omit it, it cannot be forged into a rebinding attack (there is no origin to
+    inherit), and the socket bind still governs who may connect at all.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Pass loopback (and header-less) requests through; 400 everything else."""
+        if scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+        header_value = Headers(scope=scope).get("host")
+        if header_value is None or _host_without_port(header_value) in LOOPBACK_HOSTS:
+            await self.app(scope, receive, send)
+            return
+        await PlainTextResponse("Invalid host header", status_code=400)(scope, receive, send)
 
 
 def _mount_static(app: FastAPI) -> None:
@@ -443,6 +502,17 @@ def create_app(
 
     register_error_handlers(app)
     publish_write_token_scheme(app)
+    # Enforce the 127.0.0.1 boundary on the HOST HEADER as well as on the socket.
+    # Binding to loopback stops a remote packet reaching the port; it does NOT stop a
+    # browser being told that `evil.example` resolves to 127.0.0.1 and then treating
+    # this server as same-origin (DNS rebinding). Since `config.py` states that reads
+    # are authenticated by that boundary ALONE, every read — ticket bodies, /spend
+    # costs, and the absolute host paths in /health and /project — was readable by any
+    # page that pulled the trick. Writes were never exposed: `X-Factory-Write-Token`
+    # is a non-simple header, so a cross-origin write preflights, and with no CORS
+    # middleware mounted that preflight fails. Rejecting an unrecognised Host closes
+    # the read half at the same boundary the bind check already draws.
+    app.add_middleware(LoopbackHostMiddleware)
     app.add_middleware(AccessLogMiddleware)
     app.include_router(v1_router)
     _mount_static(app)

@@ -102,4 +102,4 @@ def real_app(tmp_path: Path, *, registry: ProjectRegistry | None = None) -> tupl
 
 def client(app: FastAPI) -> AsyncClient:
     """An ``httpx.AsyncClient`` speaking ASGI directly to ``app`` (no socket)."""
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1")

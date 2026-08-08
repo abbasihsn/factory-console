@@ -92,12 +92,16 @@ class WriteService:
 
         Rejects an id collision FIRST — on BOTH paths, since previewing a create for
         an id that already exists is misleading — by raising :class:`WriteConflict`
-        when the adapter already resolves the id. Otherwise a dry-run returns the
+        when the MANIFEST already carries the id. The probe is
+        :meth:`~factory_console.file_adapter.protocol.FileAdapter.has_ticket` and not
+        ``get_ticket``: the latter reads the ``.md``, so a colliding id whose body
+        file is missing answered ``404 ticket_file_missing`` instead of this 409 —
+        the SPA rendered "not found" for a create COLLISION. Otherwise a dry-run returns the
         writer's planned :class:`DiffPreview` as ``applied=False``; an apply commits
         through the writer and returns its :class:`WriteResult` carrying the re-read
         ticket (see :meth:`_with_reread`).
         """
-        if self._adapter.get_ticket(project, payload.id) is not None:
+        if self._adapter.has_ticket(project, payload.id):
             raise WriteConflict(payload.id)
         if dry_run:
             return self._dry_run_result(payload.id, self._writer.preview_create(project, payload))
@@ -118,7 +122,7 @@ class WriteService:
         propagates unchanged — then re-reads the
         edited ticket through the adapter (see :meth:`_with_reread`).
         """
-        if self._adapter.get_ticket(project, ticket_id) is None:
+        if not self._adapter.has_ticket(project, ticket_id):
             raise TicketNotFound(ticket_id)
         if dry_run:
             return self._dry_run_result(
@@ -144,7 +148,7 @@ class WriteService:
         result already carries the pre-delete snapshot ticket, so it is returned
         verbatim.
         """
-        if self._adapter.get_ticket(project, ticket_id) is None:
+        if not self._adapter.has_ticket(project, ticket_id):
             raise TicketNotFound(ticket_id)
         if dry_run:
             return self._dry_run_result(ticket_id, self._writer.preview_delete(project, ticket_id))

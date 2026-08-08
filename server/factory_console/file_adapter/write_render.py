@@ -35,18 +35,17 @@ from factory_console.domain.project import Project
 from factory_console.domain.ticket import TICKET_ID_PATTERN
 from factory_console.domain.write import TicketDraft, TicketEdit
 from factory_console.errors import FactoryConsoleError
-from factory_console.file_adapter.manifest import load_manifest
+from factory_console.file_adapter.manifest import DEPENDS_ON_KEYS, load_manifest_document
 from factory_console.file_adapter.path_safety import PathTraversal
 from factory_console.file_adapter.roadmap_parse import _LIST_ITEM_RE, _extract_ticket_id
 from factory_console.file_adapter.ticket_md import (
     TicketFileUnreadable,
     _split_front_matter,
+    resolve_ticket_md_path,
 )
 
 _TICKET_ID_RE = re.compile(TICKET_ID_PATTERN)
 """The canonical ticket-id pattern compiled once at import for re-validation."""
-
-_ID_ESCAPES_ROOT = "Ticket id resolves outside the project root"
 
 _FENCE = "---"
 """A front-matter fence line — exactly three dashes on their own line."""
@@ -143,18 +142,32 @@ class PlannedChange(BaseModel):
 def _safe_resolve(project: Project, ticket_id: str) -> Path:
     """Resolve ``<ticketsDir>/<ticket_id>.md``, refusing any unsafe id.
 
-    Mirrors :func:`factory_console.file_adapter.ticket_md._safe_resolve`: raises
-    :class:`PathTraversal` when the id fails :data:`TICKET_ID_PATTERN` or when the
-    resolved path is not contained under ``project.rootPath``. Both sides of the
-    containment check are resolved so a symlinked temp root (``/tmp`` ->
-    ``/var/folders`` on macOS) does not cause a false negative.
+    The CREATE path's resolver, and only that: a new ticket has no manifest entry
+    yet, so the flat form is the only thing there is to compute. Edit and delete
+    must go through :func:`_entry_md_path` instead, which reads the entry's
+    declared ``path``.
     """
+    return resolve_ticket_md_path(project, ticket_id)
+
+
+def _require_safe_id(ticket_id: str) -> None:
+    """Raise :class:`PathTraversal` unless ``ticket_id`` matches the canonical pattern."""
     if _TICKET_ID_RE.fullmatch(ticket_id) is None:
         raise PathTraversal.from_pattern_violation(ticket_id)
-    candidate = (project.ticketsDir / f"{ticket_id}.md").resolve(strict=False)
-    if not candidate.is_relative_to(project.rootPath.resolve()):
-        raise PathTraversal(ticket_id, reason=_ID_ESCAPES_ROOT)
-    return candidate
+
+
+def _entry_md_path(project: Project, entry: Mapping[str, Any], ticket_id: str) -> Path:
+    """Resolve the ``.md`` an EXISTING manifest entry declares.
+
+    The write path's half of the rule the read path already follows
+    (:func:`~factory_console.file_adapter.manifest.ticket_file_path`): the entry
+    says where its body file is, and it is the entry — not the id — that decides.
+    Deriving ``<ticketsDir>/<id>.md`` here regardless is what made an edit write an
+    orphan file beside the real one and a delete unlink nothing, both while
+    answering ``applied=true``.
+    """
+    declared = entry.get("path")
+    return resolve_ticket_md_path(project, ticket_id, Path(str(declared)) if declared else None)
 
 
 def _rel_posix(path: Path, root: Path) -> str:
@@ -207,20 +220,6 @@ def _read_ticket_md_or_none(ticket_id: str, path: Path) -> str | None:
         raise TicketFileUnreadable(ticket_id) from exc
 
 
-def _read_manifest_source(path: Path) -> tuple[str, dict[str, Any]]:
-    """Return the manifest's raw text and its parsed full object.
-
-    :func:`load_manifest` intentionally drops the manifest's top-level keys
-    (``project``, ``schemaVersion``), returning only the tickets list — so to
-    re-serialize the WHOLE object with those keys preserved we re-read the raw
-    JSON here. ``load_manifest`` has already validated (valid UTF-8, valid JSON,
-    a dict carrying a ``tickets`` list) at every call site before this runs, so
-    ``read_text`` / ``json.loads`` will not raise on structure.
-    """
-    raw_text = path.read_text(encoding="utf-8")
-    return raw_text, json.loads(raw_text)
-
-
 def _find_entry_index(entries: list[dict[str, Any]], ticket_id: str) -> int | None:
     """Return the index of the manifest entry whose ``id`` equals ``ticket_id``."""
     for index, entry in enumerate(entries):
@@ -251,18 +250,22 @@ def _draft_to_entry(draft: TicketDraft) -> dict[str, Any]:
     """Build the camelCase manifest entry for a newly created ticket.
 
     ``provides`` is stored as the scalar string the manifest schema uses (not the
-    model's ``list[str]`` read-side shape); ``status`` starts at ``todo``.
+    model's ``list[str]`` read-side shape); ``status`` starts at ``todo``. The
+    dependency list uses the PRODUCER's key (:data:`DEPENDS_ON_KEYS` [0]) so a
+    console-created ticket reads back the way a factory-created one does.
     """
-    return {
-        "id": draft.id,
-        "title": draft.title,
-        "status": _DEFAULT_STATUS,
-        "track": draft.track,
-        "milestone": draft.milestone,
-        "dependsOn": list(draft.dependsOn),
-        "provides": draft.provides,
-        "files": list(draft.files),
-    }
+    return _write_depends_on(
+        {
+            "id": draft.id,
+            "title": draft.title,
+            "status": _DEFAULT_STATUS,
+            "track": draft.track,
+            "milestone": draft.milestone,
+            "provides": draft.provides,
+            "files": list(draft.files),
+        },
+        list(draft.dependsOn),
+    )
 
 
 _MANIFEST_MIRRORED_KEYS = ("title", "track", "milestone", "dependsOn", "provides", "files")
@@ -290,6 +293,10 @@ def _edit_mirror(edit: TicketEdit) -> dict[str, Any]:
 
     ``provides`` stays the scalar-string manifest shape; ``dependsOn`` / ``files``
     are copied to plain lists so no caller shares the model's sequence.
+
+    ``dependsOn`` is the ``.md`` FRONT-MATTER spelling, which is the header's own
+    and is not the manifest's — :func:`_write_depends_on` decides the manifest key
+    after this mapping is overlaid, and removes this one on the way through.
     """
     return {
         "title": edit.title,
@@ -320,9 +327,28 @@ def _merge_edit(existing: Mapping[str, Any], edit: TicketEdit) -> dict[str, Any]
 
     Starts from a copy of the existing entry so unknown fields (e.g. ``estimate``)
     and the entry's ``id`` / ``status`` survive; only the editable fields
-    (:func:`_edit_mirror`) are overwritten.
+    (:func:`_edit_mirror`) are overwritten — with the dependency list written under
+    whichever key this entry already uses (:func:`_write_depends_on`).
     """
-    return {**existing, **_edit_mirror(edit)}
+    return _write_depends_on({**existing, **_edit_mirror(edit)}, list(edit.dependsOn))
+
+
+def _write_depends_on(entry: dict[str, Any], depends_on: list[str]) -> dict[str, Any]:
+    """Store ``depends_on`` under the ONE key this entry uses, dropping the other.
+
+    An entry must never carry both spellings: the reader resolves
+    :data:`~factory_console.file_adapter.manifest.DEPENDS_ON_KEYS` in order, so a
+    leftover ``depends_on`` beside a freshly written ``dependsOn`` means the edit
+    is read back as the value it replaced. An entry already carrying a key keeps
+    it (the factory's ``depends_on``, or a hand-written ``dependsOn``); an entry
+    with neither gets the producer's spelling, which is what the factory writes
+    and therefore what the rest of the manifest will look like.
+    """
+    existing_key = next((key for key in DEPENDS_ON_KEYS if key in entry), None)
+    for key in DEPENDS_ON_KEYS:
+        entry.pop(key, None)
+    entry[existing_key or DEPENDS_ON_KEYS[0]] = depends_on
+    return entry
 
 
 # --------------------------------------------------------------------------- #
@@ -699,11 +725,11 @@ def render_create(project: Project, draft: TicketDraft) -> list[PlannedChange]:
     """
     md_path = _safe_resolve(project, draft.id)
     manifest_path = project.ticketsManifestPath
-    _schema_version, entries = load_manifest(manifest_path)
-    if _find_entry_index(entries, draft.id) is not None:
+    document = load_manifest_document(manifest_path)
+    if _find_entry_index(document.tickets, draft.id) is not None:
         raise TicketAlreadyExists(draft.id)
 
-    manifest_raw, manifest_obj = _read_manifest_source(manifest_path)
+    manifest_raw, manifest_obj = document.rawText, document.obj
     manifest_obj["tickets"].append(_draft_to_entry(draft))
 
     changes = [
@@ -748,14 +774,21 @@ def render_edit(project: Project, ticket_id: str, edit: TicketEdit) -> list[Plan
     (:func:`render_edit_md`) — replaces the ``.md`` body with ``edit.bodyMarkdown``,
     and — when a roadmap item carries the id — relabels that item in place.
     """
-    md_path = _safe_resolve(project, ticket_id)
+    # Validate the id BEFORE the manifest is read. An unsafe id must raise
+    # PathTraversal (400), not the UnknownTicket (404) a manifest miss yields — and
+    # since the .md path now comes from the entry, nothing else would check the id
+    # on the way to that miss.
+    _require_safe_id(ticket_id)
     manifest_path = project.ticketsManifestPath
-    _schema_version, entries = load_manifest(manifest_path)
-    index = _find_entry_index(entries, ticket_id)
+    document = load_manifest_document(manifest_path)
+    index = _find_entry_index(document.tickets, ticket_id)
     if index is None:
         raise UnknownTicket(ticket_id)
 
-    manifest_raw, manifest_obj = _read_manifest_source(manifest_path)
+    # The ENTRY says where the body file is, so it is read before the entry is
+    # overwritten — and from the same document the index came from.
+    md_path = _entry_md_path(project, document.tickets[index], ticket_id)
+    manifest_raw, manifest_obj = document.rawText, document.obj
     manifest_obj["tickets"][index] = _merge_edit(manifest_obj["tickets"][index], edit)
 
     # One read backs both halves of the .md change, so the diff's "current" and the
@@ -793,14 +826,15 @@ def render_delete(project: Project, ticket_id: str) -> list[PlannedChange]:
     ``newText=None`` (delete the file), and — when a roadmap item carries the id —
     removes that item line.
     """
-    md_path = _safe_resolve(project, ticket_id)
+    _require_safe_id(ticket_id)  # PathTraversal (400) before the manifest's 404
     manifest_path = project.ticketsManifestPath
-    _schema_version, entries = load_manifest(manifest_path)
-    index = _find_entry_index(entries, ticket_id)
+    document = load_manifest_document(manifest_path)
+    index = _find_entry_index(document.tickets, ticket_id)
     if index is None:
         raise UnknownTicket(ticket_id)
 
-    manifest_raw, manifest_obj = _read_manifest_source(manifest_path)
+    md_path = _entry_md_path(project, document.tickets[index], ticket_id)
+    manifest_raw, manifest_obj = document.rawText, document.obj
     del manifest_obj["tickets"][index]
 
     changes = [

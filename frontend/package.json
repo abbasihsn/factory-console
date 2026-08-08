@@ -28,6 +28,7 @@
 		"@testing-library/svelte": "^5.2.6",
 		"@types/cytoscape-dagre": "^2.3.3",
 		"@types/dagre": "^0.7.52",
+		"@types/node": "^26.1.2",
 		"@typescript-eslint/eslint-plugin": "^8.19.0",
 		"@typescript-eslint/parser": "^8.19.0",
 		"autoprefixer": "^10.4.20",

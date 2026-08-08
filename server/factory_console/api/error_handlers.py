@@ -22,6 +22,9 @@ app:
 
 from __future__ import annotations
 
+import logging
+from http import HTTPStatus
+
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -71,12 +74,39 @@ def _ticket_id_pattern_violation(
     return None
 
 
+_LOGGER = logging.getLogger(__name__)
+"""Where a mapped 5xx leaves its trace — application log, not the access log."""
+
+
 def register_error_handlers(app: FastAPI) -> None:
     """Register the domain-error and validation-error handlers on ``app``."""
 
     @app.exception_handler(FactoryConsoleError)
-    async def _handle_domain_error(_request: Request, exc: FactoryConsoleError) -> JSONResponse:
-        """Render any :class:`FactoryConsoleError` subtype to its declared envelope."""
+    async def _handle_domain_error(request: Request, exc: FactoryConsoleError) -> JSONResponse:
+        """Render any :class:`FactoryConsoleError` subtype to its declared envelope.
+
+        A 5xx is LOGGED with its traceback before it is rendered. Being *mapped* is
+        exactly why it would otherwise be silent: an unhandled exception reaches
+        Starlette's ``ServerErrorMiddleware`` and gets a traceback, while a mapped
+        one is answered here and never propagates — so a genuine data failure
+        (``RoadmapUnreadable``, ``TicketFileUnreadable``, a manifest that went
+        malformed after boot) left the operator nothing but the access line's bare
+        ``500``, with no cause and no path to chase. 4xx stays unlogged: it is the
+        client's error, the access line already records it, and logging it would let
+        a caller fill the log by looping on a bad id.
+        """
+        if exc.status >= HTTPStatus.INTERNAL_SERVER_ERROR:
+            # The code is in the MESSAGE, not only in `extra`: `configure_logging`'s
+            # formatter renders the message alone, so a field-only code prints nowhere.
+            _LOGGER.error(
+                "domain error %s (%d) on %s %s",
+                exc.code,
+                exc.status,
+                request.method,
+                request.url.path,
+                exc_info=exc,
+                extra={"code": exc.code, "status": exc.status, "path": request.url.path},
+            )
         return JSONResponse(status_code=exc.status, content=to_error_response(exc))
 
     @app.exception_handler(RequestValidationError)

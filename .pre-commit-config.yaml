@@ -42,3 +42,16 @@ repos:
         language: system
         files: '^frontend/.*\.(ts|svelte|js|html|css)$'
         pass_filenames: false
+      # svelte-check, NOT eslint or `vite build`: neither reports type errors in a
+      # `.svelte` template, so the exhaustiveness invariants this repo documents as
+      # compiler-enforced (`RunStateBadge.test.ts`'s "a compile error in `pnpm
+      # check`", the `Record<ArtifactSkipReason, …>` map in `routes/runs`) had no
+      # gate at all — a regenerated `types.ts` whose backend enum grew would have
+      # gone green. Runs here rather than as a separate CI step so `make lint` and
+      # both CI jobs pick it up from the one definition.
+      - id: frontend-typecheck
+        name: svelte-check (frontend)
+        entry: pnpm --dir frontend check
+        language: system
+        files: '^frontend/.*\.(ts|svelte|js|json)$'
+        pass_filenames: false

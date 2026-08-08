@@ -48,7 +48,9 @@ from factory_console.domain.write import (
     WriteResult,
 )
 from factory_console.file_adapter import atomic_write, write_diff, write_gate, write_render
+from factory_console.file_adapter.manifest import iter_ticket_stubs
 from factory_console.file_adapter.real import RealFileAdapter
+from factory_console.file_adapter.ticket_md import TicketFileMissing
 
 
 class RealFileWriter:
@@ -194,7 +196,13 @@ class RealFileWriter:
         preview = write_diff.preview(ticket_id, planned)
         # Re-read the deleted ticket's FINAL state before the write erases its .md,
         # so the applied WriteResult can carry it (ticket-set-iff-applied invariant).
-        ticket = self._reread(project, ticket_id)
+        # TOLERATES a missing .md, unlike create/edit: the delete gate is deliberately
+        # the wider one (``absent`` is in its allowlist) and `_delete_if_present`
+        # treats an absent body as a benign no-op, so failing the re-read here made an
+        # orphan manifest entry — a ticket whose .md was removed by hand — permanently
+        # undeletable, 404ing while the entry stayed in tickets.json with no other way
+        # to remove it.
+        ticket = self._reread_for_delete(project, ticket_id)
         atomic_write.apply_changes(project, planned)
         return self._applied_result(ticket_id, preview, ticket)
 
@@ -217,6 +225,24 @@ class RealFileWriter:
         ticket = RealFileAdapter().get_ticket(project, ticket_id)
         assert ticket is not None, f"ticket {ticket_id} vanished from the manifest after write"
         return ticket
+
+    @staticmethod
+    def _reread_for_delete(project: Project, ticket_id: str) -> Ticket:
+        """:meth:`_reread`, but a missing ``.md`` degrades to the manifest stub.
+
+        The pre-delete snapshot is a courtesy — it fills the returned
+        :class:`WriteResult`'s ticket — and must never be the reason a delete fails.
+        A body file that is already gone is exactly the state delete exists to clean
+        up, so the stub the manifest carries stands in for it, mirroring how
+        :class:`~factory_console.file_adapter.fake_writer.FakeFileWriter` answers
+        from its snapshot.
+        """
+        try:
+            return RealFileWriter._reread(project, ticket_id)
+        except TicketFileMissing:
+            stub = next((stub for stub in iter_ticket_stubs(project) if stub.id == ticket_id), None)
+            assert stub is not None, f"ticket {ticket_id} vanished from the manifest after write"
+            return stub
 
     @staticmethod
     def _applied_result(ticket_id: str, preview: DiffPreview, ticket: Ticket) -> WriteResult:

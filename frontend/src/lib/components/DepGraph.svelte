@@ -7,6 +7,10 @@
 	// but isn't in its `LayoutOptions` union). Erased at build — the runtime library
 	// is pulled in via the dynamic `import()` in onMount below.
 	import type CytoscapeDagre from 'cytoscape-dagre';
+	// The cytoscape factory's TYPE, for the `$state` that holds it between the
+	// dynamic import resolving and the $effect painting with it. `cytoscape` is an
+	// `export =` module, so its type-only default import IS the callable's type.
+	import type CytoscapeFactory from 'cytoscape';
 	import type { RunState, TicketGraph } from '$lib/api';
 
 	let { graph }: { graph: TicketGraph } = $props();
@@ -47,29 +51,66 @@
 	let container: HTMLDivElement | undefined;
 	let cy: Core | undefined;
 
-	// Cytoscape needs the DOM, so it can only initialize client-side. `onMount`
-	// already runs client-only, and the cytoscape libraries are pulled in via
-	// dynamic `import()` HERE (not top-level) so nothing evaluates during SSR and
-	// the co-located test can `vi.mock` them cleanly.
-	onMount(async () => {
-		if (!container) return;
+	// The cytoscape constructor, once its chunk has loaded. `$state` so the $effect
+	// below re-runs and paints as soon as it arrives.
+	let cytoscapeLib = $state<typeof CytoscapeFactory | undefined>(undefined);
 
+	// Latched by onDestroy. `onMount`'s body is async and Svelte does NOT cancel it,
+	// so without this a component unmounted DURING the four dynamic imports would
+	// still resolve them and build a full core into a detached container — with a
+	// live tap handler that can still `goto()`, and a `window.__cy` nothing will ever
+	// destroy.
+	let destroyed = false;
+
+	// Cytoscape needs the DOM, so it can only load client-side. `onMount` already
+	// runs client-only, and the libraries are pulled in via dynamic `import()` HERE
+	// (not top-level) so nothing evaluates during SSR and the co-located test can
+	// `vi.mock` them cleanly. This only LOADS; painting is the $effect's job, so a
+	// later `graph` never finds the canvas frozen at its first value.
+	onMount(async () => {
 		const cytoscape = (await import('cytoscape')).default;
 		const cytoscapeDagre = (await import('cytoscape-dagre')).default;
 		// `dagre` is a peer of cytoscape-dagre; importing it here ensures Vite
 		// bundles it into the static output (no CDN).
 		await import('dagre');
 		cytoscape.use(cytoscapeDagre);
+		if (destroyed) return;
+		cytoscapeLib = cytoscape;
+	});
 
-		cy = cytoscape({
+	/** Destroy the live core and drop the debug handle. Idempotent. */
+	function teardown() {
+		cy?.destroy();
+		cy = undefined;
+		const debugWindow = window as unknown as { __cy?: Core };
+		// Cleared, not just reassigned on the next build: a destroyed core left on
+		// `window` is pinned against GC for the life of the page, so every visit to
+		// /graph would retain the previous one.
+		delete debugWindow.__cy;
+	}
+
+	// Rebuild the canvas whenever the graph changes. The root layout `invalidateAll()`s
+	// on every SSE bump, so `graph` is replaced whenever the factory touches run-state
+	// or the manifest. Building once in `onMount` left the painted DAG frozen at its
+	// first value while the `$derived` <nav> below kept updating — the same page
+	// showing two different graphs, and a ticket that moved todo -> merged (or a
+	// newly created one) never appearing until a hard reload.
+	$effect(() => {
+		const cytoscape = cytoscapeLib;
+		// Read both so this effect re-runs when either changes.
+		const currentNodes = nodes;
+		const currentEdges = edges;
+		if (!cytoscape || !container) return;
+
+		const core = cytoscape({
 			container,
 			elements: [
-				...nodes.map((node) => ({
+				...currentNodes.map((node) => ({
 					data: { id: node.id, label: node.id, runState: node.runState }
 				})),
 				// An edge's `source` depends on its `target`; both ids are guaranteed to
 				// resolve to nodes by the backend (dangling deps are never emitted).
-				...edges.map((edge) => ({
+				...currentEdges.map((edge) => ({
 					data: { id: `${edge.source}->${edge.target}`, source: edge.source, target: edge.target }
 				}))
 			],
@@ -100,20 +141,26 @@
 			]
 		});
 
-		cy.layout({ name: 'dagre', rankDir: 'LR' } as CytoscapeDagre.DagreLayoutOptions).run();
+		core.layout({ name: 'dagre', rankDir: 'LR' } as CytoscapeDagre.DagreLayoutOptions).run();
 
 		// Node tap routes client-side to that ticket's detail page.
-		cy.on('tap', 'node', (evt) => {
+		core.on('tap', 'node', (evt) => {
 			void goto(`/tickets/${evt.target.id()}`);
 		});
 
+		cy = core;
 		// Expose the core for e2e / manual introspection (Cytoscape's canvas is opaque
 		// to the DOM; the accessible <nav> below is the primary e2e surface).
-		(window as unknown as { __cy?: Core }).__cy = cy;
+		(window as unknown as { __cy?: Core }).__cy = core;
+
+		// Runs before each REBUILD as well as on destroy, so a graph update replaces
+		// the core instead of stacking a second one on the same container.
+		return teardown;
 	});
 
 	onDestroy(() => {
-		cy?.destroy();
+		destroyed = true;
+		teardown();
 	});
 </script>
 

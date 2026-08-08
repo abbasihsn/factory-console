@@ -57,12 +57,17 @@ class _StatefulAdapter:
     manifest/bodies the writer mutates (reusing ``manifest_entry_to_ticket_stub`` —
     the canonical entry->Ticket mapper the writer itself uses), so a re-read after an
     apply reflects the change and a pre-create read reports a collision. ``WriteService``
-    only ever calls ``get_ticket``, so no other ``FileAdapter`` method is implemented.
+    only ever calls ``has_ticket`` (its existence guards) and ``get_ticket`` (the
+    post-write re-read), so no other ``FileAdapter`` method is implemented.
     """
 
     def __init__(self, writer: FakeFileWriter, project: Project) -> None:
         self._writer = writer
         self._project = project
+
+    def has_ticket(self, project: Project, ticket_id: str) -> bool:
+        """Manifest-only existence, exactly as the real adapter answers it."""
+        return any(entry.get("id") == ticket_id for entry in self._writer._manifest)
 
     def get_ticket(self, project: Project, ticket_id: str) -> Ticket | None:
         for entry in self._writer._manifest:

@@ -83,9 +83,7 @@ def _safe_resolve(project: Project, ticket_id: str) -> Path:
     sides of the containment check are resolved so symlinked temp roots (e.g.
     ``/tmp`` and ``/var/folders`` on macOS) don't cause a false negative.
     """
-    if _TICKET_ID_RE.fullmatch(ticket_id) is None:
-        raise PathTraversal.from_pattern_violation(ticket_id)
-    return _contained(project, ticket_id, project.ticketsDir / f"{ticket_id}.md")
+    return resolve_ticket_md_path(project, ticket_id)
 
 
 def _contained(project: Project, ticket_id: str, candidate: Path) -> Path:
@@ -107,6 +105,35 @@ def _contained(project: Project, ticket_id: str, candidate: Path) -> Path:
     if not resolved.is_relative_to(root):
         raise PathTraversal(ticket_id, reason=_ID_ESCAPES_ROOT)
     return resolved
+
+
+def resolve_ticket_md_path(project: Project, ticket_id: str, path: Path | None = None) -> Path:
+    """Resolve where ``ticket_id``'s ``.md`` lives, honouring a manifest ``path``.
+
+    The one place either side of the console decides which file a ticket IS.
+    ``path`` is what the manifest entry declared (root-relative or absolute);
+    absent, the flat ``<ticketsDir>/<id>.md`` remains the fallback for a manifest
+    that declares none. The id is validated and the result contained in both
+    cases, so honouring the manifest widens WHERE a ticket may live, never
+    whether it may escape the root.
+
+    Extracted so the WRITE path resolves exactly as :func:`read_ticket_md` does.
+    It used to derive the flat form unconditionally: against a real factory
+    manifest (tickets filed under a milestone directory with a slug in the name)
+    an edit therefore merged nothing, wrote a NEW orphan ``<id>.md``, and reported
+    ``applied=true`` while the real ticket sat unchanged — and a delete unlinked a
+    path that was never there.
+    """
+    if _TICKET_ID_RE.fullmatch(ticket_id) is None:
+        raise PathTraversal.from_pattern_violation(ticket_id)
+    return _contained(
+        project, ticket_id, path if path is not None else _flat_md_path(project, ticket_id)
+    )
+
+
+def _flat_md_path(project: Project, ticket_id: str) -> Path:
+    """``<ticketsDir>/<ticket_id>.md`` — the no-declared-path fallback."""
+    return project.ticketsDir / f"{ticket_id}.md"
 
 
 def _split_front_matter(text: str) -> tuple[str | None, str]:
@@ -155,12 +182,7 @@ def read_ticket_md(
     # fallback — a hand-written manifest need not declare paths. Either way the
     # id is re-validated and the result is contained, so honouring the manifest
     # widens where a ticket may live, never whether it may escape the root.
-    if path is None:
-        resolved = _safe_resolve(project, ticket_id)
-    else:
-        if _TICKET_ID_RE.fullmatch(ticket_id) is None:
-            raise PathTraversal.from_pattern_violation(ticket_id)
-        resolved = _contained(project, ticket_id, path)
+    resolved = resolve_ticket_md_path(project, ticket_id, path)
     try:
         text = resolved.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
