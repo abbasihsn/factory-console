@@ -47,6 +47,7 @@ factory-console/
 │       │   └── v1/
 │       │       ├── __init__.py            # APIRouter(prefix='/api/v1')                           (T21)
 │       │       ├── project.py             # GET /api/v1/project                                   (T21)
+│       │       ├── projects.py            # /api/v1/projects registry reads + gated mutations     (T112-T113)
 │       │       ├── tickets.py             # list + detail + deps handlers                         (T22-T23)
 │       │       ├── roadmap.py             # GET /api/v1/roadmap (presence-only in MVP)            (T24)
 │       │       └── health.py              # GET /api/v1/health enriched with projectRoot          (T24)
@@ -60,7 +61,9 @@ factory-console/
 │       ├── services/                      # orchestrators; no I/O
 │       │   ├── __init__.py
 │       │   ├── ticket_service.py                                                                  (T22)
-│       │   └── deps_service.py                                                                    (T23)
+│       │   ├── deps_service.py                                                                    (T23)
+│       │   ├── project_selection.py       # SelectionState + SelectionFailure + the precedence    (T111)
+│       │   └── watcher_supervisor.py      # one watcher, re-rooted on a selection change          (T114)
 │       ├── file_adapter/                  # the only layer that reads the TARGET PROJECT's files
 │       │   ├── __init__.py
 │       │   ├── protocol.py                # FileAdapter Protocol                                  (T10)
@@ -70,10 +73,12 @@ factory-console/
 │       │   ├── manifest.py                # tickets.json parser + MalformedManifest               (T12)
 │       │   ├── ticket_md.py               # .md + front-matter parser + PathTraversal + TicketFileMissing (T13)
 │       │   ├── markdown_render.py         # markdown-it-py + bleach sanitization                  (T14)
+│       │   ├── project_condition.py       # ProjectConditionProbe + Real/Fake                     (T109)
 │       │   └── run_state.py               # run-state prober (read-only)                          (T15)
 │       ├── store/                         # the console's OWN writable DB (v3 — outside every project)
 │       │   ├── __init__.py                # docstring-only, re-export-free                        (T104)
-│       │   └── location.py                # ConsoleStoreSettings + resolve_db_path + ensure_store_dir (T104)
+│       │   ├── location.py                # ConsoleStoreSettings + resolve_db_path + ensure_store_dir (T104)
+│       │   └── entries.py                 # resolve_entries — rows × probe → RegistryEntry[]      (T110)
 │       └── _static/                       # BUILT SPA copied here at package time (gitignored)
 │
 ├── frontend/
@@ -106,6 +111,9 @@ factory-console/
 │   │       ├── +error.svelte              # global error boundary                                 (T27)
 │   │       ├── +page.svelte               # ticket list                                            (T30)
 │   │       ├── +page.ts                                                                            (T30)
+│   │       ├── projects/                  # list / select / remove / add a project                (T123-T124)
+│   │       │   ├── +page.svelte
+│   │       │   └── +page.ts
 │   │       └── tickets/[id]/
 │   │           ├── +page.svelte           # detail                                                (T31)
 │   │           ├── +page.ts                                                                        (T31)
