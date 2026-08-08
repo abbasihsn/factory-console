@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from pydantic import ValidationError
 
@@ -69,13 +69,47 @@ def _provides_to_list(value: object) -> list[str]:
     return []
 
 
+class ManifestDocument(NamedTuple):
+    """One validated read of ``tickets.json``: its text, its object, its entries.
+
+    The WRITE path needs all three from the SAME read. It used to call
+    :func:`load_manifest` for the entries and then re-read the file for the raw
+    text and full object, computing an entry INDEX against the first parse and
+    applying it to the second — so a manifest rewritten in between (the App
+    Factory owns this file and the console does not control it) had the stale
+    index address a different entry, and an edit or delete silently hit the wrong
+    ticket. ``tickets`` is ``obj["tickets"]`` — the same list object, not a copy —
+    so a caller mutating an entry through either view mutates one document.
+    """
+
+    schemaVersion: str | None
+    tickets: list[dict[str, Any]]
+    obj: dict[str, Any]
+    rawText: str
+
+
 def load_manifest(manifest_path: Path) -> tuple[str | None, list[dict[str, Any]]]:
     """Read and parse ``tickets.json``, returning ``(schemaVersion, tickets)``.
+
+    The READ path's view of :func:`load_manifest_document`, which is where the
+    parsing and validation live. Callers that also need to re-serialize the file
+    (the write path) must use that instead, so the entries they index and the
+    object they mutate come from one read.
+    """
+    document = load_manifest_document(manifest_path)
+    return document.schemaVersion, document.tickets
+
+
+def load_manifest_document(manifest_path: Path) -> ManifestDocument:
+    """Read, parse and validate ``tickets.json`` ONCE.
 
     ``schemaVersion`` is coerced to ``str`` when present (the fixtures carry it as
     the int ``1`` -> ``"1"``) and ``None`` when absent — surfaced, never enforced.
     ``tickets`` is the raw list of entry dicts, each later turned into a
-    :class:`Ticket` stub by :func:`manifest_entry_to_ticket_stub`.
+    :class:`Ticket` stub by :func:`manifest_entry_to_ticket_stub`. ``obj`` is the
+    whole parsed document, carrying the top-level keys (``project``,
+    ``schemaVersion``) that a re-serialization must preserve, and ``rawText`` is
+    the exact text those came from — the "current" side of a rendered diff.
 
     Raises:
         MalformedManifest: if the file cannot be read as UTF-8 text (a non-UTF-8
@@ -134,7 +168,9 @@ def load_manifest(manifest_path: Path) -> tuple[str | None, list[dict[str, Any]]
         seen_ids[entry_id] = index
     schema_version = parsed.get("schemaVersion")
     schema_version_str = None if schema_version is None else str(schema_version)
-    return schema_version_str, tickets
+    return ManifestDocument(
+        schemaVersion=schema_version_str, tickets=tickets, obj=parsed, rawText=raw_text
+    )
 
 
 def _entry_depends_on(entry: dict[str, Any]) -> list[str]:
@@ -155,11 +191,23 @@ def _entry_depends_on(entry: dict[str, Any]) -> list[str]:
     ``depends_on`` wins when both are present: it is what the producer writes, and
     a manifest carrying both is likelier mid-migration than deliberately split.
     """
-    for key in ("depends_on", "dependsOn"):
+    for key in DEPENDS_ON_KEYS:
         value = entry.get(key)
         if value:
             return list(value)
     return []
+
+
+DEPENDS_ON_KEYS = ("depends_on", "dependsOn")
+"""Both spellings of the dependency key, MOST AUTHORITATIVE FIRST.
+
+Read by :func:`_entry_depends_on` and by the write path, which must agree with it
+or an edit is invisible. It did not: the writer emitted ``dependsOn`` while this
+reader resolves ``depends_on`` first, so editing a factory-written ticket left the
+stale ``depends_on`` in place, added a second contradictory key, and handed the OLD
+dependencies back on every subsequent read — a silent no-op behind a ``200 OK``,
+and no way to clear a dependency at all.
+"""
 
 
 def ticket_file_path(entry: dict[str, Any], tickets_dir: Path, root: Path | None = None) -> Path:

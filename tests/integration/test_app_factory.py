@@ -29,6 +29,7 @@ from factory_console.api.deps import (
 )
 from factory_console.app import _SpaStaticFiles, create_app
 from factory_console.domain import TICKET_ID_PATTERN, Project
+from factory_console.errors import FactoryConsoleError
 from factory_console.file_adapter import FakeFileAdapter
 from factory_console.file_adapter.discovery import ProjectNotFound
 from factory_console.file_adapter.fake_writer import FakeFileWriter
@@ -346,3 +347,87 @@ def test_spa_static_does_not_swallow_unknown_api_paths(tmp_path: Path) -> None:
     unknown = client.get("/api/v1/does-not-exist")
     assert unknown.status_code == 404
     assert "Factory Console SPA" not in unknown.text
+
+
+# --- the Host header is part of the loopback trust boundary ------------------
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "[::1]"])
+def test_a_loopback_host_is_served(host: str) -> None:
+    """The names a browser actually sends when talking to a local console."""
+    client = TestClient(_make_app())
+    resp = client.get("/api/v1/health", headers={"Host": host})
+    assert resp.status_code == 200
+
+
+@pytest.mark.parametrize("host", ["evil.example", "console.internal", "192.168.1.4"])
+def test_a_non_loopback_host_is_refused(host: str) -> None:
+    """DNS rebinding: the socket is loopback-bound, but the browser is not.
+
+    A page on an attacker origin whose DNS is re-pointed at 127.0.0.1 reaches this
+    server SAME-ORIGIN, so the bind alone authenticates nothing. Reads carry no
+    token by design (`config.py`: "reads are authenticated by that boundary
+    alone"), which made ticket bodies, /spend costs and the absolute host paths in
+    /health and /project readable by any such page.
+    """
+    client = TestClient(_make_app())
+    resp = client.get("/api/v1/health", headers={"Host": host})
+    assert resp.status_code == 400, "a Host outside the loopback set must not be served"
+
+
+def test_a_loopback_host_with_a_port_is_served() -> None:
+    """The port is operator-chosen and is not part of the trust decision."""
+    client = TestClient(_make_app())
+    resp = client.get("/api/v1/health", headers={"Host": "127.0.0.1:8123"})
+    assert resp.status_code == 200
+
+
+# --- a mapped 5xx must leave a trace ----------------------------------------
+
+
+def test_a_mapped_5xx_domain_error_is_logged_with_its_cause(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Being mapped is exactly why it was silent.
+
+    An UNHANDLED exception reaches Starlette's ServerErrorMiddleware and gets a
+    traceback; a mapped `FactoryConsoleError` is answered by our handler and never
+    propagates, so a real data failure left nothing but the access line's bare 500.
+    """
+    app = _make_app()
+
+    class _Boom(FactoryConsoleError):
+        """A stand-in for RoadmapUnreadable / TicketFileUnreadable / MalformedManifest."""
+
+        def __init__(self) -> None:
+            super().__init__("boom_code", "the data could not be read", 500)
+
+    @app.get("/probe-5xx")
+    def _probe_5xx() -> None:
+        raise _Boom()
+
+    client = TestClient(app)
+    with caplog.at_level(logging.ERROR, logger="factory_console.api.error_handlers"):
+        resp = client.get("/probe-5xx")
+
+    assert resp.status_code == 500
+    records = [r for r in caplog.records if r.name == "factory_console.api.error_handlers"]
+    assert records, "a mapped 5xx must be logged, not only rendered"
+    assert records[0].exc_info is not None, "the log line must carry the traceback"
+    assert "boom_code" in records[0].getMessage(), (
+        "the code must be in the MESSAGE — configure_logging's formatter renders "
+        "the message alone, so a field-only code prints nowhere"
+    )
+
+
+def test_a_mapped_4xx_domain_error_is_not_logged(caplog: pytest.LogCaptureFixture) -> None:
+    """A client error is the caller's; the access line already records it.
+
+    Logging it would also let a caller fill the operator's log by looping on a bad id.
+    """
+    client = TestClient(_make_app())
+    with caplog.at_level(logging.ERROR, logger="factory_console.api.error_handlers"):
+        resp = client.get("/probe")
+
+    assert resp.status_code == 404
+    assert not [r for r in caplog.records if r.name == "factory_console.api.error_handlers"]

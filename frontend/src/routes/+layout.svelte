@@ -5,6 +5,7 @@
 	import LiveIndicator from '$lib/components/LiveIndicator.svelte';
 	import ProjectStatusBanner from '$lib/components/ProjectStatusBanner.svelte';
 	import { createLiveStore } from '$lib/stores/live';
+	import { createCoalescer } from '$lib/stores/coalesce';
 	import { onMount, type Snippet } from 'svelte';
 	import type { LayoutData } from './$types';
 
@@ -21,9 +22,22 @@
 		return live.stop;
 	});
 
+	// How long to wait for the burst to finish before refreshing. The server debounces
+	// only PER PATH (0.15s in `watcher_real`), so a factory lane rewriting N files
+	// emits ~N events over a second or two — and one `invalidateAll()` each re-runs
+	// the layout load AND the current page load (3 HTTP round-trips on /runs, a full
+	// Cytoscape re-layout on /graph), turning an active run into a re-fetch loop.
+	// Long enough to fold a burst into one refresh, short enough that "live" still
+	// reads as immediate.
+	const REFRESH_COALESCE_MS = 300;
+
+	const refresh = createCoalescer(() => void invalidateAll(), REFRESH_COALESCE_MS);
+
 	$effect(() => {
 		// Re-runs on each new event; the initial bump of 0 is skipped.
-		if ($bump > 0) invalidateAll();
+		if ($bump === 0) return;
+		refresh.schedule();
+		return refresh.cancel;
 	});
 
 	// The stream follows the selection. Contract this relies on (T115): the server

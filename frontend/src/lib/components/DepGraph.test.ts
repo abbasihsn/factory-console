@@ -7,13 +7,14 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 // onMount resolve to these mocks. `$app/navigation` is stubbed so the tap handler
 // never reaches a real router. Built via `vi.hoisted` so the spy exists before the
 // hoisted `vi.mock` factory closes over it.
-const { cytoscapeFactory } = vi.hoisted(() => {
+const { cytoscapeFactory, cyCore } = vi.hoisted(() => {
 	const cyCore = {
 		layout: vi.fn(() => ({ run: vi.fn() })),
 		on: vi.fn(),
 		destroy: vi.fn()
 	};
 	return {
+		cyCore,
 		cytoscapeFactory: Object.assign(
 			vi.fn(() => cyCore),
 			{ use: vi.fn() }
@@ -42,6 +43,8 @@ describe('DepGraph accessible node-hook', () => {
 	beforeEach(() => {
 		cytoscapeFactory.mockClear();
 		cytoscapeFactory.use.mockClear();
+		cyCore.destroy.mockClear();
+		delete (window as unknown as { __cy?: unknown }).__cy;
 	});
 
 	it('renders one link per node with the ticket id as name, its detail href, and data-run-state', () => {
@@ -65,6 +68,57 @@ describe('DepGraph accessible node-hook', () => {
 
 		await waitFor(() => expect(cytoscapeFactory).toHaveBeenCalledTimes(1));
 		expect(cytoscapeFactory.use).toHaveBeenCalledTimes(1);
+	});
+
+	// The root layout `invalidateAll()`s on every SSE bump, so `graph` is replaced
+	// whenever the factory touches run-state or the manifest. Building the core once
+	// in `onMount` left the painted canvas frozen at its first value while the
+	// `$derived` <nav> kept updating — one page showing two different graphs.
+	it('rebuilds the canvas when the graph prop changes', async () => {
+		const { rerender } = render(DepGraph, { props: { graph } });
+		await waitFor(() => expect(cytoscapeFactory).toHaveBeenCalledTimes(1));
+
+		await rerender({
+			graph: {
+				nodes: [
+					...(graph.nodes ?? []),
+					{ id: 'T04', title: 'Delta', status: 'todo', runState: 'merged' }
+				],
+				edges: graph.edges
+			}
+		});
+
+		await waitFor(() => expect(cytoscapeFactory).toHaveBeenCalledTimes(2));
+		const calls = cytoscapeFactory.mock.calls as unknown as [
+			{ elements?: { data: { id: string } }[] }
+		][];
+		const rebuiltIds = (calls[1]?.[0]?.elements ?? []).map((element) => element.data.id);
+		expect(rebuiltIds).toContain('T04');
+		// The <nav> and the canvas must agree — that disagreement was the bug.
+		expect(screen.getByRole('link', { name: 'T04' })).toBeTruthy();
+	});
+
+	it('destroys the previous core rather than stacking a second one', async () => {
+		const { rerender } = render(DepGraph, { props: { graph } });
+		await waitFor(() => expect(cytoscapeFactory).toHaveBeenCalledTimes(1));
+
+		await rerender({ graph: { nodes: graph.nodes, edges: [] } });
+
+		await waitFor(() => expect(cytoscapeFactory).toHaveBeenCalledTimes(2));
+		expect(cyCore.destroy).toHaveBeenCalled();
+	});
+
+	// `onMount`'s body is async and Svelte does not cancel it, so an unmount during
+	// the four dynamic imports used to resolve anyway and build a full core into a
+	// detached container, leaving `window.__cy` pinned for the life of the page.
+	it('builds nothing and leaves no window handle when unmounted before the imports resolve', async () => {
+		const { unmount } = render(DepGraph, { props: { graph } });
+		unmount();
+
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(cytoscapeFactory).not.toHaveBeenCalled();
+		expect((window as unknown as { __cy?: unknown }).__cy).toBeUndefined();
 	});
 });
 

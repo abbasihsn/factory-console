@@ -24,11 +24,16 @@ its README says why it must not be normalized to look like its neighbours.
 
 from __future__ import annotations
 
+import json
+import shutil
 from pathlib import Path
 
 import pytest
 
+from factory_console.domain.write import TicketDraft, TicketEdit
 from factory_console.file_adapter.real import RealFileAdapter
+from factory_console.file_adapter.real_writer import RealFileWriter
+from factory_console.services.write_service import WriteConflict, WriteService
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "projects" / "factory_layout"
 
@@ -191,3 +196,148 @@ def test_a_manifest_without_path_still_falls_back_to_the_flat_layout() -> None:
     assert summaries, "the flat fixture must still list tickets"
     ticket = adapter.get_ticket(project, summaries[0].id)
     assert ticket is not None, "a manifest with no `path` must still resolve its ticket"
+
+
+# --- the WRITE side of the same defect --------------------------------------
+#
+# Everything above is the READ path learning to honour what the manifest declares.
+# The write path never learned: it re-derived `<ticketsDir>/<id>.md` regardless, so
+# against this same fixture an edit merged nothing and wrote a NEW orphan file
+# beside the real one while answering `applied=true`, and a delete unlinked a path
+# that was never there. Search had the same gap on the read side — it passed only
+# the id, so every body read missed and full-text search matched nothing at all.
+
+
+@pytest.fixture
+def writable_project(tmp_path: Path):
+    """A writable copy of the factory-layout fixture, loaded as a project.
+
+    The fixture's ``.factory/run-state.json`` is dropped: it marks tickets ``merged``
+    and the write gate (rightly) refuses those, which is a different rule from the
+    one under test here. Without the file every ticket reads ``unknown``, which the
+    edit and delete allowlists both admit — so these tests exercise the PATH and KEY
+    behaviour and nothing else. Mutability itself is covered in ``test_write_gate``.
+    """
+    root = tmp_path / "project"
+    shutil.copytree(FIXTURE, root)
+    (root / ".factory" / "run-state.json").unlink()
+    return RealFileAdapter().load_project(root)
+
+
+def _manifest_entry(project, ticket_id: str) -> dict:
+    entries = json.loads(project.ticketsManifestPath.read_text(encoding="utf-8"))["tickets"]
+    return next(entry for entry in entries if entry["id"] == ticket_id)
+
+
+def test_search_matches_a_word_that_appears_only_in_a_nested_body(project) -> None:
+    """Full-text search read every body from the flat path, so it matched nothing."""
+    hits = RealFileAdapter().search_tickets(project, "Base.")
+    assert [hit.ticket.id for hit in hits] == ["T01"], (
+        "a body-only term must match the ticket whose nested .md contains it"
+    )
+
+
+def test_an_edit_rewrites_the_declared_file_and_creates_no_orphan(writable_project) -> None:
+    """The edit lands in the manifest-declared file, not in a new flat one."""
+    declared = writable_project.rootPath / "docs/planning/tickets/v1/T01-the-base-ticket.md"
+    before = {path for path in writable_project.rootPath.rglob("*.md")}
+
+    result = RealFileWriter().edit_ticket(
+        writable_project,
+        "T01",
+        TicketEdit(title="Retitled", bodyMarkdown="Rewritten body.\n"),
+    )
+
+    assert result.applied is True
+    assert "Rewritten body." in declared.read_text(encoding="utf-8"), (
+        "the edit must land in the file the manifest declares"
+    )
+    assert {path for path in writable_project.rootPath.rglob("*.md")} == before, (
+        "no orphan <ticketsDir>/<id>.md may be created beside the real file"
+    )
+
+
+def test_an_edit_that_clears_dependencies_is_actually_read_back_cleared(writable_project) -> None:
+    """`dependsOn` was written beside a surviving `depends_on`, which still won."""
+    RealFileWriter().edit_ticket(
+        writable_project,
+        "T02",
+        TicketEdit(title="Depends on T01, in the same milestone", dependsOn=[], bodyMarkdown="x\n"),
+    )
+
+    entry = _manifest_entry(writable_project, "T02")
+    assert "dependsOn" not in entry, "an entry must never carry both spellings of the key"
+    assert entry["depends_on"] == [], "the producer's key must hold the edited value"
+
+    neighborhood = RealFileAdapter().get_deps(writable_project, "T02")
+    assert neighborhood is not None
+    assert neighborhood.directDeps == [], "the cleared dependency must not come back on read"
+
+
+def test_an_edit_that_sets_dependencies_is_read_back_set(writable_project) -> None:
+    RealFileWriter().edit_ticket(
+        writable_project,
+        "T01",
+        TicketEdit(
+            title="The base ticket everything depends on", dependsOn=["T02"], bodyMarkdown="x\n"
+        ),
+    )
+    neighborhood = RealFileAdapter().get_deps(writable_project, "T01")
+    assert neighborhood is not None
+    assert [dep.id for dep in neighborhood.directDeps] == ["T02"]
+
+
+def test_a_delete_removes_the_declared_file(writable_project) -> None:
+    declared = writable_project.rootPath / "docs/planning/tickets/v2/T03-a-later-milestone.md"
+    assert declared.exists()
+
+    RealFileWriter().delete_ticket(writable_project, "T03")
+
+    assert not declared.exists(), "delete must unlink the file the manifest declared"
+    entries = json.loads(writable_project.ticketsManifestPath.read_text(encoding="utf-8"))[
+        "tickets"
+    ]
+    assert [entry["id"] for entry in entries] == ["T01", "T02"]
+
+
+def test_a_created_ticket_uses_the_producers_dependency_key(writable_project) -> None:
+    """A console-created ticket must read back the way a factory-created one does."""
+    RealFileWriter().create_ticket(
+        writable_project,
+        TicketDraft(id="T04", title="New", dependsOn=["T01"], bodyMarkdown="body\n"),
+    )
+    entry = _manifest_entry(writable_project, "T04")
+    assert entry["depends_on"] == ["T01"]
+    assert "dependsOn" not in entry
+
+
+# --- a manifest entry whose body file is gone -------------------------------
+
+
+def test_an_orphan_manifest_entry_can_still_be_deleted(writable_project) -> None:
+    """The pre-delete re-read 404'd, leaving the entry with no way to remove it."""
+    (writable_project.rootPath / "docs/planning/tickets/v2/T03-a-later-milestone.md").unlink()
+    project = RealFileAdapter().load_project(writable_project.rootPath)
+    service = WriteService(RealFileWriter(), RealFileAdapter())
+
+    result = service.delete(project, "T03", dry_run=False)
+
+    assert result.applied is True
+    entries = json.loads(project.ticketsManifestPath.read_text(encoding="utf-8"))["tickets"]
+    assert [entry["id"] for entry in entries] == ["T01", "T02"]
+
+
+def test_a_create_colliding_with_an_orphan_entry_is_a_conflict_not_a_404(
+    writable_project,
+) -> None:
+    """`get_ticket` as an existence probe turned a 409 collision into a 404."""
+    (writable_project.rootPath / "docs/planning/tickets/v2/T03-a-later-milestone.md").unlink()
+    project = RealFileAdapter().load_project(writable_project.rootPath)
+    service = WriteService(RealFileWriter(), RealFileAdapter())
+
+    with pytest.raises(WriteConflict):
+        service.create(
+            project,
+            TicketDraft(id="T03", title="Colliding", bodyMarkdown="x\n"),
+            dry_run=False,
+        )

@@ -145,7 +145,7 @@ async def test_concurrent_switches_leave_memory_and_registry_agreeing(
     registry.slow_down(slow.id)
 
     app = _app(registry, tmp_path / "pinned")
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1") as client:
         # The slow switch starts first and is still inside its worker-thread sleep
         # when the fast one begins, which is what puts two switches in flight.
         slow_call = asyncio.create_task(_switch(client, slow.id))

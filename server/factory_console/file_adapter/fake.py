@@ -92,6 +92,10 @@ class FakeFileAdapter:
         """Return the seeded :class:`Ticket` for ``ticket_id``, or ``None`` if unseeded."""
         return self._projection.ticket_for(ticket_id)
 
+    def has_ticket(self, project: Project, ticket_id: str) -> bool:
+        """Whether ``ticket_id`` is seeded. The fake has no ``.md`` files to miss."""
+        return self._projection.ticket_for(ticket_id) is not None
+
     def get_deps(self, project: Project, ticket_id: str) -> DepNeighborhood | None:
         """Return the :class:`DepNeighborhood` for ``ticket_id``, or ``None`` if unseeded.
 

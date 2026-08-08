@@ -26,14 +26,23 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read # checkout only
+    # EVERY action in this job is SHA-pinned, first-party ones included. This job
+    # produces the wheel and sdist that `publish` uploads to PyPI unmodified and
+    # then attests — so a movable tag here is a movable tag on the published
+    # artifact. A retagged or compromised action could inject code into the SPA
+    # bundle baked into `_static/`, and the sigstore provenance would still be
+    # VALID (it attests what `publish` received, not how `build` produced it), so
+    # the tampering would pass the exact `gh attestation verify` flow the README
+    # tells consumers to trust. The trailing comment tracks the human-readable
+    # ref; bump both together.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # Full history + tags so downstream release-note generation has the
           # complete tag graph to diff against.
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           # Quoted so YAML keeps it a string ('3.12', not the float 3.12).
           python-version: '3.12'
@@ -41,11 +50,11 @@ jobs:
       # pnpm must be on PATH BEFORE setup-node, whose `cache: pnpm` shells out to
       # pnpm. There is no packageManager field in frontend/package.json, so the
       # version must be pinned here (frontend uses pnpm 11).
-      - uses: pnpm/action-setup@v3
+      - uses: pnpm/action-setup@a3252b78c470c02df07e9d59298aecedc3ccdd6d # v3.0.0
         with:
           version: 11
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           # Node 22+: pnpm 11 (installed above) crashes on Node 20 with
           # ERR_UNKNOWN_BUILTIN_MODULE — the same reason ci.yml and the
@@ -83,7 +92,7 @@ jobs:
         run: bash scripts/smoke.sh
 
       - name: Upload dist artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dist
           path: dist/
@@ -101,7 +110,7 @@ jobs:
       attestations: write # actions/attest-build-provenance records the provenance attestation
     steps:
       - name: Download dist artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dist
           path: dist
@@ -119,10 +128,10 @@ jobs:
         # byte-for-byte what get attested here. Keyless: the job's OIDC id-token is
         # exchanged for a short-lived Fulcio signing certificate and the provenance
         # is recorded in the Rekor transparency log — no long-lived signing key or
-        # secret. First-party actions/* action, so pinned by tag (@v2) to match the
-        # other actions/* pins in this file, not by SHA. Consumers verify with:
+        # secret. SHA-pinned like every other action in this file — see the build
+        # job's note on why the tag policy was dropped. Consumers verify with:
         #   gh attestation verify <wheel|sdist> --repo abbasihsn/factory-console
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: 'dist/*'
 

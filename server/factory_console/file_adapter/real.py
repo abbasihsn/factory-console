@@ -176,6 +176,16 @@ class RealFileAdapter:
             return None
         return render_ticket_html(enrich_ticket(project, stub))
 
+    def has_ticket(self, project: Project, ticket_id: str) -> bool:
+        """Whether the manifest carries ``ticket_id`` — manifest only, no ``.md`` read.
+
+        The same lookup :meth:`get_ticket` starts from, stopped before the disk
+        read that can raise. That is the whole point: an entry whose ``.md`` was
+        deleted by hand is still a ticket the console must be able to delete, and
+        a colliding create against one is still a 409, not a 404.
+        """
+        return any(stub.id == ticket_id for stub in iter_ticket_stubs(project))
+
     def get_deps(self, project: Project, ticket_id: str) -> DepNeighborhood | None:
         """Return the :class:`DepNeighborhood` for ``ticket_id``, or ``None`` if absent.
 
@@ -286,7 +296,7 @@ class RealFileAdapter:
         projection = self._projection_for(project, stubs)
         summary_by_id = {summary.id: summary for summary in projection.summaries()}
         enriched = [
-            stub.model_copy(update={"bodyMarkdown": self._safe_body(project, stub.id)})
+            stub.model_copy(update={"bodyMarkdown": self._safe_body(project, stub)})
             for stub in stubs
         ]
         return to_search_hits(rank_tickets(enriched, query), summary_by_id, limit)
@@ -304,8 +314,16 @@ class RealFileAdapter:
         return build_graph(self._project_manifest(project))
 
     @staticmethod
-    def _safe_body(project: Project, ticket_id: str) -> str:
-        """Read ``ticket_id``'s ``.md`` body, degrading a bad ``.md`` to ``""``.
+    def _safe_body(project: Project, stub: Ticket) -> str:
+        """Read ``stub``'s ``.md`` body, degrading a bad ``.md`` to ``""``.
+
+        Takes the STUB, not the bare id, so the read goes to the file the manifest
+        declared (``stub.filePath``) exactly as :meth:`get_ticket` does through
+        ``enrich_ticket``. Passing only the id re-derived the flat
+        ``<ticketsDir>/<id>.md``, which against a real factory manifest does not
+        exist — so every body read raised ``TicketFileMissing``, was swallowed at
+        ``debug`` below, and full-text search matched NOTHING project-wide while
+        still answering ``200`` with id/title/``provides`` hits.
 
         A missing file, an unreadable file, or an unsafe id
         (``TicketFileMissing`` / ``TicketFileUnreadable`` / ``PathTraversal``)
@@ -319,8 +337,9 @@ class RealFileAdapter:
         logs at ``warning`` — so a corrupt file or a security-relevant bad id
         leaves a trace instead of a silently dropped body match.
         """
+        ticket_id = stub.id
         try:
-            _front_matter, body = read_ticket_md(project, ticket_id)
+            _front_matter, body = read_ticket_md(project, ticket_id, stub.filePath)
         except TicketFileMissing:
             _LOGGER.debug("search: ticket %s has no .md; scanning with empty body", ticket_id)
             return ""

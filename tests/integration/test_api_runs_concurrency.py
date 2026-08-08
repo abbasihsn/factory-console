@@ -109,7 +109,7 @@ async def test_a_request_is_served_while_runs_is_blocked_in_a_slow_artifact_read
     artifacts = SlowRunArtifactReader()
     app = _app(artifacts)
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1") as client:
         started = time.perf_counter()
 
         async def slow() -> float:
