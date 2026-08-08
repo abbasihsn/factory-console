@@ -1,6 +1,9 @@
 import path from 'node:path';
+import { mkdtempSync, renameSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { test, expect } from '@playwright/test';
+import { copyFixture, start, registerProjectDir, type DedicatedConsole } from './lib/dedicated-console';
 
 // Captures the README screenshots from the REAL UI served by the harness — a
 // real factory-console booted in global-setup on the `with_run_state` fixture
@@ -24,6 +27,11 @@ import { test, expect } from '@playwright/test';
 //
 // These are plain `page.screenshot({ path })` captures, NOT Playwright visual
 // comparisons (toMatchSnapshot) — the PNGs are docs artifacts, not a baseline.
+//
+// The v3.0 captures at the bottom are the one exception to "the shared console
+// serves every shot": the switcher and a populated `/projects` table only exist
+// where the console tracks more than one project, which the single-project
+// shared console cannot show — see that block's own comment.
 
 // frontend/tests/e2e -> the gitignored capture dir alongside this spec. Resolved
 // from the module URL (the package is `"type": "module"`, so no __dirname) so the
@@ -134,5 +142,100 @@ test('screenshots: capture the graph, roadmap, search, and live-update PNGs', as
 		const livePill = page.getByText('Live', { exact: true });
 		await expect(livePill).toBeVisible();
 		await livePill.screenshot({ path: shot('live.png') });
+	});
+});
+
+// v3.0's two surfaces. Both need a console that tracks MORE THAN ONE project:
+// `ProjectSwitcher` renders nothing below two rows (single-project mode looks
+// exactly as it did before it existed), and a `/projects` table with one row
+// would document neither the registry nor what `Select`/`Remove` are for. The
+// shared console booted by global-setup is single-project and contractually
+// read-only, so — exactly as multi-project.spec.ts does — these captures boot a
+// DEDICATED console over private fixture copies (`with_run_state` pinned as the
+// session project, `minimal` registered against it over the live API) and
+// navigate by THAT console's own absolute base URL, never `use.baseURL`.
+//
+// Scoped to its own describe so the second console is booted only for these
+// shots and disposed with them; the captures above keep using the shared one.
+//
+// `copyFixture`'s own temp dir is named `factory-console-e2e-<random>` — fine for
+// every other spec, which never shows the basename to a human, but here it IS
+// the row name a screenshot documents. `default_project_name` reads a project's
+// FINAL path component, so moving the copy into a fresh, uniquely-mkdtemp'd
+// parent under a stable, meaningful basename (`with_run_state`, `minimal`)
+// makes the captions true and stops every regen from rewriting both PNGs over
+// a name nobody chose — while the fresh parent (not a fixed, shared path) keeps
+// two runs, or a run and a stale directory a prior run left behind, from ever
+// colliding on the same path.
+function withStableName(dir: string, name: string): string {
+	const parent = mkdtempSync(path.join(tmpdir(), 'factory-console-e2e-named-'));
+	const stable = path.join(parent, name);
+	renameSync(dir, stable);
+	return stable;
+}
+
+test.describe('screenshots: the multi-project console', () => {
+	// Assigned in beforeAll; left undefined if setup throws, so afterAll guards
+	// before disposing. Both dirs are caller-supplied (`start`'s `projectDir`
+	// option, `registerProjectDir` directly) specifically so THIS block can name
+	// them, which also means neither is reaped by `dedicated.dispose()` — this
+	// block owns and removes both itself.
+	let dedicated: DedicatedConsole | undefined;
+	let sessionDir: string | undefined;
+	let registeredDir: string | undefined;
+
+	test.beforeAll(async () => {
+		sessionDir = withStableName(copyFixture('with_run_state'), 'with_run_state');
+		registeredDir = withStableName(copyFixture('minimal'), 'minimal');
+		dedicated = await start('with_run_state', { projectDir: sessionDir });
+		await registerProjectDir(dedicated, registeredDir);
+	});
+
+	test.afterAll(async () => {
+		// `dispose` reaps the child and its private registry db, but neither fixture
+		// copy — both are caller-owned (see `beforeAll`) — so this block removes them.
+		// Each removes its `withStableName` PARENT, not just the renamed copy: the
+		// parent is a fresh mkdtemp dir holding nothing else, so this leaves no
+		// leftover empty directory behind either.
+		await dedicated?.dispose();
+		if (sessionDir) rmSync(path.dirname(sessionDir), { recursive: true, force: true });
+		if (registeredDir) rmSync(path.dirname(registeredDir), { recursive: true, force: true });
+	});
+
+	test('screenshots: capture the project switcher and the /projects registry PNGs', async ({
+		page
+	}) => {
+		const handle = dedicated!;
+
+		await test.step('capture the header switcher over a two-project registry', async () => {
+			await page.goto(handle.baseURL + '/');
+			await expect(page.getByRole('heading', { name: 'Tickets', level: 1 })).toBeVisible();
+			// `exact` so it can't match `AddProjectForm`'s "Project path" box, the same
+			// disambiguation multi-project.spec.ts makes.
+			const switcher = page.getByRole('combobox', { name: 'Project', exact: true });
+			await expect(switcher).toBeVisible();
+			// Both project rows plus the trailing "Manage projects…" entry: the control
+			// is present AND populated, which is what makes this the multi-project header
+			// rather than a header that happens to render a dropdown.
+			await expect(switcher.locator('option')).toHaveCount(3);
+			// Captured CLOSED, deliberately. A native `<select>`'s open list is drawn by
+			// the platform above the page, not into the page, so headless Chromium does
+			// not composite it into a screenshot at all — forcing it open would produce
+			// a PNG indistinguishable from this one while implying the docs show
+			// something they don't. Captured on the header element itself, so the shot
+			// documents the switcher in its place beside the served path and the
+			// Projects nav link.
+			await page.getByRole('banner').screenshot({ path: shot('switcher.png') });
+		});
+
+		await test.step('capture the /projects registry management page', async () => {
+			await page.goto(handle.baseURL + '/projects');
+			await expect(page.getByRole('heading', { name: 'Projects', level: 1 })).toBeVisible();
+			// Gate on the TABLE, not the shell: one row per tracked project — the pinned
+			// session row and the registered one — so the shot is never of the empty
+			// registry panel or of a page whose load has not landed.
+			await expect(page.locator('[data-testid^="project-row-"]')).toHaveCount(2);
+			await page.screenshot({ path: shot('projects.png') });
+		});
 	});
 });

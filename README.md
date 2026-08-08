@@ -45,6 +45,7 @@ Within a few seconds the console discovers the project, starts a local server on
 - **Run visibility** (`/runs`) — what the factory did per ticket: run state, PR link, outcome, and receipt, with every missing artifact named as missing rather than left blank — see [Runs](docs/usage.md#runs).
 - **Spend visibility** (`/spend`) — what the factory cost, from its ledger: totals plus a breakdown by ticket, model, and agent level — see [Spend](docs/usage.md#spend).
 - **Project registry management** (`/projects`) — register a project by path, and every project the console tracks, its probed condition, and per-row Select/Remove — see [Managing the registry](docs/usage.md#managing-the-registry).
+- A **project switcher** in the header, once two or more projects are tracked — one console, one project at a time, switched without restarting it (`factory-console PATH` is unchanged and simply selects that project for the session) — see [Projects](docs/usage.md#projects).
 - A **project condition banner** under the top bar, on every route, naming a degraded project's registered condition and its remedy — see [Managing the registry](docs/usage.md#managing-the-registry).
 - **Live updates**: open pages auto-refresh over SSE when a ticket's run-state changes on disk, with a status indicator pill (and graceful fallback to the Reload button).
 
@@ -52,7 +53,7 @@ Press Ctrl-C to stop. See [`docs/usage.md`](docs/usage.md) for flags, exit codes
 
 ## Screenshots
 
-Captured from the real UI by the Playwright screenshots pipeline against the `with_run_state` fixture.
+Captured from the real UI by the Playwright screenshots pipeline against the `with_run_state` fixture — and, for the two multi-project shots, a second console tracking both it and the `minimal` fixture.
 
 ![Ticket list](docs/screenshots/list.png)
 
@@ -78,6 +79,14 @@ _The `/graph` dependency DAG, nodes colored by factory run-state._
 
 _The `/roadmap` milestone view rendered from the project's `ROADMAP.md`._
 
+![Project switcher](docs/screenshots/switcher.png)
+
+_The header's project switcher, over a console tracking two projects._
+
+![Project registry](docs/screenshots/projects.png)
+
+_The `/projects` registry table, listing both tracked projects with their conditions._
+
 ![Live-update indicator](docs/screenshots/live.png)
 
 _The live-update pill in its connected `Live` state._
@@ -93,7 +102,7 @@ Regenerate with `pnpm --dir frontend screenshots` (equivalently `pnpm --dir fron
 
 ## Status
 
-The MVP (read-only browsing — ticket list, detail, dependency neighborhood) and v1 (dependency graph, full-text search, roadmap view, live updates) have landed. v2 — safe editing of `todo` tickets behind a loopback write token, plus signed releases — is landing now. Work is built ticket-by-ticket from `docs/planning/tickets/` in dependency order — see [`docs/planning/ROADMAP.md`](docs/planning/ROADMAP.md) for the ladder.
+The MVP (read-only browsing — ticket list, detail, dependency neighborhood), v1 (dependency graph, full-text search, roadmap view, live updates) and v2 (safe editing of `todo` tickets behind a loopback write token, plus signed releases) have landed, as have the v2.1 / v2.2 correction milestones (the real run-state source, the runs and spend views). v3.0 — a multi-project registry with a header project switcher and a `/projects` management route, every endpoint resolving the selected project per request — is landing now. Work is built ticket-by-ticket from `docs/planning/tickets/` in dependency order — see [`docs/planning/ROADMAP.md`](docs/planning/ROADMAP.md) for the ladder.
 
 ## License
 
