@@ -361,9 +361,18 @@ ticket to the tickets it depends on. Click a node to open that ticket's detail p
 ### Roadmap
 
 `/roadmap` (the header **Roadmap** link) renders the project's `ROADMAP.md` as
-milestone sections — each item shows its checkbox state and, when it references a
-ticket, a monospace id link into the ticket detail — followed by the roadmap's
-prose body.
+milestone sections — each item that references a ticket shows that ticket's **live
+run-state badge** and a monospace id link into the ticket detail — followed by the
+roadmap's prose body.
+
+**The status is read from the factory, not from the document.** An item that names no
+ticket shows no badge at all: there is nothing to ask about, which is different from a
+ticket whose state is unknown. A `- [x]` checkbox in `ROADMAP.md` is ignored and
+stripped from the label on display — it is a claim nobody verified, it is stale the
+moment a lane merges, and App Factory v3 forbids derived state in a committed file
+(`factory-doctor` FAILs a repository that carries one; `factory-ticket` is what removes
+them from the file itself). Creating a ticket through the console adds a plain bullet to
+the matching milestone section and never writes a checkbox.
 
 ### Runs
 

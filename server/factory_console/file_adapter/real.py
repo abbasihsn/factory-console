@@ -30,7 +30,7 @@ counts can never disagree between the two views or drift from the fake.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -235,6 +235,34 @@ class RealFileAdapter:
         caller must not read it as either ``unknown`` or ``absent``.
         """
         return probe_ticket_state_from_source(project.runStateSource, ticket_id)
+
+    def read_run_states(self, project: Project, ticket_ids: Iterable[str]) -> dict[str, RunState]:
+        """Resolve every id in ``ticket_ids`` against ONE read of the run-state source.
+
+        Built on :func:`~factory_console.file_adapter.run_state.run_state_resolver`, the
+        same constructor :meth:`_projection_for` uses for the list and dependency views,
+        so a JSON source is parsed once here rather than once per id — and so the answer
+        this returns is by construction the answer those views badge and the write gate
+        refuses on. Nothing about the resolution is re-decided; only the number of reads
+        changes.
+
+        Path-unsafe ids degrade through :meth:`_safe_run_state` rather than raising,
+        exactly as they do for the list projection: this answers about a whole document,
+        and one malformed id must not fail the request for the rest. See that method for
+        why the degraded answer is the refusing ``unreadable`` and not ``unknown``.
+
+        The dict comprehension over ``dict.fromkeys`` deduplicates while preserving first
+        -seen order: a ticket named by two roadmap items is resolved once, so the two
+        cannot show different states. An empty input short-circuits before the source is
+        touched — a view with nothing to ask should not read a file to be told so.
+        """
+        unique = list(dict.fromkeys(ticket_ids))
+        if not unique:
+            return {}
+        resolve = run_state_resolver(project.runStateSource)
+        return {
+            ticket_id: RealFileAdapter._safe_run_state(resolve, ticket_id) for ticket_id in unique
+        }
 
     def get_roadmap(self, project: Project) -> Roadmap | None:
         """Return the project :class:`Roadmap`, or ``None`` when it has no roadmap.

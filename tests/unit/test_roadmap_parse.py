@@ -1,10 +1,15 @@
 """Unit tests for the pure roadmap parser :func:`parse_milestones`.
 
-These pin the parsing rules on INLINE strings (headings, checkbox state, id
+These pin the parsing rules on INLINE strings (headings, checkbox stripping, id
 extraction, prose/pre-heading tolerance, and total-never-raises behavior) and on
 BOTH checked-in fixture ``ROADMAP.md`` documents so the structured breakdown the
 ``/roadmap`` view renders cannot silently drift from the authored roadmaps.
 Deterministic and I/O-free apart from reading the two fixtures.
+
+The parser produces NARRATIVE only — label, order, ticket id — so nothing here asserts
+a status. ``runState`` is joined on per request by
+:class:`~factory_console.services.roadmap_service.RoadmapService` and is pinned in
+``tests/unit/test_roadmap_service.py``.
 """
 
 from pathlib import Path
@@ -56,28 +61,43 @@ def test_h3_under_a_milestone_does_not_start_a_new_one() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Checkbox state -> done
+# The checkbox is STRIPPED, and nothing is derived from it
+#
+# It used to set a `done` flag. Under App Factory v3 §4 a checkbox committed to a
+# document is derived state that goes stale the moment a lane merges — `factory-doctor`
+# FAILs a repository for carrying one — so the parser now discards the mark and the
+# status comes from the run-state source instead.
 # --------------------------------------------------------------------------- #
 
 
 @pytest.mark.parametrize(
-    "line, expected_done",
+    "line, expected_text",
     [
-        ("- [x] done lower", True),
-        ("- [X] done upper", True),
-        ("- [ ] not done", False),
-        ("- no checkbox", None),
-        ("* [x] star bullet", True),
+        ("- [x] done lower", "done lower"),
+        ("- [X] done upper", "done upper"),
+        ("- [ ] not done", "not done"),
+        ("- no checkbox", "no checkbox"),
+        ("* [x] star bullet", "star bullet"),
     ],
 )
-def test_checkbox_marker_maps_to_done(line: str, expected_done: bool | None) -> None:
+def test_a_checkbox_is_removed_from_the_label_whatever_it_says(
+    line: str, expected_text: str
+) -> None:
+    # Every mark strips identically. A parser that kept `[x]` and dropped `[ ]` would be
+    # reading the mark again by the back door — the label would carry the claim.
     milestone = _only(parse_milestones(f"## M\n{line}"))
-    assert milestone.items[0].done is expected_done
+    assert milestone.items[0].text == expected_text
 
 
-def test_checkbox_token_is_stripped_from_text() -> None:
-    milestone = _only(parse_milestones("## M\n- [x] Build the thing"))
-    assert milestone.items[0].text == "Build the thing"
+def test_the_parser_derives_no_status_at_all() -> None:
+    # `runState` is the SERVICE's to fill in from the run-state source. The parser
+    # leaving it None is what stops a document from having an opinion about the factory.
+    ticked = _only(parse_milestones("## M\n- [x] **T01** Build it"))
+    unticked = _only(parse_milestones("## M\n- [ ] **T01** Build it"))
+
+    assert ticked.items[0].runState is None
+    assert unticked.items[0].runState is None
+    assert ticked.items[0] == unticked.items[0], "the mark must not survive into the item"
 
 
 # --------------------------------------------------------------------------- #
@@ -164,11 +184,11 @@ def test_never_raises_on_garbage(garbage: str) -> None:
     assert isinstance(parse_milestones(garbage), list)
 
 
-def test_weird_checkbox_letter_is_treated_as_no_checkbox() -> None:
-    # Only [x]/[X]/[ ] are checkboxes; [z] is not, so done stays None and the
-    # bracket token remains part of the text.
+def test_weird_checkbox_letter_is_not_a_checkbox_and_survives_in_the_text() -> None:
+    # Only [x]/[X]/[ ] are checkboxes; [z] is not, so it is left alone. The strip must
+    # stay narrow — a looser `^\[.\]` would silently eat a real bracketed prefix
+    # somebody wrote on purpose.
     milestone = _only(parse_milestones("## M\n- [z] odd"))
-    assert milestone.items[0].done is None
     assert milestone.items[0].text == "[z] odd"
 
 
@@ -192,16 +212,18 @@ def test_with_run_state_fixture_parses_expected_milestones() -> None:
     assert mvp.items[0] == RoadmapItem(
         text="Habit schema and append-only event store (CAD-100)",
         ticketId="CAD-100",
-        done=True,
     )
-    assert mvp.items[2].done is False and mvp.items[2].ticketId == "CAD-125"
-    # The unchecked, id-less final item.
-    assert mvp.items[3] == RoadmapItem(text="Minimal board UI", ticketId=None, done=False)
+    assert mvp.items[2].ticketId == "CAD-125"
+    # The id-less final item — a bullet the roadmap names but no ticket covers.
+    assert mvp.items[3] == RoadmapItem(text="Minimal board UI", ticketId=None)
+    # The fixture still carries `[x]` and `[ ]` marks, deliberately: a project
+    # mid-migration has them, and every item here must come out unstyled by them.
+    assert all(item.runState is None for item in mvp.items)
+    assert not any(item.text.startswith("[") for item in mvp.items)
 
     v1 = milestones[1]
     by_prefix = {item.text.split(" ")[0]: item for item in v1.items}
     assert by_prefix["**Weekly"].ticketId == "CAD-131"  # spaced bold + parenthesized id
-    assert by_prefix["**Weekly"].done is None  # no checkbox on epic lines
     assert by_prefix["**Reminders**"].ticketId is None  # digit-less bold label
 
     # A prose-only trailing milestone still opens (name), with zero items.
@@ -223,9 +245,8 @@ def test_minimal_fixture_parses_expected_milestones() -> None:
     assert mvp.items[0] == RoadmapItem(
         text="Canonical trail-report schema and store",
         ticketId=None,
-        done=True,
     )
-    assert mvp.items[1].ticketId == "TM-001" and mvp.items[1].done is False
+    assert mvp.items[1].ticketId == "TM-001"
 
     # The numbered "Principles" list uses 1./2./3. bullets, which are NOT
     # -/* list items, so that milestone carries no parsed items.

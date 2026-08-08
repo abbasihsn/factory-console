@@ -16,7 +16,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from factory_console.app import create_app
-from factory_console.domain import Project, Roadmap
+from factory_console.domain import Project, Roadmap, RunState
 from factory_console.domain.deps import RoadmapItem, RoadmapMilestone
 from factory_console.file_adapter import FakeFileAdapter
 from factory_console.file_adapter.real import RealFileAdapter
@@ -33,20 +33,31 @@ _FAKE_PROJECT = Project(
 
 _FAKE_ROADMAP = Roadmap(
     path=Path("/factory/demo-project/ROADMAP.md"),
-    bodyMarkdown="# Roadmap\n\n## MVP\n\n- [x] T01 Ship it\n",
+    bodyMarkdown="# Roadmap\n\n## MVP\n\n- T01 Ship it\n- Write the announcement post\n",
     bodyHtml="<h1>Roadmap</h1>\n<h2>MVP</h2>\n<ul>\n<li>T01 Ship it</li>\n</ul>",
     milestones=[
         RoadmapMilestone(
             name="MVP",
-            items=[RoadmapItem(text="Ship it", ticketId="T01", done=True)],
+            items=[
+                RoadmapItem(text="Ship it", ticketId="T01"),
+                # A prose bullet naming no ticket — the item whose status stays null.
+                RoadmapItem(text="Write the announcement post"),
+            ],
         ),
     ],
 )
+"""A roadmap as the PARSER produces it: no ``runState`` on any item yet.
+
+Deliberately unresolved. The endpoint's job is to fill it in from the run-state source,
+so seeding it here would test the fixture rather than the join.
+"""
 
 
-def _present_app() -> FastAPI:
+def _present_app(run_states: dict[str, RunState] | None = None) -> FastAPI:
     """Build the app over a FakeFileAdapter whose project has a full roadmap."""
-    adapter = FakeFileAdapter(project=_FAKE_PROJECT, tickets=[], roadmap=_FAKE_ROADMAP)
+    adapter = FakeFileAdapter(
+        project=_FAKE_PROJECT, tickets=[], roadmap=_FAKE_ROADMAP, run_states=run_states
+    )
     return create_app(adapter, version="0.0.0", project_root=_FAKE_PROJECT.rootPath)
 
 
@@ -83,6 +94,49 @@ def test_roadmap_present_returns_full_body_and_milestones() -> None:
     # The present branch carries NO ``present`` key — the frontend discriminates
     # the Roadmap from RoadmapAbsent on the absence of that field.
     assert "present" not in body
+
+
+def test_roadmap_items_carry_the_run_state_the_source_reports() -> None:
+    # The whole point of the endpoint since v3 §4: status comes from the run-state
+    # source, per request, not from a checkbox somebody remembered to tick.
+    client = TestClient(_present_app(run_states={"T01": RunState.merged}))
+
+    items = client.get("/api/v1/roadmap").json()["milestones"][0]["items"]
+
+    assert items[0]["runState"] == "merged"
+
+
+def test_a_roadmap_item_naming_no_ticket_has_a_null_run_state() -> None:
+    # `null` is not `unknown`. `unknown` means a source was asked and said nothing;
+    # `null` means there was no question, because a prose bullet has no ticket. Badging
+    # these would fill the view with claims about tickets that do not exist.
+    client = TestClient(_present_app(run_states={"T01": RunState.merged}))
+
+    items = client.get("/api/v1/roadmap").json()["milestones"][0]["items"]
+
+    assert items[1]["ticketId"] is None
+    assert items[1]["runState"] is None
+
+
+def test_an_unseeded_ticket_resolves_rather_than_going_missing() -> None:
+    # No seeded state at all: the item still carries the source's answer for it, so the
+    # view never shows a ticket-bearing item with nothing where a status belongs.
+    client = TestClient(_present_app())
+
+    items = client.get("/api/v1/roadmap").json()["milestones"][0]["items"]
+
+    assert items[0]["runState"] == "unknown"
+
+
+def test_the_document_no_longer_decides_status() -> None:
+    # The checkbox is gone from the wire entirely — not merely ignored. Leaving `done`
+    # in the payload beside a live `runState` would publish two answers to one question,
+    # and a client picking the wrong one would be reading a stale hand-ticked claim.
+    client = TestClient(_present_app())
+
+    items = client.get("/api/v1/roadmap").json()["milestones"][0]["items"]
+
+    assert "done" not in items[0]
 
 
 def test_roadmap_absent_returns_present_false() -> None:

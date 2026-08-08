@@ -6,3 +6,9 @@ playwright-report
 test-results
 pnpm-lock.yaml
 src/lib/api/types.ts
+
+# The intermediate schema `make codegen` writes for openapi-typescript to read.
+# Gitignored and machine-written, but prettier walks the working tree rather than
+# git's index, so without this every codegen leaves `pre-commit` failing on a file
+# that is never committed.
+.openapi.json

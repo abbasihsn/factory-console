@@ -11,6 +11,7 @@ target project.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -92,6 +93,39 @@ class FileAdapter(Protocol):
         gate — ``unknown`` is mutable, ``absent`` is refused 409 for an edit (though
         :func:`~factory_console.file_adapter.write_gate.ensure_deletable` permits a
         delete), and ``unreadable`` is refused 409 by BOTH gates.
+        """
+        ...
+
+    def read_run_states(self, project: Project, ticket_ids: Iterable[str]) -> dict[str, RunState]:
+        """Resolve MANY ids against ONE read of the run-state source.
+
+        Every id in ``ticket_ids`` appears in the result, mapped to exactly what
+        :meth:`read_run_state` would answer for it — the whole contract above applies
+        verbatim, including the vacuous-source carve-out and the three unnamed answers.
+        This is not a second opinion; a conforming implementation resolves both through
+        one function so the batch and the single-ticket answers cannot disagree.
+
+        It exists because the source is a FILE. ``read_run_state`` opens and parses it
+        per call, which is right for the one-ticket detail path and quadratic for a view
+        that asks about a whole document: the roadmap resolves one status per item, so
+        looping the singular form would re-read ``run-state.json`` once per bullet. The
+        list and dependency views already avoid this internally by building their
+        resolver once per request; this is that same economy made available to a caller
+        outside the ticket projection.
+
+        Two divergences from the singular form, both because this answers about a SET:
+
+        * An id repeated in ``ticket_ids`` is resolved once and appears once — the
+          result is keyed by id, so a roadmap that names one ticket in two milestones
+          costs one lookup and cannot report two different states for it.
+        * A path-unsafe id degrades to :attr:`RunState.unreadable` instead of raising
+          :class:`~factory_console.file_adapter.path_safety.PathTraversal`, matching how
+          the list view already treats one, and for the same reason: a single malformed
+          id must not fail the whole request with a 400 that names no bad input. It
+          degrades to the REFUSING state, never the mutable ``unknown`` — the check did
+          not run, which is "unavailable", not "nothing was said".
+
+        An empty ``ticket_ids`` returns ``{}`` without touching the source at all.
         """
         ...
 

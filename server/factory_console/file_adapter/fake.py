@@ -25,6 +25,7 @@ cover):
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
 
 from factory_console.domain import (
@@ -124,6 +125,24 @@ class FakeFileAdapter:
         when a test's subject is that distinction.
         """
         return self._run_states.get(ticket_id, RunState.unknown)
+
+    def read_run_states(self, project: Project, ticket_ids: Iterable[str]) -> dict[str, RunState]:
+        """Resolve many ids against the seeded map, one entry per DISTINCT id.
+
+        Delegates to :meth:`read_run_state` per id rather than reading
+        ``self._run_states`` directly, so the two answers cannot drift — the same
+        property the real adapter gets from sharing one resolver, obtained here the
+        cheap way because a dict lookup has no source to re-read.
+
+        The real adapter's other two divergences do not arise: a seeded map has no
+        filesystem, so no id is path-unsafe and nothing degrades. Deduplication is kept
+        because it is part of the port's contract (a repeated id appears once), not an
+        artifact of how the real one avoids re-reading a file.
+        """
+        return {
+            ticket_id: self.read_run_state(project, ticket_id)
+            for ticket_id in dict.fromkeys(ticket_ids)
+        }
 
     def get_roadmap(self, project: Project) -> Roadmap | None:
         """Return the seeded :class:`Roadmap`, or ``None`` when seeded without one."""

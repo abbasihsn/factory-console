@@ -304,6 +304,54 @@ def test_read_run_state_raises_path_traversal_for_dot_ids() -> None:
             adapter.read_run_state(project, bad_id)
 
 
+# --------------------------------------------------------------------------- #
+# read_run_states — the same answers, one read
+# --------------------------------------------------------------------------- #
+
+
+def test_read_run_states_answers_exactly_what_the_singular_form_would() -> None:
+    # The port's central promise: this is not a second opinion. Asserted against the
+    # singular form itself rather than against literals, so a change to either that did
+    # not change the other fails here.
+    adapter, project = _load_with_run_state()
+    ids = ["CAD-125", "CAD-100", "CAD-152", "CAD-999-unlisted"]
+
+    batch = adapter.read_run_states(project, ids)
+
+    assert batch == {ticket_id: adapter.read_run_state(project, ticket_id) for ticket_id in ids}
+
+
+def test_read_run_states_returns_one_entry_per_distinct_id() -> None:
+    adapter, project = _load_with_run_state()
+
+    batch = adapter.read_run_states(project, ["CAD-100", "CAD-100", "CAD-152"])
+
+    assert batch == {"CAD-100": RunState.merged, "CAD-152": RunState.todo}
+
+
+def test_read_run_states_degrades_a_dot_id_instead_of_failing_the_batch() -> None:
+    # The divergence from the singular form, and why: this answers about a whole
+    # document, so one malformed id must not raise PathTraversal and 400 a request that
+    # had a good answer for every other id. It degrades to the REFUSING `unreadable`,
+    # never the mutable `unknown` — the check did not run, which is "unavailable", not
+    # "nothing was said".
+    adapter, project = _load_with_run_state()
+
+    batch = adapter.read_run_states(project, ["CAD-100", ".", ".."])
+
+    assert batch["CAD-100"] is RunState.merged
+    assert batch["."] is RunState.unreadable
+    assert batch[".."] is RunState.unreadable
+
+
+def test_read_run_states_of_nothing_is_empty() -> None:
+    # An all-prose roadmap asks about no tickets. Reading a file to be told there is
+    # nothing to say about nobody is work done for no answer.
+    adapter, project = _load_with_run_state()
+
+    assert adapter.read_run_states(project, []) == {}
+
+
 def test_safe_run_state_degrades_dot_ids_to_unreadable(tmp_path: Path) -> None:
     # The LIST/DEPS projection probes run-state for EVERY ticket, so a single '.'/'..'
     # id must degrade rather than raise PathTraversal and 400 the whole request. It
@@ -339,9 +387,9 @@ def test_get_roadmap_returns_rendered_roadmap() -> None:
 
 
 def test_get_roadmap_populates_structured_milestones() -> None:
-    # get_roadmap now parses the body into milestones[]: the with_run_state
-    # ROADMAP.md carries four ## headings, and the MVP milestone's first item is a
-    # done, ticket-linked entry — proving the adapter threads parse_milestones in.
+    # get_roadmap parses the body into milestones[]: the with_run_state ROADMAP.md
+    # carries four ## headings, and the MVP milestone's first item is a ticket-linked
+    # entry — proving the adapter threads parse_milestones in.
     adapter, project = _load_with_run_state()
     roadmap = adapter.get_roadmap(project)
     assert roadmap is not None
@@ -354,7 +402,9 @@ def test_get_roadmap_populates_structured_milestones() -> None:
     first_item = roadmap.milestones[0].items[0]
     assert first_item.text == "Habit schema and append-only event store (CAD-100)"
     assert first_item.ticketId == "CAD-100"
-    assert first_item.done is True
+    # The ADAPTER resolves no status — it reads one file, and the run-state source is
+    # another. RoadmapService joins them; see test_roadmap_service.py.
+    assert first_item.runState is None
 
 
 def test_get_roadmap_returns_none_when_project_has_no_roadmap() -> None:
