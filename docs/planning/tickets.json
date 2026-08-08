@@ -1423,7 +1423,7 @@
       ],
       "provides": "domain/registry.py - RegisteredProject, the exhaustive RegistryEntryCondition union and RegistryEntry, plus the PROJECT_STRUCTURE/ARCHITECTURE amendment giving store and github documented track rows.",
       "path": "docs/planning/tickets/v3.0/T103-registry-domain-vocabulary.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T104",
@@ -1435,7 +1435,7 @@
       ],
       "provides": "store/ package plus store/location.py - the FACTORY_CONSOLE_DB_PATH override, a pure resolve_db_path() that creates nothing, and ensure_store_dir() at 0700.",
       "path": "docs/planning/tickets/v3.0/T104-console-store-location.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T105",
@@ -1447,7 +1447,7 @@
       ],
       "provides": "store/schema.py - per-operation connect() with foreign_keys ON and a 0600 db file, plus a user_version migration runner; migration 1 creates projects (UNIQUE path) and the one-row console_state holding the persisted selection.",
       "path": "docs/planning/tickets/v3.0/T105-console-db-schema-and-migrations.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T106",
@@ -1461,7 +1461,7 @@
       ],
       "provides": "store/registry_protocol.py - the runtime-checkable seven-method ProjectRegistry Protocol with its named errors, plus store/paths.py and the canonical-path rule.",
       "path": "docs/planning/tickets/v3.0/T106-project-registry-port.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T107",
@@ -1474,7 +1474,7 @@
       ],
       "provides": "store/fake_registry.py plus tests/_registry_contract.py - the conformance suite both registry implementations run against, so the fake and the real one cannot drift.",
       "path": "docs/planning/tickets/v3.0/T107-fake-project-registry.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T108",
@@ -1488,7 +1488,7 @@
       ],
       "provides": "store/sqlite_registry.py - the production registry whose construction is side-effect-free, creating the db only on first method call, passing the shared contract suite alongside the fake.",
       "path": "docs/planning/tickets/v3.0/T108-sqlite-project-registry.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T109",
@@ -1503,7 +1503,7 @@
       ],
       "provides": "file_adapter/project_condition.py - a read-only, TOTAL port (Protocol + Real + Fake) resolving each registered path to one named condition, most-degraded-first, never raising.",
       "path": "docs/planning/tickets/v3.0/T109-project-condition-probe.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T110",
@@ -1516,7 +1516,7 @@
       ],
       "provides": "store/entries.py::resolve_entries() - the pure fold producing one RegistryEntry per row, where a degraded row is transformed and never filtered.",
       "path": "docs/planning/tickets/v3.0/T110-registry-entry-join.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T111",
@@ -1531,7 +1531,7 @@
       ],
       "provides": "One async get_current_project_root dependency resolving the selected project per request, the shared selection-failure vocabulary, and the written rule that a pinned PATH is the session's initial selection.",
       "path": "docs/planning/tickets/v3.0/T111-selection-seam.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T112",
@@ -1545,7 +1545,7 @@
       ],
       "provides": "The two read endpoints the project dropdown is built from - registered projects with their per-row condition, and the current selection - plus the OpenAPI schemas the SPA generates types from.",
       "path": "docs/planning/tickets/v3.0/T112-projects-read-endpoints.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T113",
@@ -1559,7 +1559,7 @@
       ],
       "provides": "Add, remove and select registered projects over HTTP, all three gated by the v2 X-Factory-Write-Token.",
       "path": "docs/planning/tickets/v3.0/T113-registry-mutations.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T114",
@@ -1574,7 +1574,7 @@
       ],
       "provides": "services/watcher_supervisor.py owning at most one live FileWatcher, swapped on selection change through an injected factory, with a monotonic generation counter.",
       "path": "docs/planning/tickets/v3.0/T114-watcher-supervisor.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T115",
@@ -1587,7 +1587,7 @@
       ],
       "provides": "A live stream bound to the project selected at connection time, terminating with a named stale frame when the selection changes.",
       "path": "docs/planning/tickets/v3.0/T115-events-per-connection.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T116",
@@ -1602,7 +1602,7 @@
       ],
       "provides": "Four endpoints resolved from the current selection and offloaded per the house rule, with /health made honest about having no selection (nullable projectRoot plus a named selectionReason).",
       "path": "docs/planning/tickets/v3.0/T116-resolve-project-health-graph-roadmap.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T117",
@@ -1618,7 +1618,7 @@
       ],
       "provides": "The four read-heavy endpoints resolved per request, with per-project run-state and .factory artefacts looped by the existing v2.1 rules rather than redesigned.",
       "path": "docs/planning/tickets/v3.0/T117-resolve-tickets-search-spend-runs.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T118",
@@ -1634,7 +1634,7 @@
       ],
       "provides": "Create/edit/delete targeting the selected project, with the write token checked before the selection and an unresolvable selection refusing rather than falling back to the pinned root.",
       "path": "docs/planning/tickets/v3.0/T118-resolve-write-routes.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T119",
@@ -1649,7 +1649,7 @@
       ],
       "provides": "The shipped boot becomes multi-project-capable - registry wired, watcher factory injected, the discovered root pinned as an ephemeral session project - with no subcommand and all four exit codes unchanged.",
       "path": "docs/planning/tickets/v3.0/T119-cli-registry-wiring.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T120",
@@ -1662,7 +1662,7 @@
       ],
       "provides": "Every Playwright run and every CLI-subprocess pytest run boots against a throwaway registry DB, plus the startMulti/registerProject helpers a multi-project spec needs.",
       "path": "docs/planning/tickets/v3.0/T120-test-harness-isolation.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T121",
@@ -1678,7 +1678,7 @@
       ],
       "provides": "A typed, tested door to the console registry with write-token handling, plus the one regeneration of the generated types file for the registry endpoints.",
       "path": "docs/planning/tickets/v3.0/T121-registry-api-client.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T122",
@@ -1693,7 +1693,7 @@
       ],
       "provides": "v3.0's headline - a dropdown listing registered projects that switches the server-side selection and correctly re-loads whatever route the user is on.",
       "path": "docs/planning/tickets/v3.0/T122-project-switcher.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T123",
@@ -1709,7 +1709,7 @@
       ],
       "provides": "A /projects route listing every registered project with its named condition, selecting one, and removing one behind the existing ConfirmDialog.",
       "path": "docs/planning/tickets/v3.0/T123-projects-route.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T124",
@@ -1722,7 +1722,7 @@
       ],
       "provides": "The add-project form, whose failure state is the server's named validation error rather than a generic message the console invented.",
       "path": "docs/planning/tickets/v3.0/T124-add-project-form.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T125",
@@ -1736,7 +1736,7 @@
       ],
       "provides": "A shell-level banner naming when the selected project's path has moved, is no longer a factory project, cannot be read, or has no .factory dir.",
       "path": "docs/planning/tickets/v3.0/T125-project-conditions-banner.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T126",
@@ -1752,7 +1752,7 @@
       ],
       "provides": "The SSE subscription and its indicator are re-established on a switch, immediately and without a backoff penalty, via an explicit stale-frame listener.",
       "path": "docs/planning/tickets/v3.0/T126-live-stream-follows-selection.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T127",
@@ -1769,7 +1769,7 @@
       ],
       "provides": "v3.0's acceptance harness - a real browser against a real two-project console, proving the switch, the deep-link answer, add/remove, the PATH precedence rule, and that the live stream recovers.",
       "path": "docs/planning/tickets/v3.0/T127-multi-project-e2e.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T128",
@@ -1782,7 +1782,7 @@
       ],
       "provides": "The Docker image and CI reckon with the console now creating persistent state in the user's home directory - or record, deliberately, that the image stays single-project.",
       "path": "docs/planning/tickets/v3.0/T128-devops-writable-state.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T129",
@@ -1795,7 +1795,7 @@
       ],
       "provides": "ARCHITECTURE.md, PROJECT_STRUCTURE.md and ROADMAP.md describe the multi-project console that now exists - the registry endpoints, the changed /health and /events, per-request resolution, and the v3.0/v3.0.1 split.",
       "path": "docs/planning/tickets/v3.0/T129-v3.0-planning-docs.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T130",
@@ -1812,7 +1812,7 @@
       ],
       "provides": "The screenshot pipeline captures the multi-project console, and README plus docs/usage.md describe the registry, the switcher and the named conditions.",
       "path": "docs/planning/tickets/v3.0/T130-v3.0-docs-and-screenshots.md",
-      "status": "todo"
+      "status": "merged"
     },
     {
       "id": "T131",
@@ -1992,6 +1992,18 @@
       ],
       "provides": "The durable contract for the GitHub read - the port, the reason vocabulary, the account-pin decision and the recorded guard finding, the two-boundary disclosure narrowing, and the /runs precedence rule.",
       "path": "docs/planning/tickets/v3.0.1/T142-github-docs.md",
+      "status": "todo"
+    },
+    {
+      "id": "T143",
+      "title": "A multi-entry `provides` must survive an edit",
+      "track": "fullstack",
+      "milestone": "v3.0.1",
+      "depends_on": [
+        "T130"
+      ],
+      "provides": "A provides write contract that round-trips every shape the read contract accepts, so editing an unrelated field cannot silently discard manifest data.",
+      "path": "docs/planning/tickets/v3.0.1/T143-provides-round-trip.md",
       "status": "todo"
     }
   ]

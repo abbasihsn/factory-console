@@ -19,6 +19,20 @@ on:
   # commit that would merge.
   push:
     branches: [main, 'version/**']
+  # LINT ONLY, at the commit that would merge — see the `lint` job below. Added
+  # after the note above proved true twice in one day: a `prettier --check` break
+  # landed on main, was fixed, and a second one landed one merge later. Both were
+  # invisible on their PRs, because nothing ran there.
+  #
+  # This does NOT walk back the cost argument above. The test matrix and the image
+  # build still run on push only; what runs here is the ~1-minute hook suite that
+  # is FIRST in the job and therefore gates everything after it. A formatting break
+  # does not fail a step — it stops pytest, the frontend tests, the wheel build,
+  # the smoke test and the e2e suite from running at all, and on a push-only
+  # trigger nobody learns that until it is already on main. Eight merges went in
+  # that way before anyone noticed.
+  pull_request:
+    branches: [main]
   # So a Version's final CI can be re-run against an exact SHA on demand, rather
   # than by pushing an empty commit to move HEAD — which would invalidate the run
   # it was trying to produce.
@@ -35,7 +49,55 @@ permissions:
   contents: read
 
 jobs:
+  # PR-ONLY, and deliberately just the hooks. `pre-commit` is the first step of
+  # `test`, so anything it rejects stops that whole job — the tests, the wheel, the
+  # smoke test and the e2e suite never run. On a push-only trigger that is only
+  # discoverable AFTER the merge, which is how a one-line prettier wrap gated the
+  # entire suite for eight consecutive merges.
+  #
+  # One Python version, no matrix, no store isolation: nothing here touches the
+  # filesystem or the console's DB, so the `test` job's `FACTORY_CONSOLE_DB_PATH`
+  # dance and its leak-guard have nothing to guard against and are not repeated.
+  lint:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # Same ordering constraint as in `test`: pnpm before setup-node, whose
+      # `cache: pnpm` shells out to pnpm.
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      # Both installs are needed even though nothing is run: the ruff hooks come
+      # from the dev extras, and the prettier/eslint hooks shell into frontend's
+      # node_modules.
+      - name: Install Python package (dev extras)
+        run: pip install -e '.[dev]'
+
+      - name: Install frontend dependencies
+        run: pnpm --dir frontend install --frozen-lockfile
+
+      - name: Lint (pre-commit, all files)
+        run: pre-commit run --all-files
+
   test:
+    # Push and workflow_dispatch only — the full matrix stays off PRs, which is the
+    # cost argument at the top of this file. `lint` above is the PR-side gate.
+    if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
@@ -149,6 +211,12 @@ jobs:
     # Build and smoke-test the multi-stage image so the Dockerfile can't ship
     # untested behind a green check. ubuntu-only: the hosted macOS runner has no
     # Docker daemon. Independent of the `test` matrix job, so it can't affect it.
+    #
+    # Push and workflow_dispatch only, like `test`: an image build pulls base
+    # images over the network on every run (which is its one observed flake — a
+    # Docker Hub i/o timeout), and paying that on every PR push buys nothing the
+    # post-merge run does not already cover.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
