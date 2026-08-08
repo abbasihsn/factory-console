@@ -39,10 +39,13 @@ fleshed out here as each track lands.
   Two implementations: `RealFileWriter` (real filesystem) and `FakeFileWriter`
   (in-memory, for tests). It never writes to the factory's run-state source, in any
   of that source's forms.
-- **FileAdapter port** — a read-only Python `Protocol` (eight methods, including
-  `search_tickets` (best-first; blank query → `[]`) and `get_graph` (whole-project
+- **FileAdapter port** — a read-only Python `Protocol` (ten methods, including
+  `search_tickets` (best-first; blank query → `[]`), `get_graph` (whole-project
   run-state-coloured dependency DAG; resolved-only edges, self-loops and dangling
-  ids omitted); all but `load_project` take a resolved `Project`) that the backend
+  ids omitted), and the pair `read_run_state` / `read_run_states` (one id, and many
+  against a single read of the source — the batch form is what keeps a view that asks
+  per item, like the roadmap, from re-reading `run-state.json` once per row); all but
+  `load_project` take a resolved `Project`) that the backend
   depends on via `Depends()`. Two
   implementations: `RealFileAdapter` (real filesystem) and `FakeFileAdapter`
   (in-memory, for tests).

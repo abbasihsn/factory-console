@@ -2,10 +2,17 @@
 
 The roadmap document is authored as markdown: a ``## `` heading opens a
 milestone and the ``- ``/``* `` list items beneath it are its work items, each
-optionally carrying a GitHub-style checkbox and a linked ticket id. This module
-turns that prose into the :class:`~factory_console.domain.deps.RoadmapMilestone`
-/ :class:`~factory_console.domain.deps.RoadmapItem` breakdown the ``/roadmap``
+optionally carrying a linked ticket id. This module turns that prose into the
+:class:`~factory_console.domain.deps.RoadmapMilestone` /
+:class:`~factory_console.domain.deps.RoadmapItem` breakdown the ``/roadmap``
 view renders as a navigable list.
+
+**What this module extracts is now NARRATIVE only** — the item's label, its order, and
+which ticket it names. Status is not among them: it is resolved per request from the
+run-state source by
+:class:`~factory_console.services.roadmap_service.RoadmapService`, because a checkbox
+committed to a document is derived state that goes stale (App Factory v3 §4). This
+parser therefore reads no state and — as before — writes nothing at all.
 
 The parser is *total and tolerant*, mirroring the front-matter reader's
 forgiveness: it never raises on malformed markdown, it skips lines it cannot
@@ -28,8 +35,10 @@ _H2_PREFIX = "## "
 # A list item is a ``- `` or ``* `` bullet (after leading whitespace is stripped).
 _LIST_ITEM_RE = re.compile(r"^[-*]\s+(?P<rest>.*)$")
 
-# A leading GitHub-style checkbox: ``[x]``/``[X]`` (done), ``[ ]`` (not done).
-_CHECKBOX_RE = re.compile(r"^\[(?P<mark>[ xX])\]\s*(?P<rest>.*)$")
+# A leading GitHub-style checkbox — ``[x]``, ``[X]`` or ``[ ]`` — matched only so it can
+# be REMOVED from the label. The mark is deliberately not captured: see
+# :func:`_parse_item` for why it is discarded rather than read.
+_LEADING_CHECKBOX_RE = re.compile(r"^\[[ xX]\]\s*(?P<rest>.*)$")
 
 # Id candidates scanned left-to-right across an item line: a no-space bold span
 # (``**T01**``) or a parenthesized group (``(CAD-100)``). The first candidate
@@ -72,20 +81,30 @@ def _extract_ticket_id(line: str) -> str | None:
 def _parse_item(rest: str) -> RoadmapItem:
     """Build a :class:`RoadmapItem` from a list item's post-marker text.
 
-    ``rest`` is the item text with its ``- ``/``* `` marker already removed. The
-    leading checkbox token (if any) sets ``done`` and is stripped from ``text``;
-    everything else — including any bold markers and the ticket id — is preserved
-    in ``text`` so the label stays readable. ``ticketId`` is scanned from the
-    ORIGINAL ``rest`` (before the checkbox strip is immaterial — the checkbox is
-    never id-shaped) via :func:`_extract_ticket_id`.
+    ``rest`` is the item text with its ``- ``/``* `` marker already removed. A leading
+    checkbox is stripped from ``text``; everything else — including any bold markers and
+    the ticket id — is preserved so the label stays readable. ``ticketId`` is scanned
+    from the ORIGINAL ``rest`` (whether the strip happened first is immaterial — a
+    checkbox is never id-shaped) via :func:`_extract_ticket_id`.
+
+    **The checkbox is stripped and its mark thrown away.** It used to set a ``done``
+    flag; now nothing is derived from it, and
+    :attr:`~factory_console.domain.deps.RoadmapItem.runState` comes from the run-state
+    source instead. A committed ``[x]`` is a claim about the factory that nobody
+    verified and that goes stale the moment a lane merges — App Factory v3 §4 forbids
+    derived state in a committed file, and ``factory-doctor`` FAILs a repository
+    carrying one.
+
+    It is still stripped rather than left in place, because it is NOISE in a label the
+    console renders: an item reading ``☐ [x] Do the thing`` next to a live status badge
+    would show two answers to one question, one of them unverified. Removing it from the
+    view does not remove it from the FILE — this parser never writes — so a project
+    mid-migration renders cleanly while ``factory-ticket``/``factory-doctor`` remain the
+    things that clean the document itself.
     """
-    done: bool | None = None
-    text = rest
-    checkbox = _CHECKBOX_RE.match(rest)
-    if checkbox is not None:
-        done = checkbox.group("mark") in ("x", "X")
-        text = checkbox.group("rest")
-    return RoadmapItem(text=text.strip(), ticketId=_extract_ticket_id(rest), done=done)
+    checkbox = _LEADING_CHECKBOX_RE.match(rest)
+    text = checkbox.group("rest") if checkbox is not None else rest
+    return RoadmapItem(text=text.strip(), ticketId=_extract_ticket_id(rest))
 
 
 def parse_milestones(body_markdown: str) -> list[RoadmapMilestone]:
@@ -96,9 +115,9 @@ def parse_milestones(body_markdown: str) -> list[RoadmapMilestone]:
     - A ``## `` (h2) heading opens a new milestone whose ``name`` is the stripped
       heading text; ``# `` and ``### `` headings are ignored.
     - A ``- ``/``* `` list item beneath the current milestone becomes a
-      :class:`RoadmapItem` (checkbox state -> ``done``, first id-shaped token ->
-      ``ticketId``, cleaned label -> ``text``). List items appearing before the
-      first ``## `` heading have no owning milestone and are dropped.
+      :class:`RoadmapItem` (first id-shaped token -> ``ticketId``, cleaned label ->
+      ``text``, any leading checkbox stripped and discarded). List items appearing
+      before the first ``## `` heading have no owning milestone and are dropped.
     - Every other line (prose, blank lines, other headings) is ignored.
 
     Total and never raises: malformed lines are skipped, and a body with no

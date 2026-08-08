@@ -201,14 +201,20 @@ export interface paths {
          * Get Roadmap
          * @description Return the SELECTED project's full :class:`Roadmap`, or :class:`RoadmapAbsent`.
          *
-         *     Loads the project at the per-request ``root`` and calls
-         *     ``adapter.get_roadmap(project)``, returning the full :class:`Roadmap` — its
-         *     ``bodyMarkdown``, ``bodyHtml``, and structured ``milestones[]`` — when the
-         *     project has one, else :class:`RoadmapAbsent`. Does no error handling of its
+         *     Loads the project at the per-request ``root`` and goes through
+         *     :class:`~factory_console.services.roadmap_service.RoadmapService`, returning the full
+         *     :class:`Roadmap` — its ``bodyMarkdown``, ``bodyHtml``, and structured
+         *     ``milestones[]``, each item carrying the run-state resolved for the ticket it names —
+         *     when the project has one, else :class:`RoadmapAbsent`. Does no error handling of its
          *     own: a ``ProjectNotFound`` from ``load_project``, a ``RoadmapUnreadable``
-         *     (500) from ``adapter.get_roadmap``, and the selection seam's ``409``s all
+         *     (500) from the roadmap read, and the selection seam's ``409``s all
          *     propagate to the registered domain-error handler, which renders the mapped
          *     envelope.
+         *
+         *     The service call is ONE ``run_sync``, not two. It reads two files — the roadmap and
+         *     the run-state source — and both belong to the same answer; splitting them across two
+         *     hops would let the second read observe a source the first did not, so a page could
+         *     show a milestone's items resolved against run-state that changed mid-request.
          */
         readonly get: operations["get_roadmap_api_v1_roadmap_get"];
         readonly put?: never;
@@ -1026,18 +1032,31 @@ export interface components {
          * RoadmapItem
          * @description A single milestone list-item parsed from ``ROADMAP.md``.
          *
-         *     ``text`` is the cleaned item label (marker and checkbox stripped); ``done``
-         *     reflects the checkbox state (``True``/``False`` for ``[x]``/``[ ]``, ``None``
-         *     when the item carries no checkbox); ``ticketId`` is the item's linked ticket
-         *     id when one is present, else ``None``.
+         *     ``text`` is the cleaned item label (marker and any leading checkbox stripped);
+         *     ``ticketId`` is the item's linked ticket id when one is present, else ``None``.
+         *
+         *     **``runState`` REPLACED a ``done`` flag read off the item's own checkbox, and the
+         *     change is about where the truth lives.** A committed ``[x]`` is derived state in a
+         *     hand-maintained file: it is a claim about the factory that nobody verified, it goes
+         *     stale the moment a lane merges, and App Factory v3 §4 forbids it outright —
+         *     ``factory-doctor`` FAILs a repository that carries one. So the checkbox is now
+         *     stripped from the label and its mark discarded, and the status comes from the same
+         *     run-state source the ticket list and the write gate already read. Two views of one
+         *     ticket cannot disagree when one source answers both.
+         *
+         *     ``None`` means **this item names no ticket**, and it is not the same as
+         *     :attr:`~factory_console.domain.run_state.RunState.unknown`. ``unknown`` is an answer
+         *     — a source was consulted and said nothing about this id — while ``None`` is the
+         *     absence of a question: a prose bullet has no status because there is nothing to have
+         *     one. Collapsing them would badge every section header and narrative line as a ticket
+         *     the factory has never heard of.
          */
         readonly RoadmapItem: {
             /** Text */
             readonly text: string;
             /** Ticketid */
             readonly ticketId?: string | null;
-            /** Done */
-            readonly done?: boolean | null;
+            readonly runState?: components["schemas"]["RunState"] | null;
         };
         /**
          * RoadmapMilestone

@@ -117,12 +117,19 @@ def test_the_discovered_roadmap_actually_parses(project) -> None:
     assert any(n.startswith("v2") for n in names)
 
 
-def test_checkbox_state_survives_the_parse(project) -> None:
-    """The roadmap view renders these; a milestone with no done-state is useless."""
+def test_the_parse_carries_the_narrative_and_leaves_status_alone(project) -> None:
+    """Label, order and ticket id survive; the checkbox does not.
+
+    REPLACES a test asserting the checkbox marks reached ``RoadmapItem.done``. The mark
+    is now stripped and discarded — status is resolved from the run-state source, so a
+    document's own claim about what is finished is no longer read at all.
+    """
     roadmap = RealFileAdapter().get_roadmap(project)
     assert roadmap is not None
     v1 = next(m for m in roadmap.milestones if m.name.startswith("v1"))
-    assert [i.done for i in v1.items] == [True, False]
+    assert [i.ticketId for i in v1.items] == ["T01", "T02"]
+    assert all(not i.text.startswith("[") for i in v1.items), "the checkbox is stripped"
+    assert all(i.runState is None for i in v1.items), "the parser resolves no status"
 
 
 # --- containment is not weakened by honouring the manifest ------------------

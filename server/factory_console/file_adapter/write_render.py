@@ -498,9 +498,20 @@ def _section_insert_index(lines: list[str], body_start: int, body_end: int) -> i
 def _rebuild_item_line(line: str, ticket_id: str, title: str) -> str:
     """Rewrite a roadmap item's label IN PLACE, keeping its structural prefix.
 
-    Preserves the original indentation, bullet marker, and checkbox (done-state)
-    and replaces only the label text — so editing a ticket's title never resets
-    its roadmap checkbox.
+    Preserves the original indentation, bullet marker, and any existing checkbox, and
+    replaces only the label text.
+
+    The checkbox is preserved for a REASON THAT CHANGED. It used to be protected as
+    state: resetting it would have destroyed the roadmap's record of what was done. The
+    console no longer reads it — status comes from run-state — so there is nothing left
+    to protect. It is kept now purely as scope: this function was asked to change a
+    title, and an edit that also deleted an unrelated token from a hand-maintained
+    document would put an unrequested change in the diff of every rename.
+
+    Stripping the stale marks is a job, but it is ``factory-doctor``'s and
+    ``factory-ticket``'s — a deliberate, whole-document pass an operator runs — not
+    something a title edit does to one line at a time, leaving the other hundred and
+    forty behind.
     """
     prefix_match = _ITEM_PREFIX_RE.match(line)
     assert prefix_match is not None  # caller only passes matched list-item lines
@@ -517,6 +528,18 @@ def _roadmap_create_text(
 
     ``None`` when the ticket has no milestone or no ``## `` section matches it —
     the caller then simply omits the roadmap change.
+
+    **The new line carries NO checkbox.** It used to be written as ``- [ ] …``, which
+    made this the console's own contribution to the problem App Factory v3 §4 names:
+    derived state committed to a file, going stale from the moment it is written. The
+    factory would build the ticket and the box would still read unticked, because
+    nothing ticks it. A bare bullet claims only what the document can actually know —
+    that this work exists and belongs to this milestone — and the status is resolved
+    live from run-state when the roadmap is rendered.
+
+    In a document that still carries checkboxes elsewhere the new line looks different
+    from its neighbours. That is the honest outcome and not a formatting bug: those
+    neighbours assert something this one declines to.
     """
     if milestone is None:
         return None
@@ -526,7 +549,7 @@ def _roadmap_create_text(
         return None
     body_start, body_end = _section_body_bounds(lines, heading_index)
     insert_at = _section_insert_index(lines, body_start, body_end)
-    lines.insert(insert_at, f"- [ ] {_roadmap_label(ticket_id, title)}")
+    lines.insert(insert_at, f"- {_roadmap_label(ticket_id, title)}")
     return "\n".join(lines)
 
 
@@ -539,11 +562,15 @@ def _roadmap_edit_text(
     to a DIFFERENT milestone whose ``## `` section exists, removes the old line and
     re-inserts it under the new section — so the roadmap tracks the manifest's
     ``milestone`` (which :func:`_merge_edit` updates) instead of silently keeping the
-    line under its old heading. A cross-section move re-lists the item as ``- [ ]``,
-    matching how :func:`_roadmap_create_text` first lists a ticket (a moved ticket
-    is a fresh entry under its new milestone). When the new milestone has no matching
-    section, the line is relabelled in place rather than lost, mirroring create's
-    "no matching section → skip the roadmap" tolerance.
+    line under its old heading. A cross-section move re-lists the item the way
+    :func:`_roadmap_create_text` first lists a ticket — a bare ``- **id** — title``
+    bullet, since a moved ticket is a fresh entry under its new milestone. Note the
+    asymmetry with an in-place relabel, which PRESERVES an existing checkbox: a relabel
+    edits a line that is already there, while a move deletes one and writes a new one,
+    and a newly written line does not get a mark this console would not honour anyway.
+    When the new milestone has no matching section, the line is relabelled in place
+    rather than lost, mirroring create's "no matching section → skip the roadmap"
+    tolerance.
 
     ``None`` when no list item carries ``ticket_id`` — the caller then omits the
     roadmap change.

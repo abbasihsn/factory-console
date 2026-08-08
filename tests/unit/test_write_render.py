@@ -262,7 +262,11 @@ def test_create_inserts_roadmap_line_under_matching_section(tmp_path: Path) -> N
     changes = render_create(project, _draft(milestone="MVP", title="Ranger mobile capture"))
 
     roadmap = _by_rel(changes, _ROADMAP_REL)
-    assert "- [ ] **TM-050** — Ranger mobile capture" in roadmap.newText
+    # A BARE bullet — no `[ ]`. Writing one would be this console contributing the very
+    # thing v3 §4 forbids: a status in a committed file that nothing ever updates, so it
+    # would still read unticked long after the factory built the ticket.
+    assert "- **TM-050** — Ranger mobile capture" in roadmap.newText
+    assert "[ ] **TM-050**" not in roadmap.newText
     # The new line lands inside the MVP section, before the v1 heading.
     mvp_index = roadmap.newText.index("## MVP")
     v1_index = roadmap.newText.index("## v1")

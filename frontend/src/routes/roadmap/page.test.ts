@@ -36,8 +36,9 @@ const presentRoadmap = {
 		{
 			name: 'MVP',
 			items: [
-				{ text: 'Wire the API client', ticketId: 'T31', done: true },
-				{ text: 'Draft the empty states', done: false }
+				{ text: 'Wire the API client', ticketId: 'T31', runState: 'merged' },
+				// Names no ticket: `runState` is absent, which the view renders as no badge.
+				{ text: 'Draft the empty states' }
 			]
 		}
 	]
