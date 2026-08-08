@@ -26,6 +26,33 @@
 		if ($bump > 0) invalidateAll();
 	});
 
+	// The stream follows the selection. Contract this relies on (T115): the server
+	// resolves the stream's project ONCE PER CONNECTION, so a switch only takes
+	// effect on a NEW `/api/v1/events` connection — hence the restart, which also
+	// clears the backoff so rapid switching cannot walk the delay up.
+	//
+	// Keyed on the selected id VALUE, not on `data` itself: `invalidateAll()` above
+	// re-runs the layout load on every SSE bump and hands back a fresh object, so
+	// keying on identity would restart the stream on every file change. Reading the
+	// id off the layout data (rather than the switcher's own callback) also catches
+	// a selection changed in ANOTHER tab, which this tab learns about on a re-load.
+	//
+	// Guarded on the NEW id being non-null: `+layout.ts` degrades a failed registry
+	// read to `[]` rather than failing the whole shell, which reads here as
+	// `selectedId: null` — indistinguishable from an actual switch away from a
+	// project. Only a switch TO a real project ever needs the stream re-resolved.
+	let seenSelectedId: string | null = null;
+	let selectionTracked = false;
+	$effect(() => {
+		const selectedId = data.selectedId;
+		// The first run only records the id — the stream started with it already.
+		if (selectionTracked && selectedId !== null && selectedId !== seenSelectedId) {
+			live.restart();
+		}
+		selectionTracked = true;
+		seenSelectedId = selectedId;
+	});
+
 	// The registry row the shell is serving, for the condition banner below the
 	// top bar. `null` covers single-project mode (no registry rows at all), a
 	// selection the registry cannot name, and the reserved unregistered `session`
