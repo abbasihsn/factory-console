@@ -432,6 +432,15 @@ export async function start(
 const CONNECT_RETRY_TIMEOUT_MS = 5_000;
 const CONNECT_RETRY_INTERVAL_MS = 50;
 
+// True for the specific "server socket isn't bound yet" rejection `fetch` raises
+// as `ECONNREFUSED`, never for a request that reached the server (a 4xx/5xx is a
+// resolved Response, not a rejection) — so a write that the server already
+// accepted is never mistaken for one that never arrived and retried into a
+// spurious duplicate.
+function isConnectRefused(err: unknown): boolean {
+	return (err as { cause?: NodeJS.ErrnoException })?.cause?.code === 'ECONNREFUSED';
+}
+
 /**
  * `fetch`, retrying only the CONNECT failure a freshly-booted console can still
  * answer with, to a short deadline. Exported because the race is a property of
@@ -449,7 +458,7 @@ export async function fetchWithConnectRetry(
 		try {
 			return await fetch(url, init);
 		} catch (err) {
-			if (Date.now() >= deadline) throw err;
+			if (!isConnectRefused(err) || Date.now() >= deadline) throw err;
 			await sleep(CONNECT_RETRY_INTERVAL_MS);
 		}
 	}

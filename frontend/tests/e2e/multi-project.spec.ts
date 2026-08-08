@@ -464,6 +464,10 @@ test('multi-project: registering with no write token asks for one instead of fai
 });
 
 test('multi-project: the pinned PATH is the session’s initial selection, and a switch still takes effect', async () => {
+	// Two sequential cold boots (each up to BOOT_TIMEOUT_MS) plus a dispose don't
+	// fit Playwright's default 30s test timeout — every other dedicated-console
+	// spec boots exactly one console, and does it in `beforeAll`.
+	test.setTimeout(120_000);
 	// T111's precedence rule is a statement about BOOT, so one console cannot show
 	// it: the process-local session selection is re-seeded to the pin at EVERY
 	// start, regardless of what the registry persisted. Two consoles are booted
