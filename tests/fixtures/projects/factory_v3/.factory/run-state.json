@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "tickets": {
+    "T01": { "status": "merged", "pr_url": "https://github.com/example/repo/pull/1", "phase": null },
+    "T02": { "status": "in_progress", "pr_url": null, "phase": "reviewing" },
+    "T03": { "status": "todo", "pr_url": null, "phase": null }
+  },
+  "subversion": {
+    "branch": "factory/v1.0",
+    "base_sha": "0123456789abcdef0123456789abcdef01234567",
+    "name": "v1.0",
+    "pr_url": null
+  }
+}

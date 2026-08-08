@@ -17,13 +17,23 @@ docstring.
 same subject, and live here for the same reason again. Every module that turns a
 ticket id into a path also has to ask "and does the resolved path stay under the
 project root?", and that question was answered by a private copy per module. The
-copies are not equivalent: the one here refuses to raise on a resolution that
-itself fails, which the older inline ``.resolve(strict=False)`` calls in
-:mod:`~factory_console.file_adapter.ticket_md` and
-:mod:`~factory_console.file_adapter.write_render` do not — see
-:func:`resolve_or_none`. Those two still carry their own; this module is where the
-hardened rule now lives so that converging them is a small edit rather than a
-rewrite.
+copies were not equivalent: the one here refuses to raise on a resolution that
+itself fails, which the older inline ``.resolve(strict=False)`` calls did not —
+see :func:`resolve_or_none`.
+
+**That convergence has now happened**, and this module carries its result.
+:func:`contain` is the single containment implementation, and
+:func:`resolve_ticket_path` above it is the single answer to "which file IS this
+ticket?" — shared by the read path and the write path, and by both content
+formats. It is here rather than beside either reader because the read and the
+write must resolve identically or an edit merges nothing and writes an orphan file
+beside the real ticket while reporting success. That happened, and it happened
+because there were two derivations.
+
+Note what this module deliberately does NOT decide: a ticket's FORMAT. It answers
+where a file is and whether reading it is safe; which reader opens it belongs to
+:mod:`~factory_console.file_adapter.ticket_content`. A path-safety module that
+grew opinions about file contents would be answering two questions with one rule.
 """
 
 from __future__ import annotations
@@ -221,3 +231,66 @@ def validate_ticket_id_as_segment(ticket_id: str) -> None:
         raise PathTraversal.from_pattern_violation(ticket_id)
     if ticket_id in (".", ".."):
         raise PathTraversal(ticket_id)
+
+
+_ESCAPES_ROOT_REASON = "Ticket id resolves outside the project root"
+
+
+def contain(project_root: Path, ticket_id: str, candidate: Path) -> Path:
+    """Resolve ``candidate`` under ``project_root``, or raise :class:`PathTraversal`.
+
+    A RELATIVE candidate is resolved against the PROJECT ROOT, never the process
+    working directory: a manifest ``path`` is root-relative by definition, so the cwd
+    was never the right base and using it would make the answer depend on where the
+    server happened to be started from.
+
+    ``candidate`` is not always derived from ``ticket_id``. A manifest-declared ``path``
+    is repository data, not user input, but it is still data — a ``path`` of
+    ``../../../etc/passwd`` must be refused exactly as a traversing id is, and refusing
+    it less firmly merely because it arrived by a different route is how the guard
+    develops a hole.
+
+    THIS IS THE CONVERGENCE THIS MODULE'S DOCSTRING ASKED FOR. The copy it replaces
+    (``ticket_md._contained``) called ``Path.resolve(strict=False)`` inline, which is
+    not total: through CPython 3.12 a symlink loop escapes it as a ``RuntimeError``, an
+    unmapped 500 from a module documented to raise nothing but :class:`PathTraversal`,
+    while 3.13 answers the same bytes on disk cleanly. Going through
+    :func:`resolve_or_none` / :func:`within_root` makes both interpreters refuse, and
+    refuse for the honest reason. Note the direction of the change: a resolution that
+    could not be PERFORMED now refuses rather than crashing, and it may never be read as
+    containment PROVEN — ``within_root`` answers ``None`` for an unresolvable root, and
+    ``None`` is a refusal here, not a pass.
+    """
+    absolute = candidate if candidate.is_absolute() else project_root / candidate
+    resolved = resolve_or_none(absolute)
+    if resolved is None or not within_root(resolved, project_root):
+        raise PathTraversal(ticket_id, reason=_ESCAPES_ROOT_REASON)
+    return resolved
+
+
+def resolve_ticket_path(
+    project_root: Path, tickets_dir: Path, ticket_id: str, path: Path | None = None
+) -> Path:
+    """Resolve where ``ticket_id``'s content file lives, honouring a manifest ``path``.
+
+    The ONE place either side of the console decides which file a ticket IS. ``path`` is
+    what the manifest entry declared (root-relative or absolute); absent, the flat
+    ``<tickets_dir>/<id>.md`` remains the fallback for a manifest that declares none —
+    a hand-written manifest, and the shape most fixtures use. The id is validated and the
+    result contained in both cases, so honouring the manifest widens WHERE a ticket may
+    live, never whether it may escape the root.
+
+    It answers a LOCATION, never a FORMAT: ``.md`` and App Factory v3's ``.json`` content
+    files both arrive here and leave with the same containment guarantee. Which reader
+    opens the result is :mod:`~factory_console.file_adapter.ticket_content`'s decision,
+    and keeping the two apart is what stops a format question from being answered by a
+    path-safety module or the reverse.
+
+    Lives here rather than beside either reader for the reason the whole module exists:
+    the READ path and the WRITE path must resolve identically or an edit merges nothing
+    and writes an orphan file beside the real ticket, reporting ``applied=true``. That
+    happened, and it happened because there were two derivations.
+    """
+    validate_ticket_id_as_segment(ticket_id)
+    candidate = path if path is not None else tickets_dir / f"{ticket_id}.md"
+    return contain(project_root, ticket_id, candidate)

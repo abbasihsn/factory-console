@@ -122,7 +122,7 @@ def load_manifest_document(manifest_path: Path) -> ManifestDocument:
     # UnicodeDecodeError and a permission-denied/vanished file raises OSError, and
     # neither is a JSONDecodeError — so without this they would escape as an
     # unmapped error (CLI exit 1 instead of the documented 3, a raw 500 on the
-    # request path). Mirrors read_ticket_md's read guard.
+    # request path). Mirrors read_ticket_md_text's read guard.
     try:
         with open(manifest_path, encoding="utf-8") as manifest_file:
             raw_text = manifest_file.read()
@@ -223,7 +223,7 @@ def ticket_file_path(entry: dict[str, Any], tickets_dir: Path, root: Path | None
     The flat form remains the fallback for a manifest with no ``path``, which is
     what the fixtures use and what a hand-written manifest may reasonably be.
     Containment against the project root is NOT enforced here: this returns a
-    candidate, and the reader that opens it (``ticket_md``) is the one place that
+    candidate, and the module that resolves it (``path_safety``) is the one place that
     can refuse an escaping path with the right error.
     """
     declared = entry.get("path")

@@ -36,13 +36,9 @@ from factory_console.domain.ticket import TICKET_ID_PATTERN
 from factory_console.domain.write import TicketDraft, TicketEdit
 from factory_console.errors import FactoryConsoleError
 from factory_console.file_adapter.manifest import DEPENDS_ON_KEYS, load_manifest_document
-from factory_console.file_adapter.path_safety import PathTraversal
+from factory_console.file_adapter.path_safety import PathTraversal, resolve_ticket_path
 from factory_console.file_adapter.roadmap_parse import _LIST_ITEM_RE, _extract_ticket_id
-from factory_console.file_adapter.ticket_md import (
-    TicketFileUnreadable,
-    _split_front_matter,
-    resolve_ticket_md_path,
-)
+from factory_console.file_adapter.ticket_md import TicketFileUnreadable, _split_front_matter
 
 _TICKET_ID_RE = re.compile(TICKET_ID_PATTERN)
 """The canonical ticket-id pattern compiled once at import for re-validation."""
@@ -147,7 +143,7 @@ def _safe_resolve(project: Project, ticket_id: str) -> Path:
     must go through :func:`_entry_md_path` instead, which reads the entry's
     declared ``path``.
     """
-    return resolve_ticket_md_path(project, ticket_id)
+    return resolve_ticket_path(project.rootPath, project.ticketsDir, ticket_id)
 
 
 def _require_safe_id(ticket_id: str) -> None:
@@ -167,7 +163,9 @@ def _entry_md_path(project: Project, entry: Mapping[str, Any], ticket_id: str) -
     answering ``applied=true``.
     """
     declared = entry.get("path")
-    return resolve_ticket_md_path(project, ticket_id, Path(str(declared)) if declared else None)
+    return resolve_ticket_path(
+        project.rootPath, project.ticketsDir, ticket_id, Path(str(declared)) if declared else None
+    )
 
 
 def _rel_posix(path: Path, root: Path) -> str:
@@ -402,7 +400,7 @@ def _overlay_front_matter(existing: Mapping[str, Any], edit: TicketEdit) -> dict
 
 
 def _parse_front_matter(front_matter_yaml: str | None) -> dict[str, Any]:
-    """Parse a raw front-matter block with :func:`read_ticket_md`'s tolerance.
+    """Parse a raw front-matter block with :func:`read_ticket_md_text`'s tolerance.
 
     Malformed YAML, or YAML that parses to a non-mapping, yields ``{}`` rather than
     raising — matching the read path, which never fails a ticket over a bad header.
@@ -453,17 +451,17 @@ def _render_md(front_matter: Mapping[str, Any], body_markdown: str) -> str:
     """Render a ticket ``.md`` from optional YAML front-matter plus the body.
 
     Round-trip consistent with
-    :func:`~factory_console.file_adapter.ticket_md.read_ticket_md`.
+    :func:`~factory_console.file_adapter.ticket_md.read_ticket_md_text`.
     """
     return _render_md_text(_dump_front_matter(front_matter), body_markdown)
 
 
 def _front_matter_parsed_cleanly(front_matter_yaml: str) -> bool:
-    """Whether `front_matter_yaml` parses the way :func:`read_ticket_md` treats as
+    """Whether `front_matter_yaml` parses the way :func:`read_ticket_md_text` treats as
     clean — to a mapping, or to nothing — so that function's BODY excludes the
     header text.
 
-    Malformed YAML, or YAML that parses to a non-mapping, makes ``read_ticket_md``
+    Malformed YAML, or YAML that parses to a non-mapping, makes ``read_ticket_md_text``
     fall back to returning the WHOLE file (fences included) as the body rather than
     lose bytes over a header it cannot make sense of. :func:`render_edit_md` has to
     know which case it is in: only here does the client's ``edit.bodyMarkdown``
@@ -490,7 +488,7 @@ def render_edit_md(current_text: str | None, edit: TicketEdit) -> str:
     body. Otherwise the merged header is re-dumped in the on-disk style.
 
     A header that does not parse cleanly (see :func:`_front_matter_parsed_cleanly`)
-    is a THIRD case, handled before either of those: `read_ticket_md` already folded
+    is a THIRD case, handled before either of those: `read_ticket_md_text` already folded
     the whole file, fences included, into the body it handed the client, so
     re-prepending the header here would emit it twice.
 

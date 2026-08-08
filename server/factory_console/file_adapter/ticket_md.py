@@ -1,45 +1,39 @@
-"""Read one ticket ``.md`` by id: split YAML front-matter from body markdown.
+"""Read one Markdown ticket: split YAML front-matter from body markdown.
 
-Ticket bodies live at ``<project.ticketsDir>/<id>.md``. This module reads a
-single file by ticket id and separates the optional leading ``---`` fenced YAML
-front-matter from the markdown body. It enforces defense-in-depth path safety:
-the id is re-validated against :data:`TICKET_ID_PATTERN` (the single source of
-truth, imported verbatim) and the *resolved* path must stay under the project
-root, so a symlink pointing outside the project can never be read.
+The v2 and hand-written ticket format. App Factory v3 stores ticket content as JSON
+(:mod:`~factory_console.file_adapter.ticket_json`); which of the two a given ticket is
+belongs to :mod:`~factory_console.file_adapter.ticket_content`, and nothing here decides
+it. This module is only the Markdown half.
 
-Both unsafe-id causes — a pattern violation and a resolved path that escapes the
-root — surface as the same transport contract (:class:`PathTraversal`, status
-400, ``invalid_ticket_id``); a valid id with no file on disk surfaces as
-:class:`TicketFileMissing` (status 404, ``ticket_file_missing``); and a resolved
-path that exists but cannot be read as UTF-8 (a directory, a permission-denied
-read, or non-UTF-8 bytes) surfaces as :class:`TicketFileUnreadable` (status 500,
-``ticket_file_unreadable``) rather than escaping as an unmapped 500.
+It no longer resolves paths. Where a ticket's file LIVES is
+:func:`~factory_console.file_adapter.path_safety.resolve_ticket_path`'s single
+responsibility — one derivation shared by the read path, the write path and both formats,
+because two derivations is what once made an edit merge nothing, write an orphan
+``<id>.md`` beside the real ticket, and report ``applied=true``.
+
+The two error classes below stay here despite serving both formats, and that is not an
+oversight: "no file" and "bytes that are not UTF-8 text" are facts about a FILE, identical
+whichever format was expected of it, so a caller catching :class:`TicketFileMissing` must
+not have to catch two of them. :class:`~factory_console.file_adapter.ticket_json.TicketInvalid`
+is the one that is genuinely format-specific — it means the text IS a document and is not a
+ticket — and it lives with the format that can raise it.
 """
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from factory_console.domain.project import Project
-from factory_console.domain.ticket import TICKET_ID_PATTERN, Ticket
 from factory_console.errors import FactoryConsoleError
-from factory_console.file_adapter.path_safety import PathTraversal
-
-_TICKET_ID_RE = re.compile(TICKET_ID_PATTERN)
-"""The canonical ticket-id pattern compiled once at import for re-validation."""
 
 _FENCE = "---"
 """A front-matter fence line — exactly three dashes on their own line."""
 
-_ID_ESCAPES_ROOT = "Ticket id resolves outside the project root"
-
 
 class TicketFileMissing(FactoryConsoleError):
-    """A ticket id is well-formed and contained, but no ``.md`` file exists.
+    """A ticket id is well-formed and contained, but no content file exists.
 
     ``details`` carries the ``ticketId`` only — never the probed filesystem path.
     """
@@ -54,16 +48,16 @@ class TicketFileMissing(FactoryConsoleError):
 
 
 class TicketFileUnreadable(FactoryConsoleError):
-    """A ticket ``.md`` exists but cannot be read as UTF-8 text.
+    """A ticket file exists but cannot be read as UTF-8 text.
 
     Distinct from :class:`TicketFileMissing` (no file at all): the path resolves to
-    something present that still cannot be turned into text — a directory at the
-    ``.md`` path (:class:`IsADirectoryError`), a permission-denied read
+    something present that still cannot be turned into text — a directory at the ticket's
+    path (:class:`IsADirectoryError`), a permission-denied read
     (:class:`PermissionError`), or bytes that are not valid UTF-8
-    (:class:`UnicodeDecodeError`). Mapped to HTTP 500 (a server-side data problem,
-    like :class:`~factory_console.file_adapter.manifest.MalformedManifest`) so the
-    edge layer renders a graceful envelope instead of leaking a raw traceback.
-    ``details`` carries the ``ticketId`` only — never the probed filesystem path.
+    (:class:`UnicodeDecodeError`). Mapped to HTTP 500 (a server-side data problem, like
+    :class:`~factory_console.file_adapter.manifest.MalformedManifest`) so the edge layer
+    renders a graceful envelope instead of leaking a raw traceback. ``details`` carries
+    the ``ticketId`` only — never the probed filesystem path.
     """
 
     def __init__(self, ticket_id: str) -> None:
@@ -73,67 +67,6 @@ class TicketFileUnreadable(FactoryConsoleError):
             status=500,
             details={"ticketId": ticket_id},
         )
-
-
-def _safe_resolve(project: Project, ticket_id: str) -> Path:
-    """Resolve ``<ticketsDir>/<ticket_id>.md``, refusing any unsafe id.
-
-    Raises :class:`PathTraversal` when the id fails :data:`TICKET_ID_PATTERN` or
-    when the resolved path is not contained under ``project.rootPath``. Both
-    sides of the containment check are resolved so symlinked temp roots (e.g.
-    ``/tmp`` and ``/var/folders`` on macOS) don't cause a false negative.
-    """
-    return resolve_ticket_md_path(project, ticket_id)
-
-
-def _contained(project: Project, ticket_id: str, candidate: Path) -> Path:
-    """Resolve ``candidate`` and refuse it if it escapes the project root.
-
-    Split out of :func:`_safe_resolve` because the candidate no longer always
-    comes from the id. A manifest-declared ``path`` is repository data, not user
-    input, but it is still data — a ``path`` of ``../../../etc/passwd`` must be
-    refused exactly as a traversing id is, and it would be worse to trust it
-    merely because it arrived by a different route.
-    """
-    # A RELATIVE candidate is resolved against the PROJECT ROOT, not the process
-    # working directory. `Path.resolve` would use the cwd, which makes the answer
-    # depend on where the server happened to be started from — and a manifest's
-    # `path` is root-relative by definition, so the cwd was never the right base.
-    root = project.rootPath.resolve()
-    absolute = candidate if candidate.is_absolute() else root / candidate
-    resolved = absolute.resolve(strict=False)
-    if not resolved.is_relative_to(root):
-        raise PathTraversal(ticket_id, reason=_ID_ESCAPES_ROOT)
-    return resolved
-
-
-def resolve_ticket_md_path(project: Project, ticket_id: str, path: Path | None = None) -> Path:
-    """Resolve where ``ticket_id``'s ``.md`` lives, honouring a manifest ``path``.
-
-    The one place either side of the console decides which file a ticket IS.
-    ``path`` is what the manifest entry declared (root-relative or absolute);
-    absent, the flat ``<ticketsDir>/<id>.md`` remains the fallback for a manifest
-    that declares none. The id is validated and the result contained in both
-    cases, so honouring the manifest widens WHERE a ticket may live, never
-    whether it may escape the root.
-
-    Extracted so the WRITE path resolves exactly as :func:`read_ticket_md` does.
-    It used to derive the flat form unconditionally: against a real factory
-    manifest (tickets filed under a milestone directory with a slug in the name)
-    an edit therefore merged nothing, wrote a NEW orphan ``<id>.md``, and reported
-    ``applied=true`` while the real ticket sat unchanged — and a delete unlinked a
-    path that was never there.
-    """
-    if _TICKET_ID_RE.fullmatch(ticket_id) is None:
-        raise PathTraversal.from_pattern_violation(ticket_id)
-    return _contained(
-        project, ticket_id, path if path is not None else _flat_md_path(project, ticket_id)
-    )
-
-
-def _flat_md_path(project: Project, ticket_id: str) -> Path:
-    """``<ticketsDir>/<ticket_id>.md`` — the no-declared-path fallback."""
-    return project.ticketsDir / f"{ticket_id}.md"
 
 
 def _split_front_matter(text: str) -> tuple[str | None, str]:
@@ -157,32 +90,25 @@ def _split_front_matter(text: str) -> tuple[str | None, str]:
     return None, text
 
 
-def read_ticket_md(
-    project: Project, ticket_id: str, path: Path | None = None
-) -> tuple[dict[str, Any], str]:
-    """Read a ticket ``.md`` and return ``(front_matter, body_markdown)``.
+def read_ticket_md_text(resolved: Path, ticket_id: str) -> tuple[dict[str, Any], str]:
+    """Read the Markdown ticket at ``resolved`` and return ``(front_matter, body)``.
 
-    Front-matter is the parsed leading YAML mapping; ``body_markdown`` is the
-    text after the fence. When there is no fence, when the YAML is malformed, or
-    when it parses to a non-mapping, the front-matter is ``{}`` and the body is
-    the full original text (fences included) — this function never raises on
-    malformed YAML.
+    Front-matter is the parsed leading YAML mapping; ``body`` is the text after the fence.
+    When there is no fence, when the YAML is malformed, or when it parses to a
+    non-mapping, the front-matter is ``{}`` and the body is the full original text (fences
+    included) — this function never raises on malformed YAML. That tolerance is the
+    Markdown format's own and does not extend to
+    :mod:`~factory_console.file_adapter.ticket_json`, which refuses a document it cannot
+    validate: front-matter is optional metadata a hand-written ticket may reasonably
+    fumble, while a v3 ticket's fields are the ticket.
 
-    Raises :class:`PathTraversal` for an unsafe id, :class:`TicketFileMissing`
-    when the resolved file does not exist, and :class:`TicketFileUnreadable` when
-    it exists but cannot be read as UTF-8 (a directory, a permission-denied read,
-    or non-UTF-8 bytes) — so every read failure surfaces as a mapped envelope
-    rather than escaping as an unmapped 500.
+    Takes a RESOLVED, CONTAINED path rather than a project and an id — containment is
+    :func:`~factory_console.file_adapter.path_safety.resolve_ticket_path`'s job, and a
+    reader that re-derived the path would be the second derivation this codebase has
+    already paid for once. Raises :class:`TicketFileMissing` when the file does not exist
+    and :class:`TicketFileUnreadable` when it exists but is not UTF-8 text, so every read
+    failure surfaces as a mapped envelope rather than escaping as an unmapped 500.
     """
-    # `path` is the file the MANIFEST declared for this ticket, passed by
-    # enrich_ticket. Without it this function re-derived <ticketsDir>/<id>.md and
-    # ignored what the manifest said, which is why every ticket-detail request
-    # 404'd against a real factory repository (tickets live under a milestone
-    # directory with a slug in the name). Absent, the flat form is still the
-    # fallback — a hand-written manifest need not declare paths. Either way the
-    # id is re-validated and the result is contained, so honouring the manifest
-    # widens where a ticket may live, never whether it may escape the root.
-    resolved = resolve_ticket_md_path(project, ticket_id, path)
     try:
         text = resolved.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
@@ -205,27 +131,3 @@ def read_ticket_md(
     if isinstance(parsed, dict):
         return parsed, body
     return {}, text
-
-
-def enrich_ticket(project: Project, stub: Ticket) -> Ticket:
-    """Join a manifest ``stub`` with its on-disk body, returning a new ticket.
-
-    Reads ``stub.id``'s ``.md``, sets ``bodyMarkdown`` and the resolved
-    ``filePath``, and namespaces the parsed front-matter under
-    ``raw['frontMatter']`` so top-level manifest fields keep winning by
-    construction. ``bodyHtml`` is left untouched (rendered downstream). The
-    returned :class:`Ticket` is a distinct frozen instance produced via
-    ``model_copy``; the stub's id already validated, so no re-validation runs.
-    """
-    front_matter, body = read_ticket_md(project, stub.id, stub.filePath)
-    new_raw = {**stub.raw, "frontMatter": front_matter}
-    return stub.model_copy(
-        update={
-            "bodyMarkdown": body,
-            # The stub's filePath, contained — NOT a re-derivation. Recomputing it
-            # here is what made the enriched ticket disagree with the stub it came
-            # from about where its own file is.
-            "filePath": _contained(project, stub.id, stub.filePath),
-            "raw": new_raw,
-        }
-    )
