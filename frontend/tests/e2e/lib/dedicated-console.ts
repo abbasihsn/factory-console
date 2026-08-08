@@ -23,6 +23,15 @@ import { fileURLToPath } from 'node:url';
 // (never the developer's real ~/.factory-console/console.db), removed in `dispose`
 // alongside its fixture copy.
 //
+// `start` also accepts a CALLER-OWNED project directory and/or db path
+// (`ConsoleOptions`), which is what makes a two-BOOT test possible: T111's
+// precedence rule — the pinned PATH is the SESSION's INITIAL selection — is only
+// observable across two consoles sharing ONE registry db, because the session pin
+// is re-seeded at every process start regardless of what the previous session
+// persisted. A directory the caller supplied is never removed by `dispose`: the
+// caller still owns it, and the second boot needs both it and the db to still be
+// there after the first console's process is gone.
+//
 // `registerProject` adds a SECOND project to an already-running dedicated console
 // through the live `POST /api/v1/projects` HTTP endpoint, authorized with the
 // console's own write token — never through a second CLI subcommand. `cli.py` is a
@@ -94,6 +103,31 @@ export interface RegisteredProject {
 }
 
 /**
+ * What a dedicated console should serve and store, when the DEFAULTS — a fresh
+ * fixture copy and a fresh temp db, both owned and reaped by the handle — are not
+ * what the test needs.
+ *
+ * Every field names a directory or file the CALLER owns: `start` neither creates
+ * nor removes it, so the same project and the same registry survive one console's
+ * `dispose` and can be handed to the next `start`. That is the only way to observe
+ * a rule about what happens at BOOT (see this module's header).
+ */
+export interface ConsoleOptions {
+	/**
+	 * Serve this existing directory instead of copying `fixtureName` into a private
+	 * temp dir. It becomes the console's PATH argument, so it is the pinned session
+	 * project — and it is not removed by `dispose`.
+	 */
+	readonly projectDir?: string;
+	/**
+	 * Use this existing `FACTORY_CONSOLE_DB_PATH` instead of a private temp one. The
+	 * file need not exist yet (the store creates it); its directory must. Not removed
+	 * by `dispose`.
+	 */
+	readonly dbPath?: string;
+}
+
+/**
  * A handle to a running dedicated console over a disposable fixture copy.
  * The owning test mutates the copy through `moveRunState` (it is the sole
  * writer) and MUST call `dispose` in `afterAll` to reap the child and every
@@ -102,7 +136,11 @@ export interface RegisteredProject {
 export interface DedicatedConsole {
 	/** Base URL of the dedicated console, e.g. `http://127.0.0.1:54321`. */
 	readonly baseURL: string;
-	/** The temp dir holding this run's private fixture copy. */
+	/**
+	 * The project directory this console was booted on (its PATH argument, and so
+	 * its pinned session project): this run's private fixture copy, or the
+	 * `ConsoleOptions.projectDir` the caller supplied and still owns.
+	 */
 	readonly tempDir: string;
 	/**
 	 * This session's write token, as announced on the console's stderr. Every
@@ -122,15 +160,18 @@ export interface DedicatedConsole {
 	moveRunState(id: string, from: string, to: string): void;
 	/**
 	 * SIGTERM→poll→SIGKILL the child, then remove every temp dir this handle
-	 * owns (its fixture copy, its private DB dir, and any `registerProject`
-	 * added). Idempotent.
+	 * owns (the fixture copy and private DB dir it created, plus any
+	 * `registerProject` added). A directory the CALLER supplied through
+	 * `ConsoleOptions` — or registered through `registerProjectDir` — is never
+	 * removed here; it outlives the console on purpose. Idempotent.
 	 */
 	dispose(): Promise<void>;
 }
 
-// Tracks the temp dirs a handle owns beyond its own `tempDir`/db dir (its DB dir
-// and any fixture copies `registerProject` creates), so `dispose` reaps all of
-// them without widening the public interface with an internal bookkeeping field.
+// Tracks the temp dirs a handle owns (the fixture copy and DB dir `start`
+// created, plus any fixture copies `registerProject` creates), so `dispose` reaps
+// all of them without widening the public interface with an internal bookkeeping
+// field. A caller-supplied directory is deliberately never entered here.
 const _ownedTempDirs = new WeakMap<DedicatedConsole, string[]>();
 
 // The console binary is `factory-console` (installed from the wheel in CI — the
@@ -224,26 +265,59 @@ async function awaitWriteToken(
 }
 
 /**
- * Boot a dedicated console against a fresh temp copy of `fixtureName` (default
- * `with_run_state`) and resolve once it has printed its base URL AND its write
- * token. On timeout, early exit, or spawn error, the child is killed and the
- * temp dir removed before rejecting with a descriptive message — a setup failure
- * never leaks a process or a temp dir.
+ * Copy the read-only fixture `fixtureName` into a fresh temp dir and return it.
+ *
+ * `recursive` carries both file- and directory-form run-state markers (CAD-140 is
+ * a bare directory with no `state` file), which is why the whole harness copies
+ * rather than symlinks.
+ *
+ * The COPY, not the fixture, is what a console is ever pointed at. Exported for a
+ * test that needs a project directory outliving any single console (see
+ * `ConsoleOptions`): whoever calls this owns the directory and must remove it.
  */
-export async function start(fixtureName: string = DEFAULT_FIXTURE): Promise<DedicatedConsole> {
+export function copyFixture(fixtureName: string): string {
 	const src = path.join(REPO_ROOT, 'tests', 'fixtures', 'projects', fixtureName);
-
-	// Copy the fixture into a private temp dir BEFORE spawning so the console
-	// only ever sees the copy. `recursive` carries both file- and directory-form
-	// run-state markers (CAD-140 is a bare directory with no `state` file).
 	const tempDir = mkdtempSync(path.join(tmpdir(), 'factory-console-e2e-'));
 	cpSync(src, tempDir, { recursive: true });
+	return tempDir;
+}
+
+/**
+ * Boot a dedicated console against a fresh temp copy of `fixtureName` (default
+ * `with_run_state`) and resolve once it has printed its base URL AND its write
+ * token. On timeout, early exit, or spawn error, the child is killed and every
+ * temp dir this call created is removed before rejecting with a descriptive
+ * message — a setup failure never leaks a process or a temp dir.
+ *
+ * `options` replaces either default with something the CALLER owns: pass
+ * `projectDir` to serve a directory that already exists (then `fixtureName` is
+ * unused), and/or `dbPath` to share one registry across boots. Neither is removed
+ * by `dispose`.
+ */
+export async function start(
+	fixtureName: string = DEFAULT_FIXTURE,
+	options: ConsoleOptions = {}
+): Promise<DedicatedConsole> {
+	// Everything this call creates for itself, and therefore everything `dispose`
+	// (or the failure path below) may remove. A caller-supplied path never lands
+	// here, so it survives the console it was lent to.
+	const ownedDirs: string[] = [];
+	const own = (dir: string): string => {
+		ownedDirs.push(dir);
+		return dir;
+	};
+
+	// The console only ever sees a copy — unless the caller supplied a directory
+	// it manages itself.
+	const tempDir = options.projectDir ?? own(copyFixture(fixtureName));
 
 	// A private temp dir for this console's OWN SQLite store, exactly like
 	// global-setup's shared boot — never the developer's real
 	// ~/.factory-console/console.db. Kept separate from `tempDir` (the fixture
 	// copy the console SERVES) so the two lifecycles don't collide on disk.
-	const dbDir = mkdtempSync(path.join(tmpdir(), 'factory-console-e2e-db-'));
+	const dbPath =
+		options.dbPath ??
+		path.join(own(mkdtempSync(path.join(tmpdir(), 'factory-console-e2e-db-'))), 'console.db');
 
 	// CRITICAL: cwd must be REPO_ROOT so a relative `PYTHONPATH=server` in the
 	// env resolves to `<repo>/server` during from-source verification — exactly
@@ -252,7 +326,7 @@ export async function start(fixtureName: string = DEFAULT_FIXTURE): Promise<Dedi
 	const { bin, args } = resolveLaunch(tempDir);
 	const child = spawn(bin, args, {
 		cwd: REPO_ROOT,
-		env: { ...process.env, FACTORY_CONSOLE_DB_PATH: path.join(dbDir, 'console.db') },
+		env: { ...process.env, FACTORY_CONSOLE_DB_PATH: dbPath },
 		stdio: ['ignore', 'pipe', 'pipe']
 	});
 
@@ -309,10 +383,11 @@ export async function start(fixtureName: string = DEFAULT_FIXTURE): Promise<Dedi
 		writeToken = await awaitWriteToken(() => stderr, describe);
 	} catch (err) {
 		// Setup failed: never leak the child (the timeout path leaves it running)
-		// or either temp dir. Both cleanups swallow their own errors.
+		// or a temp dir this call created. Cleanup swallows its own errors.
 		await killChild(child).catch(() => {});
-		rmSync(tempDir, { recursive: true, force: true });
-		rmSync(dbDir, { recursive: true, force: true });
+		for (const owned of ownedDirs) {
+			rmSync(owned, { recursive: true, force: true });
+		}
 		throw err;
 	}
 
@@ -325,16 +400,14 @@ export async function start(fixtureName: string = DEFAULT_FIXTURE): Promise<Dedi
 
 	// Robust to a partial/failed start (temp dir without a live child, or vice
 	// versa) and to being called more than once: always attempts the child kill
-	// and EVERY owned temp dir's removal (this console's own two, plus any
+	// and EVERY owned temp dir's removal (whatever this call created, plus any
 	// `registerProject` added), swallowing ESRCH and missing-path errors.
 	const dispose = async (): Promise<void> => {
 		try {
 			await killChild(child);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
-			rmSync(dbDir, { recursive: true, force: true });
-			for (const extra of _ownedTempDirs.get(handle) ?? []) {
-				rmSync(extra, { recursive: true, force: true });
+			for (const owned of _ownedTempDirs.get(handle) ?? []) {
+				rmSync(owned, { recursive: true, force: true });
 			}
 		}
 	};
@@ -347,7 +420,7 @@ export async function start(fixtureName: string = DEFAULT_FIXTURE): Promise<Dedi
 		moveRunState,
 		dispose
 	};
-	_ownedTempDirs.set(handle, []);
+	_ownedTempDirs.set(handle, ownedDirs);
 	return handle;
 }
 
@@ -359,48 +432,63 @@ export async function start(fixtureName: string = DEFAULT_FIXTURE): Promise<Dedi
 const CONNECT_RETRY_TIMEOUT_MS = 5_000;
 const CONNECT_RETRY_INTERVAL_MS = 50;
 
-async function fetchWithConnectRetry(url: string, init: RequestInit): Promise<Response> {
+// True for the specific "server socket isn't bound yet" rejection `fetch` raises
+// as `ECONNREFUSED`, never for a request that reached the server (a 4xx/5xx is a
+// resolved Response, not a rejection) — so a write that the server already
+// accepted is never mistaken for one that never arrived and retried into a
+// spurious duplicate.
+function isConnectRefused(err: unknown): boolean {
+	return (err as { cause?: NodeJS.ErrnoException })?.cause?.code === 'ECONNREFUSED';
+}
+
+/**
+ * `fetch`, retrying only the CONNECT failure a freshly-booted console can still
+ * answer with, to a short deadline. Exported because the race is a property of
+ * the console's boot line — printed before the socket is bound — not of this
+ * module: any test that talks to a dedicated console's API directly hits it on
+ * its first request, and a second hand-rolled retry loop would be the same rule
+ * with two spellings.
+ */
+export async function fetchWithConnectRetry(
+	url: string,
+	init: RequestInit = {}
+): Promise<Response> {
 	const deadline = Date.now() + CONNECT_RETRY_TIMEOUT_MS;
 	for (;;) {
 		try {
 			return await fetch(url, init);
 		} catch (err) {
-			if (Date.now() >= deadline) throw err;
+			if (!isConnectRefused(err) || Date.now() >= deadline) throw err;
 			await sleep(CONNECT_RETRY_INTERVAL_MS);
 		}
 	}
 }
 
 /**
- * Register a SECOND project on an already-running `handle`: copy `fixtureName`
- * into its own private temp dir (so it never shares the fixture copy `start`
- * made) and `POST` it to `/api/v1/projects`, authorized with `handle`'s write
- * token. Appends the new row to `handle.projects` and returns it.
+ * `POST` an ALREADY-EXISTING absolute `projectDir` to `handle`'s
+ * `/api/v1/projects`, authorized with its write token. Appends the new row to
+ * `handle.projects` and returns it.
  *
- * The new temp dir is owned by `handle` from this call onward — `dispose` reaps
- * it exactly as it reaps `handle.tempDir`, so a multi-project spec still leaks
- * nothing.
+ * The registry mutation itself, with no opinion about where the directory came
+ * from or who reaps it — so a caller with its own longer-lived project directory
+ * (see `ConsoleOptions`) registers it exactly the way `registerProject` registers
+ * a fixture copy, rather than re-deriving the POST.
  */
-export async function registerProject(
+export async function registerProjectDir(
 	handle: DedicatedConsole,
-	fixtureName: string
+	projectDir: string
 ): Promise<RegisteredProject> {
-	const src = path.join(REPO_ROOT, 'tests', 'fixtures', 'projects', fixtureName);
-	const tempDir = mkdtempSync(path.join(tmpdir(), 'factory-console-e2e-'));
-	cpSync(src, tempDir, { recursive: true });
-	_ownedTempDirs.get(handle)?.push(tempDir);
-
 	const response = await fetchWithConnectRetry(`${handle.baseURL}/api/v1/projects`, {
 		method: 'POST',
 		headers: {
 			'Content-Type': 'application/json',
 			'X-Factory-Write-Token': handle.writeToken
 		},
-		body: JSON.stringify({ path: tempDir })
+		body: JSON.stringify({ path: projectDir })
 	});
 	if (!response.ok) {
 		throw new Error(
-			`registerProject(${fixtureName}): POST /api/v1/projects → ${response.status}: ` +
+			`registerProjectDir(${projectDir}): POST /api/v1/projects → ${response.status}: ` +
 				(await response.text())
 		);
 	}
@@ -409,6 +497,24 @@ export async function registerProject(
 	const project: RegisteredProject = { id: row.id, name: row.name, path: row.path };
 	handle.projects.push(project);
 	return project;
+}
+
+/**
+ * Register a SECOND project on an already-running `handle`: copy `fixtureName`
+ * into its own private temp dir (so it never shares the fixture copy `start`
+ * made) and register that copy.
+ *
+ * The new temp dir is owned by `handle` from this call onward — `dispose` reaps
+ * it exactly as it reaps the fixture copy `start` created, so a multi-project
+ * spec still leaks nothing.
+ */
+export async function registerProject(
+	handle: DedicatedConsole,
+	fixtureName: string
+): Promise<RegisteredProject> {
+	const tempDir = copyFixture(fixtureName);
+	_ownedTempDirs.get(handle)?.push(tempDir);
+	return registerProjectDir(handle, tempDir);
 }
 
 /**
