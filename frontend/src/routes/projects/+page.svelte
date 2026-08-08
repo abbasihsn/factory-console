@@ -10,6 +10,7 @@
 	} from '$lib/api';
 	import { normalizeError, type ApiError } from '$lib/api/contracts';
 	import { CONDITION_TITLE } from '$lib/projects/conditionTitle';
+	import AddProjectForm from '$lib/components/AddProjectForm.svelte';
 	import ApiErrorView from '$lib/components/ApiErrorView.svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import WriteTokenPrompt from '$lib/components/WriteTokenPrompt.svelte';
@@ -292,6 +293,12 @@
 		/>
 	{/if}
 
+	<!-- Above the table and outside the empty/non-empty branch below: registering is
+	     how an empty registry stops being empty, so the form is what that panel points
+	     at. `invalidateAll` re-runs `+page.ts`, which is where the new row — and the
+	     switcher's new entry — come from; nothing is patched in here. -->
+	<AddProjectForm onAdded={() => void invalidateAll()} />
+
 	{#if data.projects.length === 0}
 		<!-- A NAMED state, not a blank table: an empty registry and a registry that
 		     could not be read look nothing alike to the loader, and the user needs to
@@ -300,7 +307,7 @@
 			data-testid="empty-registry"
 			class="rounded-lg border border-slate-200 bg-surface px-4 py-6 text-center text-muted"
 		>
-			No project is registered yet.
+			No project is registered yet. Register one above to get started.
 		</p>
 	{:else}
 		<p class="text-sm text-muted">
