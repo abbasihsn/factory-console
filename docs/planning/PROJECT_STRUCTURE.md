@@ -78,6 +78,11 @@ factory-console/
 │       ├── store/                         # the console's OWN writable DB (v3 — outside every project)
 │       │   ├── __init__.py                # docstring-only, re-export-free                        (T104)
 │       │   ├── location.py                # ConsoleStoreSettings + resolve_db_path + ensure_store_dir (T104)
+│       │   ├── schema.py                  # connect() + user_version migration chain              (T105)
+│       │   ├── paths.py                   # canonical_project_path + default_project_name          (T106)
+│       │   ├── registry_protocol.py       # ProjectRegistry Protocol + its errors                  (T106)
+│       │   ├── fake_registry.py           # FakeProjectRegistry                                    (T107)
+│       │   ├── sqlite_registry.py         # SqliteProjectRegistry                                  (T108)
 │       │   └── entries.py                 # resolve_entries — rows × probe → RegistryEntry[]      (T110)
 │       └── _static/                       # BUILT SPA copied here at package time (gitignored)
 │

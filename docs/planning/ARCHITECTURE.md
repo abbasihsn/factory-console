@@ -439,8 +439,9 @@ factory-console [PATH] [--port N] [--host 127.0.0.1] [--no-browser] [--log-level
 forward-looking.** The change was, and remains, **additive**: a console-owned store and new ports
 around the existing domain — no domain rewrite. Every read still flows through the source-agnostic
 domain (`Project` / `Ticket` / `RunState` / `DepNeighborhood`). Each entry below is marked **SHIPPED
-(v3.0)** or **PLANNED (v3.1+)**; the shipped ones are contract, the planned ones are still elaborated
-into tickets just-in-time via `/factory-plan-milestone`.
+(v3.0)** or **PLANNED**, with the target version where one is already known; the shipped ones are
+contract, the planned ones are still elaborated into tickets just-in-time via
+`/factory-plan-milestone`.
 
 **What v3.0 did NOT do** — stated first, because the rest of this section was written as one
 undifferentiated plan and reads as if it might have:
@@ -493,13 +494,13 @@ per-ticket record.
   (HttpOnly, Secure, SameSite). Required for `serve` mode; the local viewer mode stays auth-free
   (loopback trust). **Not in v3.0** — the write token remains the only write credential, and it now
   also gates the three registry mutations.
-- **Access / deploy (PLANNED):** **Tailscale-first** — the console binds to a private tailnet, reachable from the
+- **Access / deploy (PLANNED, v3.1):** **Tailscale-first** — the console binds to a private tailnet, reachable from the
   user's phone + laptop with no public exposure, no TLS/proxy, and no login-hardening burden.
   **Public-with-TLS** (reverse proxy + Let's Encrypt + hardened login) is a later *deploy-time* option
   — **no app code change**; the bind host is configuration.
 - **GitHubAdapter (PLANNED, v3.0.1, read-only):** per-project PR status + links via **guard-scoped `gh`** (respects
   the dual-account pin). A new port alongside `FileAdapter`; read-only, never mutates GitHub.
-- **Open-Claude launcher (LATER / optional — pending mechanism confirmation):** a per-project action
+- **Open-Claude launcher (PLANNED, later — pending mechanism confirmation):** a per-project action
   that spawns `claude` in the project directory (tmux-wrapped for persistence). Interactive control
   happens through Claude Code's **own** remote control from the user's device — **not** a web PTY, so
   the console never exposes a shell. This is the console's only privileged write. Requires confirming
