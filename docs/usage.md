@@ -157,7 +157,7 @@ boot that never opens the browser UI and calls no registry endpoint at all — a
 script driving the API directly — leaves no `~/.factory-console/` behind.
 
 **Opening the browser UI now does create it.** The header's project dropdown (see
-["Multiple projects"](#multiple-projects) below) reads the registry on every page, so the
+["Projects"](#projects) below) reads the registry on every page, so the
 first `GET /api/v1/projects` that load fires — same as the first `POST` from a
 headless caller — is what creates the store. A throwaway clone visited only through the
 API, never through the browser, still leaves no trace; a Playwright run or any other
@@ -168,55 +168,6 @@ Deleting it is safe and is the supported reset: stop the console and
 `rm -rf ~/.factory-console` (or the directory your override points at). All you lose is
 the list of registered projects — no ticket, run-state or roadmap data is in there — and
 the next registry call recreates the store empty.
-
-## Multiple projects
-
-v3.0 lays the backend groundwork for multiple projects. The header's project dropdown is
-live today — every route offers it once two or more projects are registered, and it
-switches which project the whole shell reads from. Its **Add this project** button and
-the no-selection prompt are not part of this release and arrive with a later version.
-Also live is the `/api/v1/projects` endpoint family behind the dropdown: `POST` registers
-a directory, `GET` lists the session row plus every registered one (each with its
-`condition`), `PUT /current` switches which project every page reads from (live-update
-stream included, registering never switches, and switching never unregisters), and
-`DELETE /{id}` unregisters a row.
-
-The project you launch on is a **session** project: it is served for as long as the
-process lives and is deliberately **not** written to the console store on its own. But
-opening the browser UI over that clone is not trace-free either, because the dropdown's
-own registry read creates the store the first time it runs (see
-["The console store"](#the-console-store) above) — only driving the API directly,
-without ever loading the browser UI, stays trace-free.
-
-### Managing the registry
-
-The dropdown's trailing **Manage projects…** entry, and a **Projects** link in the header
-nav, both open `/projects` — a form to **register** a project by its path on the server's
-disk, above every row the console tracks, with its probed `condition`, whether it is
-`Select`ed, and whether it can be `Remove`d. The form validates only that the path box is
-not empty; the server decides whether the path is well-formed (`invalid_project_path`),
-resolves to an App Factory project (`project_not_found`), and is not already tracked
-(`duplicate_project_path`), surfacing whichever refusal fires verbatim. All three writes
-need the same write token as every other write in the console:
-acting on a row (or registering one) before a token is held raises the same token prompt
-as elsewhere, and a rejected token is dropped and re-asked for exactly as it is on the
-ticket routes. `Remove` only forgets the row in this console's own registry — nothing on
-the project's own disk is touched, and it can be added again later.
-A row cannot be removed while it is the one selected, or while it is the reserved
-session project (the one passed on the command line, which was never added to the
-registry in the first place); either case disables the button and states why. A row
-whose condition is not `ok` cannot be selected onto, for the same reason: the server would
-accept the switch, but every other page would then be reading a project it cannot serve.
-
-A degraded row's condition also surfaces as a banner under the top bar, on whichever
-route the console is currently showing — naming what went wrong (its path moved, stopped
-being a factory project, or became unreadable) or, for the merely informational
-`no_factory_dir` case, that nothing is actually wrong.
-
-Starting the console **without** a project directory is not available yet: without a
-`PATH` (and with no App Factory project above the current directory) the CLI still exits
-`1`, even when the store holds registered projects. The pathless long-running mode,
-`factory-console serve`, arrives in a later version.
 
 ## Exit codes
 
@@ -229,10 +180,86 @@ Starting the console **without** a project directory is not available yet: witho
 
 ## What you'll see
 
-Every page shares a header with a **Factory Console** label, the served project
-path, a navigation cluster (**Home / Graph / Roadmap / Spend / Runs** links plus a
+Every page shares a header with a **Factory Console** label, a **project switcher**
+(present once the console tracks two or more projects), the served project path, a
+navigation cluster (**Home / Graph / Roadmap / Spend / Runs / Projects** links plus a
 **global search box**), and a **Reload** button. A **live-update indicator** pill sits just
 below the header on the right.
+
+### Projects
+
+The console tracks a **registry** of projects and serves exactly one of them at a time.
+The header's project dropdown appears once two or more are tracked, and switching it
+changes which project the whole shell reads from — list, search, graph, roadmap, runs,
+spend and the live-update stream all follow the selection. Below two projects the dropdown
+renders nothing at all, so a console with a single project looks exactly as it did before
+this existed. Behind it is the `/api/v1/projects` endpoint family: `POST` registers a
+directory, `GET` lists the session row plus every registered one (each with its
+`condition`), `PUT /current` switches which project every page reads from (live-update
+stream included, registering never switches, and switching never unregisters), and
+`DELETE /{id}` unregisters a row.
+
+**`factory-console PATH` still works exactly as it did before v3.0** — same argument, same
+exit codes, same startup line — and simply selects that project for the session. The
+project you launch on is a **session** project: it is served for as long as the process
+lives, it is the selection the session starts on regardless of what a previous session
+switched to, and it is deliberately **not** written to the console store on its own. But
+opening the browser UI over that clone is not trace-free either, because the dropdown's
+own registry read creates the store the first time it runs (see
+["The console store"](#the-console-store) above) — only driving the API directly,
+without ever loading the browser UI, stays trace-free.
+
+Where a switch lands depends on what the current URL names. A URL that names a **view** —
+`/`, `/search`, `/graph`, `/roadmap`, `/spend`, `/runs`, `/tickets/new` — describes the new
+project as well as it described the old one, so the page stays put and re-reads. A URL that
+embeds a **ticket id** (`/tickets/<id>` and its `/deps`) goes home to `/` instead: an id is
+a fact about one project's manifest, and carrying it across would deep-link into a ticket
+the new project most likely does not have. Only a *switch* is redirected — a hand-typed
+deep link into a missing ticket still renders the ordinary "not found" panel.
+
+Multiple projects is **not** multiple users. Starting the console **without** a project
+directory is not available yet: without a `PATH` (and with no App Factory project above the
+current directory) the CLI still exits `1`, even when the store holds registered projects.
+The pathless long-running mode, `factory-console serve`, arrives in a later version, and
+remote access is out of scope for v3.0 too — the console still binds to loopback only, and
+the write token is still per-session and shared by whoever can reach it.
+
+#### Managing the registry
+
+The dropdown's trailing **Manage projects…** entry, and the **Projects** link in the header
+nav, both open `/projects` — a form to **register** a project by its path on the server's
+disk (with an optional name, defaulting to the directory's own), above every row the
+console tracks, with its probed `condition`, whether it is `Select`ed, and whether it can
+be `Remove`d. The form validates only that the path box is not empty; the server decides
+whether the path is well-formed (`invalid_project_path`), resolves to an App Factory
+project (`project_not_found`), and is not already tracked (`duplicate_project_path`),
+surfacing whichever refusal fires verbatim. All three writes
+need the same write token as every other write in the console:
+acting on a row (or registering one) before a token is held raises the same token prompt
+as elsewhere, and a rejected token is dropped and re-asked for exactly as it is on the
+ticket routes. `Remove` asks for confirmation and then only forgets the row in this
+console's own registry — nothing on the project's own disk is touched, and it can be added
+again later.
+A row cannot be removed while it is the one selected, or while it is the reserved
+session project (the one passed on the command line, which was never added to the
+registry in the first place); either case disables the button and states why. A row
+whose condition is not `ok` cannot be selected onto, for the same reason: the server would
+accept the switch, but every other page would then be reading a project it cannot serve.
+Such a row stays **listed** — in the table and in the dropdown, where it is labelled
+`(unavailable)` and cannot be chosen — rather than quietly disappearing.
+
+The conditions are named, and they do not mean the same thing. Most degraded first — which
+is also the order they win in when more than one applies: `unreadable` (the path is there
+and could not be read at all, a permissions or I/O problem, so nothing about its contents
+is claimed), `path_missing` (nothing exists at the registered path any more — it was moved,
+renamed or deleted), `not_a_project` (the path exists and is readable, and holds no
+`docs/planning/tickets.json`, so it is not an App Factory project), and `no_factory_dir` (a
+real, browsable project with no `.factory/` directory on **this machine** — its plan,
+tickets and roadmap read normally, and only run-state, runs and spend are legitimately
+unknown, which is the ordinary state of a fresh clone). A degraded row's condition also
+surfaces as a banner under the top bar, on
+whichever route the console is currently showing, naming what went wrong and its remedy —
+or, for `no_factory_dir`, that nothing actually is wrong.
 
 ### Ticket list, detail, and deps
 
@@ -386,7 +413,8 @@ the app degrades gracefully to the manual **Reload** button.
 ### Screenshots
 
 Captured from the real UI by the Playwright screenshots pipeline against the
-`with_run_state` fixture — see the ["Screenshots"](../README.md#screenshots)
+`with_run_state` fixture — and, for the two multi-project shots, a second console
+tracking both it and the `minimal` fixture — see the ["Screenshots"](../README.md#screenshots)
 section of the root README to regenerate them. The editing flow (create/edit +
 diff-preview) isn't captured yet; adding it means extending the same pipeline with a
 `/tickets/new` (or edit) capture, not a new mechanism.
@@ -414,6 +442,14 @@ _The `/graph` dependency DAG, nodes colored by factory run-state._
 ![Roadmap](screenshots/roadmap.png)
 
 _The `/roadmap` milestone view rendered from the project's `ROADMAP.md`._
+
+![Project switcher](screenshots/switcher.png)
+
+_The header's project switcher, over a console tracking two projects._
+
+![Project registry](screenshots/projects.png)
+
+_The `/projects` registry table, listing both tracked projects with their conditions._
 
 ![Live-update indicator](screenshots/live.png)
 
