@@ -1,5 +1,6 @@
 import path from 'node:path';
-import { renameSync, rmSync } from 'node:fs';
+import { mkdtempSync, renameSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { test, expect } from '@playwright/test';
 import { copyFixture, start, registerProjectDir, type DedicatedConsole } from './lib/dedicated-console';
@@ -159,12 +160,16 @@ test('screenshots: capture the graph, roadmap, search, and live-update PNGs', as
 //
 // `copyFixture`'s own temp dir is named `factory-console-e2e-<random>` — fine for
 // every other spec, which never shows the basename to a human, but here it IS
-// the row name a screenshot documents. Renaming the copy to the fixture's own
-// name (its parent stays the random mkdtemp dir; only the FINAL component,
-// which `default_project_name` reads, changes) makes the captions true and
-// stops every regen from rewriting both PNGs over a name nobody chose.
+// the row name a screenshot documents. `default_project_name` reads a project's
+// FINAL path component, so moving the copy into a fresh, uniquely-mkdtemp'd
+// parent under a stable, meaningful basename (`with_run_state`, `minimal`)
+// makes the captions true and stops every regen from rewriting both PNGs over
+// a name nobody chose — while the fresh parent (not a fixed, shared path) keeps
+// two runs, or a run and a stale directory a prior run left behind, from ever
+// colliding on the same path.
 function withStableName(dir: string, name: string): string {
-	const stable = path.join(path.dirname(dir), name);
+	const parent = mkdtempSync(path.join(tmpdir(), 'factory-console-e2e-named-'));
+	const stable = path.join(parent, name);
 	renameSync(dir, stable);
 	return stable;
 }
@@ -189,9 +194,12 @@ test.describe('screenshots: the multi-project console', () => {
 	test.afterAll(async () => {
 		// `dispose` reaps the child and its private registry db, but neither fixture
 		// copy — both are caller-owned (see `beforeAll`) — so this block removes them.
+		// Each removes its `withStableName` PARENT, not just the renamed copy: the
+		// parent is a fresh mkdtemp dir holding nothing else, so this leaves no
+		// leftover empty directory behind either.
 		await dedicated?.dispose();
-		if (sessionDir) rmSync(sessionDir, { recursive: true, force: true });
-		if (registeredDir) rmSync(registeredDir, { recursive: true, force: true });
+		if (sessionDir) rmSync(path.dirname(sessionDir), { recursive: true, force: true });
+		if (registeredDir) rmSync(path.dirname(registeredDir), { recursive: true, force: true });
 	});
 
 	test('screenshots: capture the project switcher and the /projects registry PNGs', async ({
