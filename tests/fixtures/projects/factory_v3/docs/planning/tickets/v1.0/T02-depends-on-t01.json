@@ -1,0 +1,13 @@
+{
+  "id": "T02",
+  "context": "Builds the first real capability on top of T01's foundation, in the same sub-version so both land on one branch.",
+  "approach": "1. Extend `build()` with the capability hook.\n2. Add the handler.\n3. Cover both in tests.",
+  "critical_files": [
+    "src/foundation/entry.py",
+    "src/capability/handler.py"
+  ],
+  "interface_data": "Adds `Capability` to the public surface. Shares `src/foundation/entry.py` with T01, which is why the overlap filter must see this list.",
+  "verification": {
+    "commands": ["pytest tests/capability -q", "ruff check src"]
+  }
+}

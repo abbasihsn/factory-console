@@ -1,28 +1,47 @@
-"""Unit tests for :mod:`factory_console.file_adapter.ticket_md`.
+"""Unit tests for reading a MARKDOWN ticket, end to end through the dispatcher.
 
 Cover front-matter splitting (present / absent / empty / malformed / non-mapping),
 the defense-in-depth path guards (pattern-invalid id, slash id, symlink escaping
 root), the missing-file case, ``enrich_ticket``'s merge semantics, and the error
 transport contract (codes/statuses + no filesystem-path leak in ``details``).
 All I/O is confined to ``tmp_path`` so the suite is deterministic and hermetic.
+
+The behaviours under test now live in three modules — ``ticket_md`` owns the
+front-matter split, ``path_safety`` owns the guards, ``ticket_content`` owns the
+dispatch and the enrich — and these tests deliberately keep entering through
+``read_ticket_body``, the composed path a request actually takes. Testing each
+module through its own front door would leave the composition itself uncovered,
+which is where a refactor of this shape does its damage. ``test_ticket_json.py``
+is the JSON half of the same contract.
 """
 
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
 from factory_console.domain import Project, Ticket
 from factory_console.errors import to_error_response
-from factory_console.file_adapter.ticket_md import (
-    PathTraversal,
-    TicketFileMissing,
-    TicketFileUnreadable,
-    enrich_ticket,
-    read_ticket_md,
-)
+from factory_console.file_adapter.path_safety import PathTraversal
+from factory_console.file_adapter.ticket_content import enrich_ticket, read_ticket_body
+from factory_console.file_adapter.ticket_md import TicketFileMissing, TicketFileUnreadable
+
+
+def read_ticket_md(project: Project, ticket_id: str) -> tuple[dict[str, Any], str]:
+    """``(front_matter, body)`` for a Markdown ticket, via the format dispatcher.
+
+    The shape the old module-level ``read_ticket_md`` returned, preserved here so the
+    assertions below still read as statements about Markdown tickets rather than about
+    a tuple-vs-NamedTuple change. ``TicketBody.critical_files`` is asserted separately —
+    it is ``None`` for this format, which is the fact that keeps a Markdown ticket's
+    manifest-declared ``files`` from being erased by a format that has no such field.
+    """
+    body = read_ticket_body(project, ticket_id)
+    assert body.critical_files is None, "a Markdown ticket declares no critical_files"
+    return body.front_matter, body.markdown
 
 
 def _make_project(tmp_path: Path) -> Project:

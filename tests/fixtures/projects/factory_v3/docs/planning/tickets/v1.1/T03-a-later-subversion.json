@@ -1,0 +1,10 @@
+{
+  "id": "T03",
+  "context": "The view over what v1.0 built. Deliberately in a LATER sub-version, so it is cut off the new main after v1.0 merges.",
+  "approach": "1. Add the route.\n2. Render the capability.\n3. Snapshot-test the output.",
+  "critical_files": ["src/view/routes.py"],
+  "interface_data": "N/A",
+  "verification": {
+    "commands": ["pytest tests/view -q"]
+  }
+}

@@ -3,12 +3,14 @@
 This is the adapter the CLI wires up. It *composes* the small, single-purpose
 file-adapter modules — :mod:`~factory_console.file_adapter.discovery`,
 :mod:`~factory_console.file_adapter.manifest`,
-:mod:`~factory_console.file_adapter.ticket_md`,
+:mod:`~factory_console.file_adapter.ticket_content`,
 :mod:`~factory_console.file_adapter.markdown_render`, and
 :mod:`~factory_console.file_adapter.run_state` — into the eight-method read-only
 :class:`~factory_console.file_adapter.protocol.FileAdapter` port, rather than
-re-implementing manifest parsing, ``.md`` reading, rendering, or run-state
-probing here.
+re-implementing manifest parsing, ticket reading, rendering, or run-state
+probing here. It does not know which ticket content FORMAT a project uses:
+``ticket_content`` dispatches between App Factory v3's JSON and the Markdown
+form, and hands back Markdown either way.
 
 The adapter is *stateless*: ``RealFileAdapter()`` takes no arguments and stores
 no project data, so every method re-reads the target filesystem — no cache, no
@@ -56,12 +58,13 @@ from factory_console.file_adapter.run_state import (
     run_state_resolver,
 )
 from factory_console.file_adapter.search import rank_tickets, to_search_hits
-from factory_console.file_adapter.ticket_md import (
-    TicketFileMissing,
-    TicketFileUnreadable,
+from factory_console.file_adapter.ticket_content import (
+    TicketFormatUnsupported,
     enrich_ticket,
-    read_ticket_md,
+    read_ticket_body,
 )
+from factory_console.file_adapter.ticket_json import TicketInvalid
+from factory_console.file_adapter.ticket_md import TicketFileMissing, TicketFileUnreadable
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -157,16 +160,16 @@ class RealFileAdapter:
     def get_ticket(self, project: Project, ticket_id: str) -> Ticket | None:
         """Return the full :class:`Ticket` for ``ticket_id``, or ``None`` if absent.
 
-        Looks the id up in the manifest WITHOUT touching the ticket ``.md`` files;
+        Looks the id up in the manifest WITHOUT touching the ticket content files;
         an id absent from the manifest returns ``None``. A present id is enriched
         with its on-disk body via
-        :func:`~factory_console.file_adapter.ticket_md.enrich_ticket` and rendered
-        to ``bodyHtml`` via
-        :func:`~factory_console.file_adapter.markdown_render.render_ticket_html`,
+        :func:`~factory_console.file_adapter.ticket_content.enrich_ticket` — which
+        reads whichever format the manifest points at — and rendered to ``bodyHtml``
+        via :func:`~factory_console.file_adapter.markdown_render.render_ticket_html`,
         yielding a full :class:`Ticket` with ``bodyMarkdown``, ``bodyHtml``, and
-        ``raw['frontMatter']``. A missing ``.md`` or unsafe id surfaces as
-        ``TicketFileMissing`` / ``PathTraversal`` (a real 404/400, not ``None``)
-        and propagates.
+        ``raw['frontMatter']``. A missing file, an unsafe id, or a v3 ticket that
+        fails schema validation surfaces as ``TicketFileMissing`` / ``PathTraversal``
+        / ``TicketInvalid`` (a real 404/400/500, not ``None``) and propagates.
         """
         stub = next(
             (stub for stub in iter_ticket_stubs(project) if stub.id == ticket_id),
@@ -245,7 +248,7 @@ class RealFileAdapter:
         Raises :class:`RoadmapUnreadable` when the discovered file cannot be read
         as UTF-8 (non-UTF-8 bytes, a permission-denied read, or a file that
         vanished after discovery), so the failure surfaces as a mapped envelope
-        instead of an unmapped 500 — the same read guard ``read_ticket_md`` and
+        instead of an unmapped 500 — the same read guard ``read_ticket_md_text`` and
         ``load_manifest`` use.
         """
         if project.roadmapPath is None:
@@ -270,7 +273,7 @@ class RealFileAdapter:
         :class:`~factory_console.file_adapter.projection.TicketProjection` the
         list view uses (so each hit's summary carries the identical run-state and
         edge counts), then enriches EACH stub with its on-disk body TOLERANTLY:
-        :func:`~factory_console.file_adapter.ticket_md.read_ticket_md`'s
+        :func:`~factory_console.file_adapter.ticket_md.read_ticket_md_text`'s
         ``TicketFileMissing`` / ``TicketFileUnreadable`` / ``PathTraversal`` fall
         back to an empty body so one bad ``.md`` degrades to an id/title/provides
         match rather than failing the whole scan. Ranking is delegated to the pure
@@ -315,7 +318,7 @@ class RealFileAdapter:
 
     @staticmethod
     def _safe_body(project: Project, stub: Ticket) -> str:
-        """Read ``stub``'s ``.md`` body, degrading a bad ``.md`` to ``""``.
+        """Read ``stub``'s body in whatever format it is, degrading a bad one to ``""``.
 
         Takes the STUB, not the bare id, so the read goes to the file the manifest
         declared (``stub.filePath``) exactly as :meth:`get_ticket` does through
@@ -325,25 +328,33 @@ class RealFileAdapter:
         ``debug`` below, and full-text search matched NOTHING project-wide while
         still answering ``200`` with id/title/``provides`` hits.
 
-        A missing file, an unreadable file, or an unsafe id
-        (``TicketFileMissing`` / ``TicketFileUnreadable`` / ``PathTraversal``)
-        yields an empty body so a single broken ticket ``.md`` never fails the
-        whole search scan — the ticket can still match on id/title/``provides``.
+        Every mapped failure the reader can raise yields an empty body, so a single
+        broken ticket never fails the whole search scan — the ticket can still match
+        on id/title/``provides``. The list is caught EXPLICITLY rather than as a bare
+        ``FactoryConsoleError``: a reader that learns to raise a new class should have
+        to state here whether search survives it, because the alternative is a future
+        failure silently joining a tolerance nobody chose for it.
 
-        The tolerance is observable, not silent: a legitimately absent ``.md``
-        (``TicketFileMissing``) is the routine case and logs at ``debug``, while
-        an *unreadable* file (a data/permission problem) or a tripped
-        ``PathTraversal`` guard (a manifest id resolving outside the project root)
-        logs at ``warning`` — so a corrupt file or a security-relevant bad id
-        leaves a trace instead of a silently dropped body match.
+        The tolerance is observable, not silent: a legitimately absent file
+        (``TicketFileMissing``) is the routine case and logs at ``debug``, while an
+        unreadable file, a v3 ticket that fails validation (``TicketInvalid``), a
+        format with no reader (``TicketFormatUnsupported``), or a tripped
+        ``PathTraversal`` guard logs at ``warning`` — so a corrupt file or a
+        security-relevant bad id leaves a trace instead of a silently dropped body
+        match. That a malformed v3 ticket is a hard 500 on the DETAIL path and a
+        warning here is deliberate: one request is "show me this ticket" and must not
+        answer with a blank page, the other is "search everything" and must not fail
+        entirely because one file is broken.
         """
         ticket_id = stub.id
         try:
-            _front_matter, body = read_ticket_md(project, ticket_id, stub.filePath)
+            return read_ticket_body(project, ticket_id, stub.filePath, stub.raw).markdown
         except TicketFileMissing:
-            _LOGGER.debug("search: ticket %s has no .md; scanning with empty body", ticket_id)
+            _LOGGER.debug(
+                "search: ticket %s has no content file; scanning with empty body", ticket_id
+            )
             return ""
-        except (TicketFileUnreadable, PathTraversal) as exc:
+        except (TicketFileUnreadable, TicketInvalid, TicketFormatUnsupported, PathTraversal) as exc:
             _LOGGER.warning(
                 "search: could not read body for ticket %s (%s); scanning with empty body",
                 ticket_id,
@@ -351,7 +362,6 @@ class RealFileAdapter:
                 extra={"ticket_id": ticket_id},
             )
             return ""
-        return body
 
     @staticmethod
     def _find_roadmap(root: Path) -> Path | None:

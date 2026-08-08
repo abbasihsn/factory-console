@@ -1093,14 +1093,23 @@ def test_traversal_ticket_id_is_refused(tmp_path: Path, bad_id: str) -> None:
 
 
 def test_path_traversal_uses_the_uniform_invalid_ticket_id_contract() -> None:
-    # run_state and ticket_md must raise the SAME PathTraversal with the uniform
-    # ``invalid_ticket_id`` code (per ARCHITECTURE.md), not two divergent classes.
-    from factory_console.file_adapter.ticket_md import PathTraversal as TicketMdPathTraversal
+    # Every module that turns a ticket id into a path must raise the SAME
+    # PathTraversal with the uniform ``invalid_ticket_id`` code (per
+    # ARCHITECTURE.md), not divergent classes one ``except`` at the edge would miss.
+    #
+    # This used to compare against ``ticket_md``'s re-export. The ticket-side
+    # resolver has since moved to ``path_safety`` — one derivation shared by both
+    # content formats and by the write path — so the comparison follows it to where
+    # the class is now raised from. Asserting identity against the module that merely
+    # re-exported it would have kept passing while testing nothing.
+    from factory_console.file_adapter.path_safety import PathTraversal as PathSafetyPathTraversal
+    from factory_console.file_adapter.write_render import PathTraversal as WriteRenderPathTraversal
 
     exc = PathTraversal("../etc/passwd")
     assert exc.code == "invalid_ticket_id"
     assert exc.status == 400
-    assert PathTraversal is TicketMdPathTraversal
+    assert PathTraversal is PathSafetyPathTraversal
+    assert PathTraversal is WriteRenderPathTraversal
 
 
 # --------------------------------------------------------------------------- #

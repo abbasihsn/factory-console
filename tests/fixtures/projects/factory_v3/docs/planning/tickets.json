@@ -1,0 +1,36 @@
+{
+  "project": "factory-v3-fixture",
+  "schemaVersion": 1,
+  "tickets": [
+    {
+      "id": "T01",
+      "title": "The base ticket everything depends on",
+      "track": "backend",
+      "milestone": "v1.0",
+      "depends_on": [],
+      "provides": "A foundation.",
+      "path": "docs/planning/tickets/v1.0/T01-the-base-ticket.json",
+      "status": "merged"
+    },
+    {
+      "id": "T02",
+      "title": "Depends on T01, in the same sub-version",
+      "track": "backend",
+      "milestone": "v1.0",
+      "depends_on": ["T01"],
+      "provides": "A thing built on the foundation.",
+      "path": "docs/planning/tickets/v1.0/T02-depends-on-t01.json",
+      "status": "in_progress"
+    },
+    {
+      "id": "T03",
+      "title": "Depends on both, in a LATER sub-version",
+      "track": "frontend",
+      "milestone": "v1.1",
+      "depends_on": ["T01", "T02"],
+      "provides": "The view.",
+      "path": "docs/planning/tickets/v1.1/T03-a-later-subversion.json",
+      "status": "todo"
+    }
+  ]
+}

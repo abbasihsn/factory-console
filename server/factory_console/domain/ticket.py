@@ -2,7 +2,7 @@
 
 :data:`TICKET_ID_PATTERN` is the SINGLE source of truth for ticket-id
 validation. It is enforced here at the Pydantic model boundary via
-:data:`TicketId` and imported verbatim by ``file_adapter/ticket_md.py`` and the
+:data:`TicketId` and imported verbatim by ``file_adapter/path_safety.py`` and the
 backend's path params so the constraint is defined in exactly one place.
 """
 
@@ -22,7 +22,8 @@ Allows letters, digits, ``_``, ``.`` and ``-`` only; because it excludes path
 separators (``/``, ``\\``) and whitespace it blocks the primary path-traversal
 vectors at the type layer. Note it does *not* by itself reject a bare ``.`` or
 ``..`` (dots are allowed characters) — the dot-dot traversal guard is
-defense-in-depth in ``file_adapter/ticket_md.py``'s ``_safe_resolve``, which
+defense-in-depth in ``file_adapter/path_safety.py``'s ``validate_ticket_id_as_segment``,
+which rejects them explicitly, and in ``resolve_ticket_path``, which
 resolves the id against the tickets directory and checks containment. Downstream
 imports this constant verbatim, so it must not be narrowed here.
 """

@@ -1,0 +1,14 @@
+{
+  "id": "T01",
+  "context": "The foundation every other ticket in v1.0 builds on. Nothing ships before it, so it carries no dependency of its own.",
+  "approach": "1. Create the package skeleton.\n2. Add the entry point.\n3. Wire the first smoke test.",
+  "critical_files": [
+    "src/foundation/__init__.py",
+    "src/foundation/entry.py"
+  ],
+  "interface_data": "Exports `build()`, which returns the configured root object. No persistence, no network.",
+  "verification": {
+    "commands": ["pytest tests/foundation -q"],
+    "notes": "Runs offline; no fixtures or services required."
+  }
+}
