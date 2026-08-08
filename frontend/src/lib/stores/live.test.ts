@@ -217,5 +217,142 @@ describe('createLiveStore', () => {
 		expect(() => live.start()).not.toThrow();
 		expect(get(live.status)).toBe('disconnected');
 		expect(() => live.stop()).not.toThrow();
+		expect(() => live.restart()).not.toThrow();
+		expect(get(live.status)).toBe('disconnected');
+	});
+
+	it('restart() closes the old stream and opens a fresh connection', () => {
+		const live = createLiveStore({ eventSourceCtor: fakeCtor });
+		live.start();
+		const first = FakeEventSource.last;
+		first.emitOpen();
+
+		live.restart();
+		expect(first.closed).toBe(true);
+		expect(FakeEventSource.instances).toHaveLength(2);
+		expect(FakeEventSource.last).not.toBe(first);
+		expect(get(live.status)).toBe('connecting');
+
+		FakeEventSource.last.emitOpen();
+		expect(get(live.status)).toBe('live');
+	});
+
+	it('restart() resets a backoff the previous connection had walked up', () => {
+		const live = createLiveStore({
+			eventSourceCtor: fakeCtor,
+			baseDelayMs: 1000,
+			maxDelayMs: 8000
+		});
+		live.start();
+
+		FakeEventSource.last.emitError();
+		vi.advanceTimersByTime(1000); // reconnect #2, attempt now 1
+		FakeEventSource.last.emitError(); // schedules the 2000ms attempt
+
+		live.restart(); // #3, and the pending 2000ms reconnect is cancelled
+		expect(FakeEventSource.instances).toHaveLength(3);
+		vi.advanceTimersByTime(10_000);
+		expect(FakeEventSource.instances).toHaveLength(3);
+
+		// The next failure starts again from the base delay, not from 4000ms.
+		FakeEventSource.last.emitError();
+		vi.advanceTimersByTime(999);
+		expect(FakeEventSource.instances).toHaveLength(3);
+		vi.advanceTimersByTime(1);
+		expect(FakeEventSource.instances).toHaveLength(4);
+	});
+
+	it('two restarts in quick succession do not walk the backoff up', () => {
+		const live = createLiveStore({
+			eventSourceCtor: fakeCtor,
+			baseDelayMs: 1000,
+			maxDelayMs: 8000
+		});
+		live.start();
+
+		// Two switches back to back, neither reaching a successful open.
+		live.restart();
+		live.restart();
+		expect(FakeEventSource.instances).toHaveLength(3);
+
+		FakeEventSource.last.emitError();
+		vi.advanceTimersByTime(999);
+		expect(FakeEventSource.instances).toHaveLength(3);
+		vi.advanceTimersByTime(1); // still the 1000ms base delay
+		expect(FakeEventSource.instances).toHaveLength(4);
+	});
+
+	it('reconnects immediately on a stale frame, with no disconnected transition', () => {
+		const live = createLiveStore({ eventSourceCtor: fakeCtor, baseDelayMs: 1000 });
+		live.start();
+		const first = FakeEventSource.last;
+		first.emitOpen();
+
+		const seen: string[] = [];
+		const unsubscribe = live.status.subscribe((value) => seen.push(value));
+		seen.length = 0; // drop the current value the subscription replays
+
+		// The server's terminal frame on a selection change (T115) — a named frame,
+		// so it reaches addEventListener('stale'), never onmessage.
+		first.emitEvent('stale');
+
+		expect(first.closed).toBe(true);
+		expect(FakeEventSource.instances).toHaveLength(2); // immediate, no timer
+		expect(seen).not.toContain('disconnected');
+		expect(get(live.status)).toBe('connecting');
+
+		FakeEventSource.last.emitOpen();
+		expect(get(live.status)).toBe('live');
+		unsubscribe();
+	});
+
+	it('a stale frame does not bump — it is a lifecycle frame, not a change', () => {
+		const live = createLiveStore({ eventSourceCtor: fakeCtor });
+		live.start();
+		FakeEventSource.last.emitOpen();
+
+		FakeEventSource.last.emitEvent('stale');
+		expect(get(live.bump)).toBe(0);
+		expect(get(live.lastEvent)).toBeNull();
+	});
+
+	it('a stale frame after an error-walked backoff reconnects at once', () => {
+		const live = createLiveStore({
+			eventSourceCtor: fakeCtor,
+			baseDelayMs: 1000,
+			maxDelayMs: 8000
+		});
+		live.start();
+
+		FakeEventSource.last.emitError();
+		vi.advanceTimersByTime(1000); // reconnect #2 without a successful open
+
+		FakeEventSource.last.emitEvent('stale');
+		expect(FakeEventSource.instances).toHaveLength(3); // no delay at all
+
+		// And the attempt counter went back to zero with it.
+		FakeEventSource.last.emitError();
+		vi.advanceTimersByTime(1000);
+		expect(FakeEventSource.instances).toHaveLength(4);
+	});
+
+	it('ignores a stale frame from an already-replaced source', () => {
+		const live = createLiveStore({ eventSourceCtor: fakeCtor });
+		live.start();
+		const first = FakeEventSource.last;
+		live.restart();
+
+		first.emitEvent('stale');
+		expect(FakeEventSource.instances).toHaveLength(2);
+	});
+
+	it('restart() after stop() re-opens the stream', () => {
+		const live = createLiveStore({ eventSourceCtor: fakeCtor });
+		live.start();
+		live.stop();
+
+		live.restart();
+		expect(FakeEventSource.instances).toHaveLength(2);
+		expect(get(live.status)).toBe('connecting');
 	});
 });
