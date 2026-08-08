@@ -95,8 +95,16 @@ Base: `http://127.0.0.1:<port>/api/v1`. JSON camelCase, ISO-8601, errors as `{ e
 - `GET /api/v1/graph` → `TicketGraph` (`{ nodes, edges }`) — the whole-project run-state-coloured dependency DAG; one node per ticket, one edge per resolved `dependsOn` (self-loops and dangling ids omitted).
 - `GET /api/v1/spend` → `SpendResponse` (`{ source, attribution, totals, byTicket, byModel, byLevel, skipped, skippedOmitted }`) — the factory's ledger aggregated by ticket, model and agent level; `attribution` names the cost-splitting rule (`full-to-each-id`, so per-ticket figures are *attributed* cost and may exceed `totals.costUsd`), and `source.found`/`source.read` tell no ledger from an unread one from a measured zero.
 - `GET /api/v1/runs` → `{ items: ProjectedRunRecord[], total }` — one record per MANIFEST ticket, in manifest order; each carries a `result` and a `receipt` as `{ path, data, reason }`, where `reason` NAMES why a source is missing (`absent` | `unreadable` | `unparseable` | `too_large`). `data` is **not** the artifact verbatim: it is a `{ [key: string]: string }` holding only the keys named in `DISCLOSED_ARTIFACT_FIELDS` (`api/v1/runs.py`) that the artifact actually carries as strings — today `pr_url` and `status`, `{}` when it names neither — per the disclosure rule under "Other factory artefacts" below. A project the factory has never run is `200` with every source `absent` — never a 404 and never `[]`, since `.factory/` is gitignored and having no artifacts is the normal state of a fresh clone.
-- `GET /api/v1/health` → `{ ok, version, projectRoot }`.
+- `GET /api/v1/health` → `{ ok, version, projectRoot, selectedProjectId, selectionReason }` (v3.0). `ok` is always `true` and this route never 409s — it is what an operator and the SPA's boot sequence hit to find out WHY nothing else answers, so it reports the selection seam's failures instead of raising them. `projectRoot` is therefore **nullable** and `selectionReason` is a nullable `SelectionFailure` member (see "Data model"): selected and servable → root + id set, reason `null`; nothing selected → root and id `null`, reason `no_selection`; selected but unusable → id + reason set, `projectRoot` the unusable path when the row is known and `null` when the id names no row; the console's own store unreadable → all three `null` (that is `RegistryUnreadable`, deliberately not a `SelectionFailure`).
+- `GET /api/v1/events` → `text/event-stream`: an `event: ready` handshake, one `event: change` per file change, `: keepalive` comments, and a terminal `event: stale` frame. **A stream is bound per CONNECTION to the project selected when it was opened** — the watcher is resolved once at connect and never re-resolved, because `ChangeEvent.path` is project-relative and the same relative path names a different file after a switch. The switch protocol is therefore to END the stream: the handler captures the watcher supervisor's generation at connect, and once it moves the stream emits `stale` and closes, which a client (T126) treats as "reconnect now" rather than waiting out its backoff.
+- `GET /api/v1/projects` → `{ items: RegisteredProjectOut[], total }` — every row the switcher offers, each carrying its own `condition` and `selected` flag, in a stable `addedAt`-then-`id` order, with the reserved `session` row PREPENDED when a `factory-console PATH` root is pinned. No row is ever omitted or replaced by an error: a deleted or unreadable project is listed WITH the condition naming its state. It never fails over the selection — with nothing selected every row simply reports `selected: false` — but a store the console cannot read at all is `503 registry_unreadable`.
+- `GET /api/v1/projects/current` → `CurrentSelectionResponse` = `{ selected: RegisteredProjectOut | null, reason: SelectionFailure | null }`, with exactly one of the two set. Always `200`, never `404`: having nothing selected is the ordinary state of a fresh console, and the SPA renders the named `reason` as a prompt. Same 503 for an unreadable store.
+- `POST /api/v1/projects` (**write-token**) → body `{ path, name? }` → `201 RegisteredProjectOut`. **Not idempotent**: a second add of the same project is `409 duplicate_project_path` carrying the existing row's id, so the SPA can offer to switch to it. Discovery WALKS UP from `path`, and the row records the DISCOVERED root rather than the string the caller typed, so two spellings of one project resolve to the one row the `UNIQUE` index guarantees. Adding never selects (`selected: false`), and the new row's `condition` is probed like any other — registration deliberately does not require the path to exist. Named refusals: `400 invalid_project_path` (blank, relative or unresolvable — see the canonical-path rule below), `404 project_not_found`, `500 malformed_manifest`.
+- `DELETE /api/v1/projects/{id}` (**write-token**) → `204`, and nothing on the project's disk changes — removal is console state only, so there is no diff to preview. The reserved `session` id is `409 session_project_not_removable` (it is published as a row but was never registered); an id no row answers to is `404 project_not_registered`; an id that is neither 32 hex digits nor the sentinel is `422` at the boundary. Removing the SELECTED row clears the selection twice over, and both are needed: the schema's `ON DELETE SET NULL` clears the PERSISTED selection, the handler clears the PROCESS-LOCAL one — which is what re-roots the file watcher.
+- `PUT /api/v1/projects/current` (**write-token**) → body `{ projectId }` (a registry id, or `session` for the pinned row) → the same `CurrentSelectionResponse` as the GET, resolved AFTER the switch, so a client can feed it straight into the header. **A degraded condition is not a precondition**: selecting a project whose directory has been deleted SUCCEEDS and reports `selected_project_missing` / `selected_project_unreadable`, because that is precisely the state an operator selects into in order to remove the row. Two refusals, both `404 project_not_registered`: an id no registry row answers to, and `session` when no root is pinned.
 - `GET /api/v1/openapi.json` — auto-generated schema; SPA regenerates TS types from it.
+
+Only the three registry MUTATIONS above are write-token gated (`Depends(require_write_token)`, per route rather than per router, since this router also carries the two reads); `GET /projects` and `GET /projects/current` stay header-free — they disclose nothing the loopback boundary does not already permit, and they are how an operator diagnoses a bad selection.
 
 Versioning: URL-prefixed `/api/v1/`. Breaking changes → `/api/v2/` with a deprecation window.
 
@@ -112,6 +120,36 @@ Python `Protocol`, read-only, eight methods (all but `load_project` take a `Proj
 - `get_graph(project) → TicketGraph` (whole-project run-state-coloured dependency DAG; resolved-only edges, self-loops and dangling ids omitted)
 
 Two implementations: `RealFileAdapter` (hits real FS) and `FakeFileAdapter` (in-memory for tests). Handlers depend on the Protocol, wired via `FastAPI.Depends()`. This is the seam the file-adapter track owns; backend never touches `open()` directly.
+
+### ProjectRegistry port + ProjectConditionProbe (v3.0)
+
+The console's OWN store gets its own port: `ProjectRegistry` in `store/registry_protocol.py` — a
+synchronous `Protocol` over the registry rows and the one-row selection (`add_project`,
+`list_projects`, `get_project`, `find_by_path`, `remove_project`, `get_selected_project`,
+`set_selected_project`), with `SqliteProjectRegistry` and `FakeProjectRegistry` as its two
+implementations and one shared contract suite both must pass. That module is normative for the
+signatures and the per-method rules; they are referenced here, not restated.
+
+**The canonical-path rule** is a clause of that contract rather than an implementation detail. A row's
+identity IS its path, so every caller must arrive at one spelling: `store/paths.py`'s
+`canonical_project_path` — `expanduser`, then `resolve(strict=False)`, stored absolute — is that rule,
+and `RegisteredProject.path` is therefore always canonical and never re-resolved by a consumer.
+`strict=False` is required, not incidental: a row whose directory has since been deleted is still a
+true record of what the user asked the console to track, and the condition union below is what answers
+for it honestly. A RELATIVE path is REFUSED (`400 invalid_project_path`) rather than resolved against
+the server's working directory, which the caller cannot see. **The DATABASE is the duplicate
+authority** — the `UNIQUE` index on `projects.path` — not a pre-insert `find_by_path`, which would
+duplicate the rule and lose the race besides; a duplicate add surfaces as `sqlite3.IntegrityError` and
+is translated to `409 duplicate_project_path`. `default_project_name` (same module) is the store's
+rule for what an unnamed row is called, applied by `add_project` and not at the API edge.
+
+Beside it, `file_adapter/project_condition.py` declares `ProjectConditionProbe` — a one-method port,
+`probe(path) → RegistryEntryCondition` — with `RealProjectConditionProbe` and
+`FakeProjectConditionProbe`. It is TOTAL (every path gets a named answer) and memoises nothing, since
+a switcher row's condition must be current on every read. `store/entries.py`'s `resolve_entries` is
+the length-preserving join of registry rows and probe into `RegistryEntry`s. `api/deps._probe_root` is
+deliberately NOT this probe: it answers the three-way servability question a request already committed
+to a project asks (present / missing / unreadable), not the five-way condition a switcher row displays.
 
 ### Factory run-state source (read-only)
 
@@ -371,7 +409,8 @@ factory-console [PATH] [--port N] [--host 127.0.0.1] [--no-browser] [--log-level
 - **Errors**: single `errors.py` defines `FactoryConsoleError` base + `to_error_response(exc)`. Concrete subclasses live in the modules that raise them (`file_adapter/*`, `services/*`). Backend registers ONE FastAPI exception handler catching `FactoryConsoleError` + a `RequestValidationError` handler that special-cases `TICKET_ID_PATTERN` violations to emit `{ status: 400, code: 'invalid_ticket_id' }` (uniform with `PathTraversal` from ticket_md).
 - **Auth**: N/A in v0 — 127.0.0.1 binding is the trust boundary. No cookies, no CORS (same-origin), no CSRF (no state changes). v2 writes add a per-session loopback token.
 - **Input validation**: Pydantic at every boundary; ticket-id regex enforced defense-in-depth in `_safe_resolve`.
-- **Concurrency**: single-worker Uvicorn, one event loop. The write path was serialized by that single worker alone until v3.0 offloaded ticket writes onto the thread pool (see the House rule below); an app-wide `app.state.write_lock` (`Depends(get_write_lock)`) now restores the single-writer invariant across that offload, held by each of `POST`/`PUT`/`DELETE /api/v1/tickets` for the whole read-modify-write of `tickets.json`. **House rule — no blocking filesystem I/O on the event loop.** Every route is `async def`, and every read port (`FileAdapter`, `RunArtifactReader`, the ledger reader) is deliberately synchronous, so any handler that calls one MUST offload it with `await anyio.to_thread.run_sync(partial(fn, ...))` rather than calling it inline. `anyio` is the primitive (it is the loop Starlette already runs on, so it needs no executor of our own), and offloading at the HANDLER boundary is the chosen shape over the alternative of making blocking handlers plain `def` — it keeps the ports and services synchronous and testable, and needs no signature change below the API layer. The rule is applied **per endpoint as it is touched or added**, not as one blanket rewrite: a mechanical sweep of every handler in a single PR would be a large untested diff for endpoints whose per-request I/O is a couple of stats. `GET /api/v1/runs` is the first and required conversion — it does up to 2×N file reads for an N-ticket manifest, the largest per-request I/O of any route. The rest (`/tickets`, `/tickets/{id}`, `/tickets/{id}/deps`, `/spend`, `/search`, `/roadmap`, `/graph`, `/project`) are still inline as of v2.2 and convert as they are next edited.
+- **Project selection (v3.0)**: every project-scoped endpoint resolves its root PER REQUEST through `api/deps.get_current_project_root`, never from a root fixed at boot. The precedence is declared once, in `services/project_selection.py`: **the pinned `PATH` is the SESSION's INITIAL selection** — a process-local `session_selection` seeded to `SESSION_PROJECT_ID` whenever `factory-console PATH` discovered a root, overwritten in-process by a later `select()`, which also persists. Both properties hold at once: the typed path is what you get, and switching still changes what every endpoint reads. The steps below it never fall back — an id naming no row, or a path that is missing or unreadable, is a named 409 (`SelectionFailure` in `details.reason`), because substituting another project would render one project's tickets, run-state and spend under another's name. The selection is PERSISTED in the console DB's one-row `console_state` table (`selected_project_id`, `ON DELETE SET NULL`, so removing the selected project cannot leave a dangling pointer — a schema fact rather than application code); the session pin is the one thing that lives only in memory and is never written, so a throwaway "just look at this directory" invocation cannot overwrite the selection the operator made in the UI. **The console DB is the only writable state outside a target project** — tickets, run-state, roadmap and every `.factory/` artefact stay read-through from each project's own files, and the console still writes to no run-state source in any version.
+- **Concurrency**: single-worker Uvicorn, one event loop. The write path was serialized by that single worker alone until v3.0 offloaded ticket writes onto the thread pool (see the House rule below); an app-wide `app.state.write_lock` (`Depends(get_write_lock)`) now restores the single-writer invariant across that offload, held by each of `POST`/`PUT`/`DELETE /api/v1/tickets` for the whole read-modify-write of `tickets.json`. **House rule — no blocking filesystem I/O on the event loop.** Every route is `async def`, and every read port (`FileAdapter`, `RunArtifactReader`, the ledger reader) is deliberately synchronous, so any handler that calls one MUST offload it with `await anyio.to_thread.run_sync(partial(fn, ...))` rather than calling it inline. `anyio` is the primitive (it is the loop Starlette already runs on, so it needs no executor of our own), and offloading at the HANDLER boundary is the chosen shape over the alternative of making blocking handlers plain `def` — it keeps the ports and services synchronous and testable, and needs no signature change below the API layer. The rule is applied **per endpoint as it is touched or added**, not as one blanket rewrite: a mechanical sweep of every handler in a single PR would be a large untested diff for endpoints whose per-request I/O is a couple of stats. `GET /api/v1/runs` is the first and required conversion — it does up to 2×N file reads for an N-ticket manifest, the largest per-request I/O of any route. The other nine (`/tickets`, `/tickets/{id}`, `/tickets/{id}/deps`, `/spend`, `/search`, `/roadmap`, `/graph`, `/project`, `/health`) were still inline as of v2.2 and were converted by T116–T118 as v3.0's per-request resolution touched each of them, along with the three ticket write routes. **As of v3.0 no handler reads the filesystem or the console store inline**: the `/projects` family folds its selection read, `sqlite3` query and per-row `stat`s into ONE offload per request rather than one per row, and `get_current_project_root` discharges the rule once for every project-scoped handler instead of at each of them. The rule now applies to a handler at the point it is added.
   - **Pagination on `/runs`**: none, deliberately. The response is one record per manifest ticket, matching its sibling list endpoints (`/tickets` returns every match; `/search` bounds itself with `limit`, which is a relevance cap, not paging). What caps `/runs` in practice is the manifest: it is an operator-authored planning document, reviewed by hand, that stays in the hundreds of entries — and the same list is already served whole by `/tickets`. Adding paging to one of three list endpoints would fork the `{items, total}` envelope the SPA unwraps for all three in order to bound a list nothing has observed to be unbounded; the thread offload above is what removes the cost that made the size matter. Revisit if a real manifest ever makes the response slow.
   - **SSE checked**: `GET /api/v1/events` was audited against this same rule and is already non-blocking, so it needed no fix — recorded here rather than left as an accident. Its file watching runs on the `watchdog` observer's own OS thread and reaches the handler through an async queue, so the request path itself only awaits (`asyncio.wait` plus a heartbeat) and never touches the disk inline. It is also the route this rule most protects: a stalled loop shows up there as a live view that silently stops updating.
 
@@ -396,16 +435,40 @@ factory-console [PATH] [--port N] [--host 127.0.0.1] [--no-browser] [--log-level
 
 ## v3 — Hosted multi-project control plane (additive on the hexagonal core)
 
-Planned expansion, elaborated into tickets just-in-time via `/factory-plan-milestone v3` once v2 is
-built. The change is **additive**: new adapters + a hosting/auth shell around the existing
-domain/ports — no domain rewrite. Every read still flows through the source-agnostic domain
-(`Project` / `Ticket` / `RunState` / `DepNeighborhood`).
+**v3.0 SHIPPED the multi-project read plane; the hosting shell did not ship and stays
+forward-looking.** The change was, and remains, **additive**: a console-owned store and new ports
+around the existing domain — no domain rewrite. Every read still flows through the source-agnostic
+domain (`Project` / `Ticket` / `RunState` / `DepNeighborhood`). Each entry below is marked **SHIPPED
+(v3.0)** or **PLANNED**, with the target version where one is already known; the shipped ones are
+contract, the planned ones are still elaborated into tickets just-in-time via
+`/factory-plan-milestone`.
 
-- **Console-owned store (NEW):** SQLite at `~/.factory-console/console.db`, holding **only** the
-  console's own state — `projects(id, name, path, added_at)` + `credentials(username, password_hash)`.
-  Tickets / run-state / roadmap are **never** copied into it; they stay read-through from each
-  project's files. (A flat file would suffice; SQLite is chosen so a later audit log / multi-user need
-  no migration.)
+**What v3.0 did NOT do** — stated first, because the rest of this section was written as one
+undifferentiated plan and reads as if it might have:
+
+- **No `serve` mode.** `factory-console PATH` is unchanged: same argument, same four exit codes, same
+  `serving <root>` stdout line, and a pathless boot still exits `1`.
+- **No auth beyond the existing v2 loopback write token.** No login, no password hash, no session
+  cookie; the `credentials` table is not in the schema and its migration is v3.1's to append.
+- **No bind-address change.** The `host` field-validator is still pinned to `{127.0.0.1, localhost,
+  ::1}` and the console is still loopback-only.
+- **No new CLI subcommand.** The CLI contract above is the whole CLI.
+
+What v3.0 DID ship: per-request project resolution, the five `/api/v1/projects*` endpoints, the
+console DB (`projects` + the one-row `console_state`) with its `user_version` migration runner, the
+`ProjectRegistry` and `ProjectConditionProbe` ports, a watcher supervisor that re-roots on a switch,
+and the `/health` and `/events` changes recorded under "REST v1" above. See `ROADMAP.md` for the
+per-ticket record.
+
+- **Console-owned store (SHIPPED, v3.0):** SQLite at `~/.factory-console/console.db` (overridable via
+  `FACTORY_CONSOLE_DB_PATH`; the file is `0600` inside a `0700` directory, created lazily on first
+  touch), holding **only** the console's own state — `projects(id, name, path UNIQUE, added_at)` plus the one-row
+  `console_state(id CHECK (id = 1), selected_project_id REFERENCES projects(id) ON DELETE SET NULL)`.
+  `credentials(username, password_hash)` is **v3.1's** and is not in the schema; it arrives as
+  migration 2 appended to `store/schema.py`'s chain, which is why the `PRAGMA user_version` runner
+  landed now. Tickets / run-state / roadmap are **never** copied into it; they stay read-through from
+  each project's files. (A flat file would suffice; SQLite is chosen so a later audit log / multi-user
+  need no migration.)
 - **Run-state + run artefacts, per project (CLARIFIED by v2.1):** each registered project resolves
   its **own** run-state source and its own `.factory/` artefacts by the rules in "Factory run-state
   source" and "Other factory artefacts" above — the same source resolution and the same full
@@ -413,24 +476,31 @@ domain/ports — no domain rewrite. Every read still flows through the source-ag
   gitignored and machine-local, a hosted console shows run-state, runs and spend only for projects
   whose working copies live on the machine it runs on; for the rest those sources are legitimately
   missing, and missing must render as missing.
-- **Project resolution (CHANGED):** today one `Project` is fixed at boot from cwd and served for the
-  process's life. v3 resolves the *selected* project per request from the registry (single-user = a
-  server-side "current selection"). The domain/services already accept a `Project` argument, so this is
-  a resolution change, not a rewrite. The future all-projects dashboard is the same per-project reads
-  looped over the registry.
-- **Serve mode + bind (CHANGED):** new `factory-console serve` long-running mode. The loopback-pinned
-  `host` validator relaxes to allow a configured bind (a tailnet address), gated so a casual
-  `factory-console PATH` still stays loopback-only.
-- **Auth (NEW):** single username/password; password hashed (argon2/bcrypt); session cookie
+- **Project resolution (SHIPPED, v3.0):** one `Project` is no longer fixed at boot. Every
+  project-scoped handler takes `Depends(get_current_project_root)` and resolves the *selected*
+  project per request (single-user = a server-side "current selection", persisted in `console_state`)
+  — see Cross-cutting → **Project selection** for the precedence and the no-fallback rule. The
+  domain/services already accepted a `Project` argument, so this was a resolution change, not a
+  rewrite. The future all-projects dashboard is the same per-project reads looped over the registry.
+- **Live updates follow the selection (SHIPPED, v3.0):** one `WatcherSupervisor`
+  (`services/watcher_supervisor.py`) owns the single watcher and re-roots it when the selection moves,
+  bumping a generation counter; `/events` binds a stream to the project selected at connect and ends
+  it with a terminal `stale` frame once that generation moves (see "REST v1").
+- **Serve mode + bind (PLANNED, v3.1):** new `factory-console serve` long-running mode. The
+  loopback-pinned `host` validator relaxes to allow a configured bind (a tailnet address), gated so a
+  casual `factory-console PATH` still stays loopback-only. **Not in v3.0** — no subcommand exists and
+  the validator is unchanged.
+- **Auth (PLANNED, v3.1):** single username/password; password hashed (argon2/bcrypt); session cookie
   (HttpOnly, Secure, SameSite). Required for `serve` mode; the local viewer mode stays auth-free
-  (loopback trust).
-- **Access / deploy:** **Tailscale-first** — the console binds to a private tailnet, reachable from the
+  (loopback trust). **Not in v3.0** — the write token remains the only write credential, and it now
+  also gates the three registry mutations.
+- **Access / deploy (PLANNED, v3.1):** **Tailscale-first** — the console binds to a private tailnet, reachable from the
   user's phone + laptop with no public exposure, no TLS/proxy, and no login-hardening burden.
   **Public-with-TLS** (reverse proxy + Let's Encrypt + hardened login) is a later *deploy-time* option
   — **no app code change**; the bind host is configuration.
-- **GitHubAdapter (NEW, read-only):** per-project PR status + links via **guard-scoped `gh`** (respects
+- **GitHubAdapter (PLANNED, v3.0.1, read-only):** per-project PR status + links via **guard-scoped `gh`** (respects
   the dual-account pin). A new port alongside `FileAdapter`; read-only, never mutates GitHub.
-- **Open-Claude launcher (LATER / optional — pending mechanism confirmation):** a per-project action
+- **Open-Claude launcher (PLANNED, later — pending mechanism confirmation):** a per-project action
   that spawns `claude` in the project directory (tmux-wrapped for persistence). Interactive control
   happens through Claude Code's **own** remote control from the user's device — **not** a web PTY, so
   the console never exposes a shell. This is the console's only privileged write. Requires confirming
@@ -451,10 +521,32 @@ domain/ports — no domain rewrite. Every read still flows through the source-ag
   `no_factory_dir` is degraded but USABLE (the project is real and browsable; only run-state, runs
   and spend are legitimately missing), and `unreadable` is never folded into `not_a_project` — "I
   could not look" is not "I looked and there is nothing there".
-- **Credentials / Session** — auth state (console DB / in-memory).
+- **RegisteredProjectOut** — the REST-facing counterpart of `RegistryEntry`, and the DISCLOSURE
+  boundary for a row: `{ id, name, path, addedAt, registered, selected, condition }`
+  (`api/v1/projects.py`). Every field is named explicitly rather than `model_dump()`ed off the store
+  entity, so a column the store grows later cannot reach the browser by accident. It flattens on two
+  answers only the server holds: `selected`, and `registered` — `false` only for the reserved
+  **`session`** row, the `factory-console PATH` pin that the listing prepends (`id: "session"`,
+  `addedAt: null`). `"session"` is a sentinel reserved BY CONSTRUCTION: a real id is 32 lowercase hex
+  digits (`REGISTERED_PROJECT_ID_PATTERN`), which it cannot be, so no row can collide with it.
+- **SelectionFailure** — the selection-failure union, declared once in
+  `services/project_selection.py`: `"no_selection" | "selected_project_not_registered" |
+  "selected_project_missing" | "selected_project_unreadable"`. **Shared vocabulary**, drawn from that
+  one declaration by `/health`'s `selectionReason`, `/projects/current`'s and `PUT /projects/current`'s
+  `reason`, and the `details.reason` of the 409s every other project-scoped endpoint raises
+  (`no_project_selected`, `selected_project_not_registered`, `selected_project_unavailable`) — a second
+  spelling of any member would be a contract the SPA's label map never sees. NOT a member: "the console
+  could not read its own store", which is `RegistryUnreadable` (503), a statement about the CONSOLE's
+  health rather than a state of the user's selection.
+- **Credentials / Session** — auth state (console DB / in-memory). **v3.1, not shipped.**
 
 ### Cross-cutting deltas (v3)
-- **Auth:** v0 = loopback trust · v2 = loopback write token · **v3 = username/password + session for
-  serve mode.**
-- **Concurrency:** serve mode is long-running + multi-client; reads stay read-through per request; the
-  console DB is the only writable state (SQLite handles its own locking).
+- **Auth:** v0 = loopback trust · v2 = loopback write token · **v3.0 = unchanged — the same write
+  token, now also gating the three registry mutations** · v3.1 = username/password + session for
+  serve mode.
+- **Concurrency:** reads stay read-through per request, and the console DB is the only writable state
+  (SQLite handles its own locking — one connection per operation, WAL, a busy timeout, and a
+  `BEGIN IMMEDIATE` around migrations). Still one uvicorn worker on one event loop in v3.0; the
+  long-running, multi-client serve mode is v3.1's. A project switch and a ticket write each take their
+  own app-wide `asyncio.Lock` (`selection_lock`, `write_lock`), and only the on-change hook that
+  re-roots the watcher stays on the event-loop thread — every `sqlite3` round trip is offloaded.

@@ -191,17 +191,36 @@ Graduates from a local single-project viewer into a long-running, **Tailscale-re
 managing many imported projects. Files stay the source of truth; a tiny SQLite store holds only the
 console's own registry + credentials. Staged so each slice is usable on its own:
 
-- **v3.0 — Multi-project read plane (local):** SQLite project registry; add/select project; switchable
-  single-project view (today's console + a project dropdown). Still `127.0.0.1`. **Ticketed below.**
+- **v3.0 — Multi-project read plane (local): SHIPPED.** What it delivered:
+  - the console's own SQLite store — `projects` + a one-row `console_state` selection, at
+    `~/.factory-console/console.db` (`FACTORY_CONSOLE_DB_PATH` overridable, `0600` in a `0700` dir),
+    behind a `PRAGMA user_version` migration runner;
+  - the `ProjectRegistry` port (sqlite + fake, one shared contract suite), the canonical-path rule,
+    and the `ProjectConditionProbe` that names each row's condition from disk;
+  - five endpoints — `GET /api/v1/projects`, `GET /api/v1/projects/current`, and the three
+    write-token-gated mutations (`POST /projects`, `DELETE /projects/{id}`, `PUT /projects/current`);
+  - **per-request project resolution** for every project-scoped endpoint, with the pinned `PATH` as
+    the session's initial selection and named 409s instead of any fallback;
+  - a nullable `projectRoot` + named `selectionReason` on `/health`, and an `/events` stream bound
+    per connection to the project selected at connect, ending on a terminal `stale` frame;
+  - the SPA's project switcher, `/projects` route, add-by-path form and degraded-condition banner,
+    plus a two-project e2e and the DevOps guards for the console's first writable state.
+
+  Still `127.0.0.1`. **Deliberately NOT in v3.0:** no `serve` mode, no auth beyond the v2 write
+  token, no bind-address change, no new CLI subcommand — `factory-console PATH` is unchanged and a
+  pathless boot still exits `1`. Those are v3.1. **Ticketed below.**
 - **v3.0.1 — GitHub PR status:** read-only `GitHubAdapter` for per-project PR status + links.
-  **Ticketed below.** Split out of v3.0 during elaboration — see the note under that heading.
-- **v3.1 — Hosting + auth:** `factory-console serve` mode; configurable bind; single username/password
+  **Ticketed below, not yet built.** Split out of v3.0 during elaboration because the combined set
+  was 40 tickets — larger than any milestone this project has shipped — and this half is
+  independently usable on top of the shipped read plane; see the note under that heading.
+- **v3.1 — Hosting + auth (forward-looking epic):** `factory-console serve` mode; configurable bind; single username/password
   login (hashed + session cookie); Tailscale deploy doc → reachable from phone + laptop.
-- **v3.2 — Live + dashboard:** factory loop/QA **log streaming** (reuses the v1 `FileWatcher` port);
-  all-projects **dashboard** homepage (progress %, current milestone, open PRs across projects).
-- **v3.3 — (optional) Open-Claude launcher:** per-project button spawning `claude` (tmux) for
+- **v3.2 — Live + dashboard (forward-looking epic):** factory loop/QA **log streaming** (reuses the v1 `FileWatcher` port);
+  all-projects **dashboard** homepage (progress %, current milestone, open PRs across projects) — the
+  same per-project reads v3.0 already does, looped over the registry.
+- **v3.3 — (optional) Open-Claude launcher (forward-looking epic):** per-project button spawning `claude` (tmux) for
   phone-driven work; pending confirmation that Claude Code can attach to a server-started session.
-- **v3.4+ — Hardening options:** public-with-TLS deploy path; audit log; multi-user; PR caching.
+- **v3.4+ — Hardening options (forward-looking epic):** public-with-TLS deploy path; audit log; multi-user; PR caching.
 
 → v3.0 and v3.0.1 are elaborated below. Elaborate **v3.1** later with
 `/factory-plan-milestone v3.1`, continuing the global ticket IDs — never renumbering existing ones.
@@ -221,6 +240,14 @@ process and persists for the next boot. A pathless boot still exits 1; `serve` i
 **Elaborated 2026-08-06 at 28 tickets.** Not split further: none of the candidate sub-seams is
 independently usable — a registry with no UI shows nothing, and a switcher with no add form can only
 ever contain the project already on the command line.
+
+**Shipped.** The milestone's contract now lives in `ARCHITECTURE.md` — the five `/api/v1/projects*`
+entries and the amended `/health` and `/events` entries under "REST v1", the `ProjectRegistry` port
+and the canonical-path rule under "Contracts", the selection precedence and the `console_state`
+persistence under Cross-cutting → **Project selection**, and the shipped-vs-planned split in the v3
+section. The per-ticket boxes below are left as they are for the reason the note at the top of this
+page gives: a box means this repo's `.factory/run-state.json` reads `merged`, nothing else, and
+nothing here re-derives them.
 
 - [ ] **T103** — Registry domain vocabulary, and the store's place in the architecture → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T103-registry-domain-vocabulary.md`
 - [ ] **T104** — Console store location: `FACTORY_CONSOLE_DB_PATH`, side-effect-free resolution → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T104-console-store-location.md`
