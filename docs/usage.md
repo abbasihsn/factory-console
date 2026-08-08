@@ -194,9 +194,10 @@ The dropdown's trailing **Manage projects…** entry, and a **Projects** link in
 nav, both open `/projects` — a form to **register** a project by its path on the server's
 disk, above every row the console tracks, with its probed `condition`, whether it is
 `Select`ed, and whether it can be `Remove`d. The form validates only that the path box is
-not empty; the server decides whether the path exists, is a directory, and carries a
-factory project, surfacing its refusal (`invalid_project_path`, `duplicate_project_path`)
-verbatim. All three writes need the same write token as every other write in the console:
+not empty; the server decides whether the path is well-formed (`invalid_project_path`),
+resolves to an App Factory project (`project_not_found`), and is not already tracked
+(`duplicate_project_path`), surfacing whichever refusal fires verbatim. All three writes
+need the same write token as every other write in the console:
 acting on a row (or registering one) before a token is held raises the same token prompt
 as elsewhere, and a rejected token is dropped and re-asked for exactly as it is on the
 ticket routes. `Remove` only forgets the row in this console's own registry — nothing on
