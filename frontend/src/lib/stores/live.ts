@@ -26,6 +26,14 @@ export interface LiveStore {
 	start(): void;
 	/** Close the stream, cancel any pending reconnect, and go `disconnected`. */
 	stop(): void;
+	/**
+	 * Re-open the stream on a fresh connection (`stop()` then `start()`), resetting
+	 * the reconnect backoff so a switch never inherits a long pending delay. Used
+	 * when the selected project changes: the server resolves the stream's project
+	 * per CONNECTION, so only a new connection follows the new selection. No-op-safe
+	 * when `EventSource` is unavailable, like `start`/`stop`.
+	 */
+	restart(): void;
 }
 
 /** Minimal constructor shape so tests can inject a fake `EventSource`. */
@@ -123,6 +131,19 @@ export function createLiveStore(options: LiveStoreOptions = {}): LiveStore {
 		};
 		es.onmessage = onSignal;
 		es.addEventListener('change', onSignal);
+		// The server ends a stream it can no longer serve — the selection changed
+		// under it — with a terminal `event: stale` frame. That is a normal
+		// lifecycle event, not a failure: reconnect at once on a fresh connection
+		// (which is what re-resolves the project server-side) WITHOUT the
+		// `disconnected` transition and the backoff delay the error path takes.
+		// Named frames never reach `onmessage`, hence the explicit listener.
+		es.addEventListener('stale', () => {
+			if (stopped || source !== es) return;
+			clearReconnect();
+			closeSource();
+			attempt = 0;
+			connect();
+		});
 		es.onerror = () => {
 			// Drop the native auto-reconnect and drive our own capped backoff.
 			closeSource();
@@ -150,5 +171,13 @@ export function createLiveStore(options: LiveStoreOptions = {}): LiveStore {
 		status.set('disconnected');
 	}
 
-	return { status, bump, lastEvent, start, stop };
+	function restart(): void {
+		stop();
+		// Reset before start() so the no-EventSource path stays consistent too: a
+		// switch must never inherit the pending delay a previous failure walked up.
+		attempt = 0;
+		start();
+	}
+
+	return { status, bump, lastEvent, start, stop, restart };
 }
