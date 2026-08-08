@@ -131,16 +131,23 @@ def test_wal_and_shm_sidecars_are_also_tightened(db_path: Path) -> None:
     # WAL mode makes SQLite hold recently-written pages in `-wal`/`-shm` sidecar
     # files; a 0600 db file next to a world-readable sidecar would leak the same
     # data v3.1's password hash needs the db file itself protected from.
+    wal_path = db_path.with_name(db_path.name + "-wal")
+    shm_path = db_path.with_name(db_path.name + "-shm")
+
+    # The assertions run INSIDE the `with`, because the sidecars only exist while a
+    # connection is open. Closing the last one checkpoints the WAL back into the db
+    # and deletes both files, so asserting after the block asks whether files SQLite
+    # has just cleaned up still exist — which on Linux they do not. macOS happened to
+    # leave them behind long enough for this to pass there, which is why it read as
+    # green locally and failed on both CI interpreters.
     with connect(db_path) as conn:
         migrate(conn)
         conn.execute("UPDATE console_state SET selected_project_id = NULL WHERE id = 1")
 
-    wal_path = db_path.with_name(db_path.name + "-wal")
-    shm_path = db_path.with_name(db_path.name + "-shm")
-    assert wal_path.exists()
-    assert shm_path.exists()
-    assert _mode_of(wal_path) == DB_FILE_MODE
-    assert _mode_of(shm_path) == DB_FILE_MODE
+        assert wal_path.exists()
+        assert shm_path.exists()
+        assert _mode_of(wal_path) == DB_FILE_MODE
+        assert _mode_of(shm_path) == DB_FILE_MODE
 
 
 def test_foreign_keys_are_on_inside_the_context(db_path: Path) -> None:

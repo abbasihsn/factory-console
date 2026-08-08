@@ -182,6 +182,24 @@ def _wait_until_stopped(watcher: _SpyFileWatcher, *, timeout: float = 2.0) -> No
     _wait_for(lambda: "stop" in watcher.calls, timeout=timeout)
 
 
+def _wait_until_swapped(app: FastAPI, generation: int, *, timeout: float = 2.0) -> None:
+    """Block the TEST thread until the supervisor's generation reaches ``generation``.
+
+    The right signal to wait on, where ``_wait_until_stopped`` is not. A swap is TWO
+    phases: ``retarget_release`` stops the outgoing watcher OFF the loop (blocking, so
+    the join cannot stall every request and SSE stream), then ``retarget_rebuild`` runs
+    back ON the loop, bumps the generation and builds the successor. Observing ``stop``
+    only proves phase one finished — phase two is still in flight, so anything the test
+    asserts about the generation or the successor is a race it can lose.
+
+    And did: this suite passed on 3.11 and failed on 3.12 with ``assert 0 == 1``,
+    purely on which side of that hop the test thread happened to land.
+
+    The generation is the correct signal because it is the LAST thing the swap settles.
+    """
+    _wait_for(lambda: app.state.watcher_supervisor.generation() >= generation, timeout=timeout)
+
+
 def test_a_selection_change_releases_the_outgoing_watcher_off_the_loop_thread() -> None:
     # The app-level hook that T114 registers on SelectionState: a switch must release
     # the outgoing watcher, and the thread join that releasing it performs must not run
@@ -200,6 +218,8 @@ def test_a_selection_change_releases_the_outgoing_watcher_off_the_loop_thread() 
     with TestClient(app) as client:
         assert client.post("/switch").status_code == 200
         _wait_until_stopped(watcher)
+        # Both halves of the swap, not just the release — see `_wait_until_swapped`.
+        _wait_until_swapped(app, 1)
 
         assert watcher.calls == ["start", "stop"]
         # No factory was wired, so the pinned app cannot build a successor: it degrades
@@ -244,6 +264,11 @@ def test_a_selection_change_starts_the_incoming_watcher_on_the_loop_thread() -> 
         # after the first has landed and the roots cannot be applied out of order.
         assert client.post("/switch").status_code == 200
         _wait_until_stopped(outgoing)
+        # BOTH halves, or the comment above is not true: `stop` is only phase one, so
+        # waiting on it alone would schedule the second swap while the first is still
+        # rebuilding — the very out-of-order application this two-request shape exists
+        # to prevent.
+        _wait_until_swapped(app, 1)
         assert client.post("/switch", params={"project_id": SESSION_PROJECT_ID}).status_code == 200
         _wait_for(lambda: bool(built))
 
