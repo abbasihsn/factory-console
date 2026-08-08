@@ -36,12 +36,19 @@
 	// keying on identity would restart the stream on every file change. Reading the
 	// id off the layout data (rather than the switcher's own callback) also catches
 	// a selection changed in ANOTHER tab, which this tab learns about on a re-load.
+	//
+	// Guarded on the NEW id being non-null: `+layout.ts` degrades a failed registry
+	// read to `[]` rather than failing the whole shell, which reads here as
+	// `selectedId: null` — indistinguishable from an actual switch away from a
+	// project. Only a switch TO a real project ever needs the stream re-resolved.
 	let seenSelectedId: string | null = null;
 	let selectionTracked = false;
 	$effect(() => {
 		const selectedId = data.selectedId;
 		// The first run only records the id — the stream started with it already.
-		if (selectionTracked && selectedId !== seenSelectedId) live.restart();
+		if (selectionTracked && selectedId !== null && selectedId !== seenSelectedId) {
+			live.restart();
+		}
 		selectionTracked = true;
 		seenSelectedId = selectedId;
 	});
