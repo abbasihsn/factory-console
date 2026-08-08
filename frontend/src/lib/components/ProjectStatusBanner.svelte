@@ -74,7 +74,10 @@
 		];
 		if (known !== undefined) {
 			if (known === null) return null;
-			return { ...known, title: CONDITION_TITLE[condition as Exclude<RegistryEntryCondition, 'ok'>] };
+			return {
+				...known,
+				title: CONDITION_TITLE[condition as Exclude<RegistryEntryCondition, 'ok'>]
+			};
 		}
 		// Per the resolution invariant, what could not be understood is RECORDED,
 		// never dropped: the fallback names the raw value rather than rendering
