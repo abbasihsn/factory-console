@@ -164,15 +164,15 @@ T91 fixed for run-state. And **the same fact answered differently in two places*
 that is normative in one reader and absent in another (T93), a run-state contract corrected in code
 and not in docs (T94), two endpoints taking opposite positions on disclosing artifact content (T102).
 
-- [ ] **T93** — Ledger discovery must use the same errno split the run-state reader made normative → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.2/T93-ledger-discovery-must-use-the-same-errno-split-the-run.md`
-- [ ] **T94** — User and contributor docs still state the pre-T78 run-state contract → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.2/T94-user-and-contributor-docs-still-state-the-pre-t78-run-s.md`
-- [ ] **T95** — The ledger artifact is read but never watched → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.2/T95-the-ledger-artifact-is-read-but-never-watched.md`
-- [ ] **T97** — One bounded artifact read, not three copies of it → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.2/T97-one-bounded-artifact-read-not-three.md`
-- [ ] **T98** — Every v1 handler is async and touches the filesystem → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.2/T98-blocking-io-on-the-event-loop.md`
-- [ ] **T99** — The result and receipt artifacts are read but never watched (depends on T95 — verifies its mechanism, does not rebuild it) → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.2/T99-results-and-receipts-are-read-but-never-watched.md`
-- [ ] **T100** — `/runs` reads two fields its own readers declare unmodelled → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.2/T100-the-view-reads-fields-the-readers-below-it-refuse-to-model.md`
-- [ ] **T101** — The containment refusal sends the operator to check two things that are not at fault → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.2/T101-a-refusal-that-names-the-wrong-remedy.md`
-- [ ] **T102** — Two endpoints take opposite positions on disclosing artifact content (depends on T100 — disclosure is constrained by what is modelled) → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.2/T102-two-endpoints-two-opposite-disclosure-policies.md`
+- [x] **T93** — Ledger discovery must use the same errno split the run-state reader made normative → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.2/T93-ledger-discovery-must-use-the-same-errno-split-the-run.md`
+- [x] **T94** — User and contributor docs still state the pre-T78 run-state contract → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.2/T94-user-and-contributor-docs-still-state-the-pre-t78-run-s.md`
+- [x] **T95** — The ledger artifact is read but never watched → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.2/T95-the-ledger-artifact-is-read-but-never-watched.md`
+- [x] **T97** — One bounded artifact read, not three copies of it → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.2/T97-one-bounded-artifact-read-not-three.md`
+- [x] **T98** — Every v1 handler is async and touches the filesystem → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.2/T98-blocking-io-on-the-event-loop.md`
+- [x] **T99** — The result and receipt artifacts are read but never watched (depends on T95 — verifies its mechanism, does not rebuild it) → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.2/T99-results-and-receipts-are-read-but-never-watched.md`
+- [x] **T100** — `/runs` reads two fields its own readers declare unmodelled → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.2/T100-the-view-reads-fields-the-readers-below-it-refuse-to-model.md`
+- [x] **T101** — The containment refusal sends the operator to check two things that are not at fault → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.2/T101-a-refusal-that-names-the-wrong-remedy.md`
+- [x] **T102** — Two endpoints take opposite positions on disclosing artifact content (depends on T100 — disclosure is constrained by what is modelled) → `/ai-gh-orchestrate-plan docs/planning/tickets/v2.2/T102-two-endpoints-two-opposite-disclosure-policies.md`
 
 **T96 is not here, and the reason changed once this page was checked against run-state.** It carries
 the same class as T93 and is filed against **v2.1** — where, contrary to what this paragraph said when
@@ -249,34 +249,34 @@ section. The per-ticket boxes below are left as they are for the reason the note
 page gives: a box means this repo's `.factory/run-state.json` reads `merged`, nothing else, and
 nothing here re-derives them.
 
-- [ ] **T103** — Registry domain vocabulary, and the store's place in the architecture → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T103-registry-domain-vocabulary.md`
-- [ ] **T104** — Console store location: `FACTORY_CONSOLE_DB_PATH`, side-effect-free resolution → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T104-console-store-location.md`
-- [ ] **T105** — Console DB schema + `user_version` migration runner → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T105-console-db-schema-and-migrations.md`
-- [ ] **T106** — ProjectRegistry port + the canonical path rule → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T106-project-registry-port.md`
-- [ ] **T107** — FakeProjectRegistry + the shared port-contract suite → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T107-fake-project-registry.md`
-- [ ] **T108** — SqliteProjectRegistry — the real, lazily-opened registry → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T108-sqlite-project-registry.md`
-- [ ] **T109** — ProjectConditionProbe — named per-project conditions from disk → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T109-project-condition-probe.md`
-- [ ] **T110** — `resolve_entries` — the length-preserving registry/condition join → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T110-registry-entry-join.md`
-- [ ] **T111** — Selection seam + the pinned-PATH-vs-persisted-selection precedence → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T111-selection-seam.md`
-- [ ] **T112** — `GET /api/v1/projects` + `/projects/current` → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T112-projects-read-endpoints.md`
-- [ ] **T113** — Registry mutations (write-token gated) → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T113-registry-mutations.md`
-- [ ] **T114** — Watcher supervisor — one watcher, swapped on selection change → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T114-watcher-supervisor.md`
-- [ ] **T115** — `/events` resolves per connection and ends on a selection change → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T115-events-per-connection.md`
-- [ ] **T116** — Per-request resolution for `/project`, `/health`, `/graph`, `/roadmap` → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T116-resolve-project-health-graph-roadmap.md`
-- [ ] **T117** — Per-request resolution for `/tickets`, `/search`, `/spend`, `/runs` → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T117-resolve-tickets-search-spend-runs.md`
-- [ ] **T118** — Per-request resolution for the ticket write routes → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T118-resolve-write-routes.md`
-- [ ] **T119** — CLI + dev app wire the registry and the watcher factory → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T119-cli-registry-wiring.md`
-- [ ] **T120** — Test-harness isolation: no test may touch the real console DB → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T120-test-harness-isolation.md`
-- [ ] **T121** — Registry API client + regenerated types → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T121-registry-api-client.md`
-- [ ] **T122** — Project switcher in the TopBar, over a registry-aware layout load → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T122-project-switcher.md`
-- [ ] **T123** — `/projects` route — list, select and remove → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T123-projects-route.md`
-- [ ] **T124** — Add a project by path, rendering the server's named refusal → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T124-add-project-form.md`
-- [ ] **T125** — The selected project's degraded conditions, named in the shell → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T125-project-conditions-banner.md`
-- [ ] **T126** — The live stream follows the selection → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T126-live-stream-follows-selection.md`
-- [ ] **T127** — Multi-project e2e — switch, deep-link, add and remove → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T127-multi-project-e2e.md`
-- [ ] **T128** — DevOps for the console's first writable state → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T128-devops-writable-state.md`
-- [ ] **T129** — Amend the durable contracts for what v3.0 shipped → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T129-v3.0-planning-docs.md`
-- [ ] **T130** — v3.0 user docs + README screenshots refresh → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T130-v3.0-docs-and-screenshots.md`
+- [x] **T103** — Registry domain vocabulary, and the store's place in the architecture → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T103-registry-domain-vocabulary.md`
+- [x] **T104** — Console store location: `FACTORY_CONSOLE_DB_PATH`, side-effect-free resolution → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T104-console-store-location.md`
+- [x] **T105** — Console DB schema + `user_version` migration runner → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T105-console-db-schema-and-migrations.md`
+- [x] **T106** — ProjectRegistry port + the canonical path rule → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T106-project-registry-port.md`
+- [x] **T107** — FakeProjectRegistry + the shared port-contract suite → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T107-fake-project-registry.md`
+- [x] **T108** — SqliteProjectRegistry — the real, lazily-opened registry → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T108-sqlite-project-registry.md`
+- [x] **T109** — ProjectConditionProbe — named per-project conditions from disk → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T109-project-condition-probe.md`
+- [x] **T110** — `resolve_entries` — the length-preserving registry/condition join → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T110-registry-entry-join.md`
+- [x] **T111** — Selection seam + the pinned-PATH-vs-persisted-selection precedence → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T111-selection-seam.md`
+- [x] **T112** — `GET /api/v1/projects` + `/projects/current` → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T112-projects-read-endpoints.md`
+- [x] **T113** — Registry mutations (write-token gated) → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T113-registry-mutations.md`
+- [x] **T114** — Watcher supervisor — one watcher, swapped on selection change → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T114-watcher-supervisor.md`
+- [x] **T115** — `/events` resolves per connection and ends on a selection change → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T115-events-per-connection.md`
+- [x] **T116** — Per-request resolution for `/project`, `/health`, `/graph`, `/roadmap` → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T116-resolve-project-health-graph-roadmap.md`
+- [x] **T117** — Per-request resolution for `/tickets`, `/search`, `/spend`, `/runs` → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T117-resolve-tickets-search-spend-runs.md`
+- [x] **T118** — Per-request resolution for the ticket write routes → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T118-resolve-write-routes.md`
+- [x] **T119** — CLI + dev app wire the registry and the watcher factory → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T119-cli-registry-wiring.md`
+- [x] **T120** — Test-harness isolation: no test may touch the real console DB → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T120-test-harness-isolation.md`
+- [x] **T121** — Registry API client + regenerated types → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T121-registry-api-client.md`
+- [x] **T122** — Project switcher in the TopBar, over a registry-aware layout load → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T122-project-switcher.md`
+- [x] **T123** — `/projects` route — list, select and remove → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T123-projects-route.md`
+- [x] **T124** — Add a project by path, rendering the server's named refusal → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T124-add-project-form.md`
+- [x] **T125** — The selected project's degraded conditions, named in the shell → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T125-project-conditions-banner.md`
+- [x] **T126** — The live stream follows the selection → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T126-live-stream-follows-selection.md`
+- [x] **T127** — Multi-project e2e — switch, deep-link, add and remove → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T127-multi-project-e2e.md`
+- [x] **T128** — DevOps for the console's first writable state → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T128-devops-writable-state.md`
+- [x] **T129** — Amend the durable contracts for what v3.0 shipped → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T129-v3.0-planning-docs.md`
+- [x] **T130** — v3.0 user docs + README screenshots refresh → `/ai-gh-orchestrate-plan docs/planning/tickets/v3.0/T130-v3.0-docs-and-screenshots.md`
 
 ## v3.0.1 — GitHub PR status
 

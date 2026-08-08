@@ -3,7 +3,12 @@ import { mkdtempSync, renameSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { test, expect } from '@playwright/test';
-import { copyFixture, start, registerProjectDir, type DedicatedConsole } from './lib/dedicated-console';
+import {
+	copyFixture,
+	start,
+	registerProjectDir,
+	type DedicatedConsole
+} from './lib/dedicated-console';
 
 // Captures the README screenshots from the REAL UI served by the harness — a
 // real factory-console booted in global-setup on the `with_run_state` fixture
