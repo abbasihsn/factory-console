@@ -209,7 +209,7 @@
 		<header class="flex flex-wrap items-center gap-3">
 			<h1 class="text-2xl font-semibold text-text">{ticket.title}</h1>
 			<StatusBadge status={ticket.status} />
-			<RunStateBadge runState={ticket.runState} />
+			<RunStateBadge runState={ticket.runState} phase={ticket.phase} />
 		</header>
 
 		<EditGate runState={ticket.runState} />

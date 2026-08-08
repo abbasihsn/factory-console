@@ -20,7 +20,7 @@
 	</a>
 	<span class="min-w-0 flex-1 truncate text-text" title={ticket.title}>{ticket.title}</span>
 	<StatusBadge status={ticket.status} />
-	<RunStateBadge runState={ticket.runState} />
+	<RunStateBadge runState={ticket.runState} phase={ticket.phase} />
 	{#if ticket.track}
 		<span class={CHIP_CLASS} title="track">
 			{ticket.track}

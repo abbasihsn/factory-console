@@ -65,6 +65,22 @@ fleshed out here as each track lands.
   does not write and mapped a listed-nowhere ticket to the editable `todo`; the
   authoritative rules, and the record of the correction, live in
   [`planning/ARCHITECTURE.md`](planning/ARCHITECTURE.md).
+
+  Two more things are read out of the JSON form, both added by App Factory v3 and
+  neither of them a state:
+  - **`phase`** — a field ON an entry (`building`, `accepting`, `reviewing`, `fixing`,
+    `verifying`) saying where a running lane has got to. It qualifies `runState` on the
+    ticket views rather than extending the vocabulary above, exactly as the factory
+    models it. It is carried as a free string and never validated: a phase is displayed
+    and branched on by nothing, so an unrecognised one shows as itself. This is the
+    deliberate opposite of an unrecognised **status**, which resolves `unreadable` and
+    is refused by both write gates — a cosmetic field must never become a write lockout.
+    The legacy marker directories record no phase, which is a complete reading of that
+    form and not a gap.
+  - **`subversion`** — a top-level record (`branch`, `base_sha`, `name`, `pr_url`) for
+    the one sub-version branch the factory is accumulating tickets onto. Under v3 its
+    PR is the only recurring human gate, so the shell shows a strip naming it. Absent is
+    the normal state between cuts, and only one is ever open.
 - **Other factory artefacts** (read-only) — the spend ledger
   (`.factory/metrics/ledger.jsonl`) behind `GET /api/v1/spend`, and per-ticket lane results
   (`.factory/results/<id>.json`) and receipts (`.factory/receipts/<id>.json`) behind

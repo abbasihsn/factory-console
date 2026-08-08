@@ -196,4 +196,64 @@ describe('RunStateBadge', () => {
 			expect(className).not.toContain('red');
 		}
 	);
+
+	// The lane PHASE — where an in_progress lane has actually got to. A lane holds its
+	// worktree for up to 90 minutes, and `in_progress` alone is a 90-minute black box in
+	// the one place an operator most wants a reading.
+	describe('the lane phase qualifier', () => {
+		it('appends the phase to the label', () => {
+			render(RunStateBadge, { props: { runState: 'in_progress', phase: 'reviewing' } });
+
+			expect(screen.getByText('In progress · reviewing')).toBeTruthy();
+		});
+
+		it('explains the phase in the tooltip as well as the label', () => {
+			const { container } = render(RunStateBadge, {
+				props: { runState: 'in_progress', phase: 'verifying' }
+			});
+
+			expect(container.querySelector('span')?.getAttribute('title')).toContain(
+				'currently verifying'
+			);
+		});
+
+		// A phase the console has not heard of is DISPLAYED, not dropped and not escalated.
+		// The server treats an unrecognised STATUS as `unreadable` and refuses every write;
+		// a phase is gated on by nothing, so blanking it would only cost the operator a
+		// reading because the factory added a word.
+		it('shows a phase this console does not know rather than blanking it', () => {
+			render(RunStateBadge, { props: { runState: 'in_progress', phase: 'auditing' } });
+
+			expect(screen.getByText('In progress · auditing')).toBeTruthy();
+		});
+
+		it('renders exactly as before when there is no phase', () => {
+			const withoutProp = render(RunStateBadge, { props: { runState: 'in_progress' } });
+			const before = withoutProp.container.innerHTML;
+			withoutProp.unmount();
+
+			for (const phase of [null, undefined, '', '   ']) {
+				const { container, unmount } = render(RunStateBadge, {
+					props: { runState: 'in_progress', phase }
+				});
+				expect(container.innerHTML).toBe(before);
+				unmount();
+			}
+		});
+
+		// The state decides the colour; the phase never does. It qualifies a state, and a
+		// pill that changed colour per phase would compete with the palette an operator
+		// scans the board by.
+		it('does not change the pill colour', () => {
+			const plain = render(RunStateBadge, { props: { runState: 'in_progress' } });
+			const plainClass = plain.container.querySelector('span')?.className;
+			plain.unmount();
+
+			const phased = render(RunStateBadge, {
+				props: { runState: 'in_progress', phase: 'fixing' }
+			});
+
+			expect(phased.container.querySelector('span')?.className).toBe(plainClass);
+		});
+	});
 });

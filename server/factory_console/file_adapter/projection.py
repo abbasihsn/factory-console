@@ -39,9 +39,21 @@ class TicketProjection:
     is the ONLY behavioral difference between the two adapters' projections.
     """
 
-    def __init__(self, tickets: list[Ticket], run_state_for: Callable[[str], RunState]) -> None:
+    def __init__(
+        self,
+        tickets: list[Ticket],
+        run_state_for: Callable[[str], RunState],
+        phase_for: Callable[[str], str | None] | None = None,
+    ) -> None:
+        # ``phase_for`` defaults to "no phase for anybody" so a construction site that
+        # has no phase to offer — the fake's seeded map, a test building a projection
+        # directly — is not forced to pass a lambda that says nothing. It is NOT a
+        # fallback for a source that failed: a project with no phase information and a
+        # ticket that is not mid-lane are the same answer here (``None``), because
+        # nothing gates on a phase and no caller needs to tell them apart.
         self._tickets = tickets
         self._run_state_for = run_state_for
+        self._phase_for = phase_for or (lambda _ticket_id: None)
         self._by_id: dict[str, Ticket] = {ticket.id: ticket for ticket in tickets}
         self._dependents: dict[str, list[Ticket]] = {}
         for ticket in tickets:
@@ -58,10 +70,17 @@ class TicketProjection:
     def _summarize(self, ticket: Ticket) -> TicketSummary:
         """Project one ``ticket`` to its :class:`TicketSummary`.
 
-        ``runState`` comes from the injected ``run_state_for``; ``depCount`` counts
-        ALL declared deps (dangling included) while ``dependentCount`` reads the
-        reverse index (only OTHER tickets that name this id). Internal to the
-        projection: :meth:`summaries` and :meth:`neighborhood` are the public API.
+        ``runState`` comes from the injected ``run_state_for`` and ``phase`` from
+        ``phase_for``; ``depCount`` counts ALL declared deps (dangling included) while
+        ``dependentCount`` reads the reverse index (only OTHER tickets that name this
+        id). Internal to the projection: :meth:`summaries` and :meth:`neighborhood` are
+        the public API.
+
+        The phase is carried for EVERY ticket, not only the ``in_progress`` ones. The
+        model records what the source said; deciding where a phase is worth showing is
+        the view's job, and filtering here would mean a ticket whose status and phase
+        disagree — only reachable by a hand-edit, since the factory clears the phase on
+        every transition — silently loses the evidence of it.
         """
         return TicketSummary(
             id=ticket.id,
@@ -70,6 +89,7 @@ class TicketProjection:
             track=ticket.track,
             milestone=ticket.milestone,
             runState=self._run_state_for(ticket.id),
+            phase=self._phase_for(ticket.id),
             depCount=len(ticket.dependsOn),
             dependentCount=len(self._dependents.get(ticket.id, [])),
         )

@@ -72,17 +72,41 @@ def test_get_project_returns_the_discovered_project_shape() -> None:
     assert body["discoveredAt"] == "2026-07-21T12:30:00"
 
 
-def test_openapi_publishes_project_path_referencing_the_project_schema() -> None:
+def test_openapi_publishes_project_path_referencing_the_project_view_schema() -> None:
+    # The response model is `ProjectView` — `Project` plus the open sub-version. The
+    # domain `Project` is a request-scoped bundle of resolved PATHS handed to every
+    # adapter method, and a sub-version is CONTENT read out of run-state.json; putting
+    # it there would make every endpoint's project load read that file.
     client = TestClient(_make_app())
     resp = client.get("/api/v1/openapi.json")
     assert resp.status_code == 200
     schema = resp.json()
     assert "/api/v1/project" in schema["paths"]
-    assert "Project" in schema["components"]["schemas"]
+    assert "ProjectView" in schema["components"]["schemas"]
     ref = schema["paths"]["/api/v1/project"]["get"]["responses"]["200"]["content"][
         "application/json"
     ]["schema"]["$ref"]
-    assert ref.endswith("/Project")
+    assert ref.endswith("/ProjectView")
+
+
+def test_the_project_payload_keeps_every_key_it_had_and_adds_one() -> None:
+    # Widening the response model must not MOVE anything: the SPA reads `rootPath` and
+    # friends off the top level, so a reshape here would be a break dressed as an
+    # addition. Asserted as a superset rather than an exact set so a later field does
+    # not have to be added in two places.
+    client = TestClient(_make_app())
+
+    body = client.get("/api/v1/project").json()
+
+    assert {
+        "rootPath",
+        "ticketsManifestPath",
+        "ticketsDir",
+        "roadmapPath",
+        "runStateDir",
+        "discoveredAt",
+    } <= set(body)
+    assert body["subversion"] is None, "no sub-version is open in this fixture"
 
 
 def test_get_project_maps_project_not_found_to_404_envelope() -> None:

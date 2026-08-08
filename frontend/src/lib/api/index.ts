@@ -39,6 +39,7 @@ export { ApiError } from './errors';
 export type { ApiErrorInit } from './errors';
 export type {
 	Project,
+	Subversion,
 	Ticket,
 	TicketSummary,
 	TicketListResponse,

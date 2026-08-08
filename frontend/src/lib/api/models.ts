@@ -8,7 +8,21 @@
  */
 import type { components } from './types';
 
-export type Project = components['schemas']['Project'];
+/**
+ * What `GET /api/v1/project` returns: the resolved paths, plus the open sub-version.
+ *
+ * Aliased from the backend's `ProjectView` rather than its `Project`, and the SPA keeps
+ * calling it `Project` on purpose — from here, "the project" simply IS what that
+ * endpoint answers. The split exists on the server, where `Project` is a request-scoped
+ * bundle of resolved PATHS handed to every adapter method, and putting file contents on
+ * it would make every endpoint's project load read `run-state.json`. Nothing on this
+ * side has that constraint, and mirroring the server's two names would only ask every
+ * component to pick one.
+ */
+export type Project = components['schemas']['ProjectView'];
+
+/** The open sub-version the factory is holding at, when there is one. */
+export type Subversion = components['schemas']['Subversion'];
 export type Ticket = components['schemas']['Ticket'];
 export type TicketSummary = components['schemas']['TicketSummary'];
 export type TicketListResponse = components['schemas']['TicketListResponse'];
