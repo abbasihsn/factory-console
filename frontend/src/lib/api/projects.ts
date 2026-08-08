@@ -81,10 +81,7 @@ export async function listProjects(): Promise<RegisteredProjectOut[]> {
  * `name` is optional; omitted, the server labels the row with the directory's
  * final component.
  */
-export function addProject(
-	body: AddProjectRequest,
-	token: string
-): Promise<RegisteredProjectOut> {
+export function addProject(body: AddProjectRequest, token: string): Promise<RegisteredProjectOut> {
 	return request<RegisteredProjectOut>('projects', writeInit('POST', token, body));
 }
 
